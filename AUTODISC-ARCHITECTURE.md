@@ -86,9 +86,11 @@ settings are protected under `/etc/default/autodisc`. The unit restarts on
 failure, handles SIGTERM to stop child processes, and applies systemd sandboxing
 without blocking configured media paths or required devices.
 
-The installer must validate tool availability, create the service account and
+The installer must install Node.js and native build/system dependencies from
+trusted, signed apt repositories, then create the service account and
 directories, build native Node dependencies, install the unit, and preserve
-operator configuration on upgrades. The operator must grant the service account
+operator configuration on upgrades. MakeMKV remains a separately licensed
+manual prerequisite. The operator must grant the service account
 explicit read/write permissions for the selected work and Movies directories,
 and device access to the selected optical drive. Start with a localhost bind;
 LAN access is an explicit settings/environment and firewall decision. Do not

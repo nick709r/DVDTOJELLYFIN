@@ -28,17 +28,28 @@ the validated result to a Movies directory.
 
 ## Linux / Lubuntu system service deployment
 
-1. Install Node.js 22+, npm, FFmpeg/ffprobe, udev, and eject from trusted
-   Lubuntu/Ubuntu packages. Install MakeMKV using its official distribution and
-   ensure `makemkvcon` is on the system `PATH`.
-2. Choose the Jellyfin Movies directory and a dedicated temporary work directory with
+On a fresh Lubuntu/Ubuntu or Debian install, download the current `main` source
+and run the installer with this one-line command:
+
+```sh
+sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output /tmp/autodisc-main.tar.gz && tar -xzf /tmp/autodisc-main.tar.gz -C /tmp && rm /tmp/autodisc-main.tar.gz && cd /tmp/DVDTOJELLYFIN-main && sudo sh ./scripts/install.sh
+```
+
+The installer configures the signed NodeSource apt repository and installs
+Node.js 22+, npm, FFmpeg/ffprobe, build tools, udev, eject, and ACL utilities,
+then builds AutoDisc and enables its systemd service. It is safe to rerun for
+updates.
+
+MakeMKV is not bundled or installed by this script: it is separately licensed
+and distributed by its vendor. Install the official Linux MakeMKV package and
+ensure `makemkvcon` is on `PATH`, then rerun the one-line installer if it
+reported MakeMKV missing.
+
+1. Choose the Jellyfin Movies directory and a dedicated temporary work directory with
    adequate free space (AutoDisc requires at least 8 GiB free before ripping,
    plus space in Movies for the finished file). The installer creates
    `/var/lib/autodisc` and `/var/cache/autodisc` for state and work.
-3. Install the service from a source checkout with `sudo sh ./scripts/install.sh`.
-   It builds the TypeScript app in `/opt/autodisc`, creates the `autodisc`
-   service account, and enables the `systemd` unit.
-4. Open AutoDisc locally, go to **Settings**, and set the Movies folder,
+2. Open AutoDisc locally, go to **Settings**, and set the Movies folder,
    temporary work folder, drive, and encoding preferences. Initial defaults are
    `/srv/jellyfin/Movies`, `/var/cache/autodisc`, and `/dev/sr0`. For network
    access, configure `/etc/default/autodisc`:
@@ -64,14 +75,14 @@ the validated result to a Movies directory.
    These ACLs let AutoDisc create files and Jellyfin read them without making
    the library writable to other users. After changing environment settings,
    run `sudo systemctl restart autodisc`.
-5. Ensure the Movies and work directories exist and are writable by the service
+3. Ensure the Movies and work directories exist and are writable by the service
    account, and confirm that the Jellyfin service account can read produced
    files. Check status and logs with `systemctl status autodisc` and
    `journalctl -u autodisc -f`. Open `http://localhost:8787` locally. The
    default bind is localhost; to reach the UI from another trusted device, set
    `HOST` to the server's LAN address, configure an admin password, and restrict
    access with the host firewall.
-6. Test with a known video DVD and verify the selected encoder and output before
+4. Test with a known video DVD and verify the selected encoder and output before
    leaving the appliance unattended.
 
 MakeMKV remains a separately licensed dependency and is not redistributed by

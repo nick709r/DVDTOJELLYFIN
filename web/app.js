@@ -140,7 +140,9 @@ async function loadSettings() {
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
   const encoders = await api("/api/v1/encoders");
-  $("#encoder-capability").textContent = `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
+  $("#encoder-capability").textContent = encoders.encoders.error
+    ? encoders.encoders.error
+    : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
 }
 
 function renderMetrics(snapshot) {

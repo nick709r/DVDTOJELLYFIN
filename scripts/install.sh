@@ -8,18 +8,57 @@ fi
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+if ! command -v apt-get >/dev/null 2>&1 || [ ! -r /etc/os-release ]; then
+  echo "Automatic dependency installation supports Ubuntu/Lubuntu and Debian." >&2
+  exit 1
+fi
+
+. /etc/os-release
+case "${ID:-}" in
+  ubuntu|debian|linuxmint) ;;
+  *)
+    echo "Automatic dependency installation is unsupported on ${PRETTY_NAME:-this Linux distribution}." >&2
+    exit 1
+    ;;
+esac
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y ca-certificates curl gpg
+
+install -d -m 0755 /etc/apt/keyrings
+curl --fail --silent --show-error --location https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key |
+  gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+chmod 0644 /etc/apt/keyrings/nodesource.gpg
+arch=$(dpkg --print-architecture)
+printf 'deb [arch=%s signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' "$arch" \
+  > /etc/apt/sources.list.d/nodesource.list
+
+apt-get update
+apt-get install -y \
+  acl \
+  build-essential \
+  ca-certificates \
+  curl \
+  eject \
+  ffmpeg \
+  gpg \
+  nodejs \
+  python3 \
+  udev
+
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-  echo "Node.js 22 or newer and npm are required. Install them before continuing." >&2
+  echo "Node.js and npm installation failed. Check apt output and retry." >&2
   exit 1
 fi
 
 NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])')
 if [ "$NODE_MAJOR" -lt 22 ]; then
-  echo "Node.js 22 or newer is required; found $(node --version)." >&2
+  echo "Node.js 22 or newer is required; found $(node --version). Check the NodeSource apt repository." >&2
   exit 1
 fi
 
-for tool in ffmpeg ffprobe udevadm eject; do
+for tool in ffmpeg ffprobe udevadm eject setfacl; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Required Linux tool '$tool' is not installed or not on PATH." >&2
     exit 1
@@ -27,7 +66,8 @@ for tool in ffmpeg ffprobe udevadm eject; do
 done
 
 if ! command -v makemkvcon >/dev/null 2>&1; then
-  echo "MakeMKV CLI (makemkvcon) is required; install it using its official distribution." >&2
+  echo "System dependencies are installed, but MakeMKV is required to rip DVDs." >&2
+  echo "Install MakeMKV using its official Linux distribution, then rerun this installer." >&2
   exit 1
 fi
 

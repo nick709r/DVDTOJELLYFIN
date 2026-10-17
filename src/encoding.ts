@@ -2,21 +2,30 @@ import { link, mkdir, stat, unlink } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AppSettings, EncoderResult } from "./model.js";
-import { runProcess } from "./process.js";
+import { ProcessFailure, runProcess } from "./process.js";
 import { log } from "./logger.js";
 
 const ffmpeg = process.env.FFMPEG_COMMAND ?? "ffmpeg";
 const ffprobe = process.env.FFPROBE_COMMAND ?? "ffprobe";
 
-export async function availableEncoders(signal?: AbortSignal): Promise<{ nvidia: boolean; software: boolean }> {
-  const result = await runProcess(ffmpeg, ["-hide_banner", "-encoders"], {
-    timeoutMs: 20_000,
-    ...(signal ? { signal } : {})
-  });
-  return {
-    nvidia: /\bh264_nvenc\b/.test(result.stdout),
-    software: /\blibx264\b/.test(result.stdout)
-  };
+export async function availableEncoders(signal?: AbortSignal): Promise<{
+  nvidia: boolean;
+  software: boolean;
+  error?: string;
+}> {
+  try {
+    const result = await runProcess(ffmpeg, ["-hide_banner", "-encoders"], {
+      timeoutMs: 20_000,
+      ...(signal ? { signal } : {})
+    });
+    return {
+      nvidia: /\bh264_nvenc\b/.test(result.stdout),
+      software: /\blibx264\b/.test(result.stdout)
+    };
+  } catch (error) {
+    if (signal?.aborted || !(error instanceof ProcessFailure)) throw error;
+    return { nvidia: false, software: false, error: `FFmpeg encoder check failed: ${error.message}` };
+  }
 }
 
 async function probeNvenc(signal?: AbortSignal): Promise<boolean> {
