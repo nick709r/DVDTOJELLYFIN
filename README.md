@@ -128,6 +128,44 @@ The service's MakeMKV configuration directory is `/var/lib/autodisc/.MakeMKV`;
 place any required operator-supplied license/configuration there with ownership
 `autodisc:autodisc` and restrictive permissions. Never add keys to Git.
 
+## Service management
+
+AutoDisc runs as the `autodisc.service` systemd service. The installer enables
+it at boot and starts it immediately. Use these commands on the Lubuntu server:
+
+```sh
+sudo systemctl start autodisc.service
+sudo systemctl stop autodisc.service
+sudo systemctl restart autodisc.service
+sudo systemctl status autodisc.service
+sudo journalctl -u autodisc.service -f
+```
+
+`start` starts a stopped service, `stop` shuts it down, and `restart` stops and
+starts it again (for example, after changing `/etc/default/autodisc`). Follow
+the logs with `journalctl` when diagnosing startup or disc-processing issues.
+
+To update AutoDisc from the latest `main` branch, first wait for the dashboard
+to show **Idle**. Stopping the service during a disc job interrupts that job.
+The installer preserves settings and history in `/var/lib/autodisc`, replaces
+the deployed application in `/opt/autodisc`, rebuilds it, then enables and
+starts the service again. Back up the database while the service is stopped if
+you want an extra recovery copy:
+
+```sh
+sudo systemctl stop autodisc.service
+sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
+```
+
+Then run the same one-line install/update command from the deployment section:
+
+```sh
+sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output /tmp/autodisc-main.tar.gz && tar -xzf /tmp/autodisc-main.tar.gz -C /tmp && rm /tmp/autodisc-main.tar.gz && cd /tmp/DVDTOJELLYFIN-main && sudo sh ./scripts/install.sh
+```
+
+The installer starts the service when it finishes. Confirm the update with
+`sudo systemctl status autodisc.service` and open `http://localhost:8787`.
+
 ## Settings and operations
 
 The dashboard shows service status and conversion progress. Settings include
