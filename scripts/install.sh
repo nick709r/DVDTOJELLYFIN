@@ -94,7 +94,7 @@ if systemctl is-active --quiet autodisc.service; then
 fi
 
 install -d -o root -g root -m 0755 /opt/autodisc
-install -d -o autodisc -g autodisc -m 0750 /var/lib/autodisc /var/cache/autodisc
+install -d -o autodisc -g autodisc -m 0750 /var/lib/autodisc /var/cache/autodisc /var/cache/autodisc/lidarr-import
 install -d -o autodisc -g autodisc -m 0700 /var/lib/autodisc/.MakeMKV
 cp "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/tsconfig.json" /opt/autodisc/
 cp "$ROOT/README.md" "$ROOT/AUTODISC-ARCHITECTURE.md" /opt/autodisc/

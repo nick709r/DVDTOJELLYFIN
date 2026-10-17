@@ -15,9 +15,10 @@ Movies and lossless FLAC albums to Music.
 - Architecture review, risks, proposed structure, and delivery gates:
   [`AUTODISC-ARCHITECTURE.md`](./AUTODISC-ARCHITECTURE.md).
 - One job at a time; repeated disc events are coalesced.
-- Audio CDs are extracted track-by-track into lossless FLAC album folders under
-  the configured Jellyfin Music directory. MusicBrainz lookup is optional and
-  disabled by default; unmatched discs receive generic artist/album/track tags.
+- Audio CDs are extracted and named/tagged as lossless FLAC tracks. They can be
+  published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
+  library import and organization after naming. MusicBrainz lookup is disabled
+  by default; enable it to supply metadata for Lidarr matching.
 - FFmpeg probes NVENC and tests initialization before selecting it. `auto`
   falls back to software encoding when hardware encoding is absent or unusable.
   A GTX 710 commonly has no NVENC block; GPU use is not guaranteed.
@@ -53,8 +54,8 @@ without it.
 2. Choose Jellyfin Movies and Music directories and a dedicated temporary work directory with
    adequate free space (AutoDisc requires at least 8 GiB free before ripping,
    plus space in the destination for finished media; music jobs require 2 GiB
-   free work space and 256 MiB free Music space). The installer creates
-   `/var/lib/autodisc` and `/var/cache/autodisc` for state and work.
+   free work space and 256 MiB free Music/import space). The installer creates
+   `/var/lib/autodisc`, `/var/cache/autodisc`, and `/var/cache/autodisc/lidarr-import`.
 3. Open AutoDisc locally, go to **Settings**, and set the Movies and Music
    folders, temporary work folder, drive, and encoding preferences. Initial defaults are
    `/srv/jellyfin/Movies`, `/srv/jellyfin/Music`, `/var/cache/autodisc`, and `/dev/sr0`. For network
@@ -65,27 +66,51 @@ without it.
    PORT=8787
    ```
 
-   The service must have read/write access to the Movies, Music, and work directories
-   and access to the configured optical drive. Use Settings for media paths
-   (the database retains configured values across service restarts). Configure ownership or ACLs
+   The service must have read/write access to the Movies and work directories
+   and access to the configured optical drive. In direct-to-Jellyfin music mode,
+   it also needs write access to Music. In Lidarr mode, AutoDisc writes to its
+   incoming folder and Lidarr manages the Music library. The database retains
+   configured values across service restarts. Configure ownership or ACLs
    explicitly; do not make media directories world-writable. For Jellyfin
    library directories, install `acl` if needed, create them if
    necessary, and grant access only to the service and Jellyfin accounts
    (replace `jellyfin` if your service uses another account):
 
    ```sh
-   sudo mkdir -p /srv/jellyfin/Movies /srv/jellyfin/Music
+   sudo mkdir -p /srv/jellyfin/Movies /srv/jellyfin/Music /var/cache/autodisc/lidarr-import
    sudo setfacl -m u:autodisc:rwx,u:jellyfin:rx /srv/jellyfin/Movies
    sudo setfacl -d -m u:autodisc:rwx,u:jellyfin:r-x /srv/jellyfin/Movies
    sudo setfacl -m u:autodisc:rwx,u:jellyfin:rx /srv/jellyfin/Music
    sudo setfacl -d -m u:autodisc:rwx,u:jellyfin:r-x /srv/jellyfin/Music
    ```
 
-   These ACLs let AutoDisc create files and Jellyfin read them without making
-   the library writable to other users. After changing environment settings,
+   To use Lidarr, grant its service account read/write access to the incoming
+   folder too. Lidarr and AutoDisc must see the folder using the same absolute
+   path (including when Lidarr runs in a container). In AutoDisc **Settings**,
+   enable MusicBrainz lookup, enter the Lidarr URL and API key, set the incoming
+   folder, then enable Lidarr import and use **Test Lidarr connection**. Add the
+   artist and album in Lidarr first, and configure Lidarr's root folder and
+   Jellyfin's Music library to the same Music directory. AutoDisc writes and names every FLAC file before
+   asking Lidarr to match and move it into its managed library. If matching or
+   import fails, AutoDisc preserves any remaining named files in the incoming
+   folder for manual import rather than deleting the ripped music.
+
+   For a local Lidarr service account named `lidarr`, one example is:
+
+   ```sh
+   sudo setfacl -m u:lidarr:rwx /var/cache/autodisc/lidarr-import
+   sudo setfacl -d -m u:lidarr:rwx /var/cache/autodisc/lidarr-import
+   sudo setfacl -m u:lidarr:--x /var/cache/autodisc
+   sudo setfacl -m u:lidarr:rwx /srv/jellyfin/Music
+   sudo setfacl -d -m u:lidarr:rwx /srv/jellyfin/Music
+   ```
+
+   These ACLs let the media services access their required folders without
+   making them writable to other users. After changing environment settings,
    run `sudo systemctl restart autodisc`.
-4. Ensure the Movies, Music, and work directories exist and are writable by the service
-   account, and confirm that the Jellyfin service account can read produced
+4. Ensure the Movies and work directories exist and are writable by the service
+   account (and the direct Music destination or Lidarr incoming directory as
+   configured), and confirm that the Jellyfin service account can read produced
    files. Check status and logs with `systemctl status autodisc` and
    `journalctl -u autodisc -f`. Open `http://localhost:8787` locally. The
    default bind is localhost; to reach the UI from another trusted device, set
@@ -106,8 +131,8 @@ place any required operator-supplied license/configuration there with ownership
 ## Settings and operations
 
 The dashboard shows service status and conversion progress. Settings include
-Movies/Music output and work paths, format/quality, encoder policy, eject
-behavior, password, and optional TMDB/MusicBrainz metadata lookup. Resource
+Movies/Music output and work paths, optional Lidarr import, format/quality,
+encoder policy, eject behavior, password, and optional TMDB/MusicBrainz metadata lookup. Resource
 samples are generated only while the dashboard metrics stream is connected.
 Conversion history and statistics are stored in
 SQLite at `/var/lib/autodisc/autodisc.sqlite`.

@@ -65,7 +65,7 @@
         <form id="settings-form" class="settings-layout">
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
             <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
-            <label>Jellyfin Music folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
+            <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
             <div class="form-row"><label>Output format<select name="format"><option value="mp4">MP4</option><option value="mkv">MKV</option></select></label><label>Quality <small>(18 = higher quality)</small><input name="quality" type="number" min="18" max="30" step="1"></label></div>
@@ -85,7 +85,18 @@
           </article>
           <article class="card settings-card"><p class="eyebrow">MUSIC CDS</p><h2>Album details</h2>
             <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
-            <p class="hint">Disabled by default. When enabled, AutoDisc sends the CD's disc ID to MusicBrainz. Without a match, tracks are saved with generic names. Music CDs are stored as lossless FLAC albums.</p>
+            <p class="hint">MusicBrainz provides album and track names for the FLAC tags and filenames. Lidarr needs these details to identify and categorize albums.</p>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">LIBRARY MANAGEMENT</p><h2>Lidarr import</h2>
+            <label class="check"><input name="lidarrEnabled" type="checkbox"> Import named music albums through Lidarr</label>
+            <label>Lidarr URL<input name="lidarrUrl" type="url" required placeholder="http://127.0.0.1:8686"></label>
+            <label>Lidarr API key<input name="lidarrApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key"></label>
+            <label class="check"><input name="clearLidarrApiKey" type="checkbox"> Clear saved Lidarr API key</label>
+            <p id="lidarr-key-status" class="inline-info"></p>
+            <label>Lidarr incoming folder<input name="lidarrImportDir" required placeholder="/var/cache/autodisc/lidarr-import"></label>
+            <button id="test-lidarr" class="button secondary" type="button">Test Lidarr connection</button>
+            <p id="lidarr-status" class="inline-info" role="status"></p>
+            <p class="hint">AutoDisc names and tags every FLAC track first, then submits the album to Lidarr for a manual import using Move. Add the artist and album to Lidarr and enable MusicBrainz lookup. Lidarr must be able to read and write the same absolute incoming-folder path; the Jellyfin Music folder must match Lidarr's library root.</p>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>

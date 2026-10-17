@@ -3,7 +3,7 @@ import fastifyStatic from "@fastify/static";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { access, stat, statfs } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, activeJob, getSettings, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
@@ -12,6 +12,7 @@ import { runProcess } from "./process.js";
 import { DashboardMetricSampler } from "./metrics-sampler.js";
 import { getRuntimeStatus } from "./runtime-status.js";
 import { configureLogLevel } from "./logger.js";
+import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
@@ -56,14 +57,16 @@ app.addHook("preHandler", async (request, reply) => {
 
 app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
 
-function publicSettings(settings: AppSettings): Omit<AppSettings, "metadataApiKey" | "adminPasswordSalt" | "adminPasswordHash"> & {
+function publicSettings(settings: AppSettings): Omit<AppSettings, "metadataApiKey" | "lidarrApiKey" | "adminPasswordSalt" | "adminPasswordHash"> & {
   metadataApiKeyConfigured: boolean;
+  lidarrApiKeyConfigured: boolean;
   adminPasswordConfigured: boolean;
 } {
-  const { metadataApiKey, adminPasswordSalt, adminPasswordHash, ...safe } = settings;
+  const { metadataApiKey, lidarrApiKey, adminPasswordSalt, adminPasswordHash, ...safe } = settings;
   return {
     ...safe,
     metadataApiKeyConfigured: Boolean(metadataApiKey),
+    lidarrApiKeyConfigured: Boolean(lidarrApiKey),
     adminPasswordConfigured: Boolean(adminPasswordHash)
   };
 }
@@ -189,7 +192,35 @@ async function validateDirectory(path: string): Promise<void> {
   await access(path, constants.R_OK | constants.W_OK | constants.X_OK);
 }
 
+async function validateReadableDirectory(path: string): Promise<void> {
+  const info = await stat(path);
+  if (!info.isDirectory()) throw new Error(`${path} is not a directory`);
+  await access(path, constants.R_OK | constants.X_OK);
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+  const firstToSecond = relative(resolve(first), resolve(second));
+  const secondToFirst = relative(resolve(second), resolve(first));
+  const isWithin = (path: string): boolean =>
+    path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+  return isWithin(firstToSecond) || isWithin(secondToFirst);
+}
+
 app.get("/api/v1/settings", async () => ({ settings: publicSettings(getSettings()) }));
+
+app.post<{ Body: { url?: unknown; apiKey?: unknown } }>("/api/v1/lidarr/test", async (request, reply) => {
+  const settings = getSettings();
+  try {
+    const url = typeof request.body?.url === "string" ? validateLidarrUrl(request.body.url) : settings.lidarrUrl;
+    const apiKey = typeof request.body?.apiKey === "string" && request.body.apiKey
+      ? request.body.apiKey
+      : settings.lidarrApiKey;
+    const result = await testLidarrConnection({ url, apiKey });
+    return { ok: true, ...result };
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "Lidarr connection failed" });
+  }
+});
 
 app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
@@ -209,11 +240,23 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if ("musicDir" in body) {
     if (!validAbsolutePath(body.musicDir)) return reply.code(400).send({ error: "Music path must be an absolute Linux path" });
     try {
-      await validateDirectory(body.musicDir);
+      const currentLidarrEnabled = getSettings().lidarrEnabled;
+      const lidarrWillManageLibrary = typeof body.lidarrEnabled === "boolean" ? body.lidarrEnabled : currentLidarrEnabled;
+      if (lidarrWillManageLibrary) await validateReadableDirectory(body.musicDir);
+      else await validateDirectory(body.musicDir);
     } catch {
-      return reply.code(400).send({ error: "Music path must exist and be readable and writable by AutoDisc" });
+      return reply.code(400).send({ error: "Music path must exist and be readable by AutoDisc, and writable when Lidarr integration is disabled" });
     }
     patch.musicDir = body.musicDir;
+  }
+  if ("lidarrImportDir" in body) {
+    if (!validAbsolutePath(body.lidarrImportDir)) return reply.code(400).send({ error: "Lidarr import path must be an absolute Linux path" });
+    try {
+      await validateDirectory(body.lidarrImportDir);
+    } catch {
+      return reply.code(400).send({ error: "Lidarr import path must exist and be readable and writable by AutoDisc" });
+    }
+    patch.lidarrImportDir = body.lidarrImportDir;
   }
   if ("workDir" in body) {
     if (!validAbsolutePath(body.workDir)) return reply.code(400).send({ error: "Work path must be an absolute Linux path" });
@@ -276,6 +319,26 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     if (typeof body.musicMetadataEnabled !== "boolean") return reply.code(400).send({ error: "musicMetadataEnabled must be a boolean" });
     patch.musicMetadataEnabled = body.musicMetadataEnabled;
   }
+  if ("lidarrEnabled" in body) {
+    if (typeof body.lidarrEnabled !== "boolean") return reply.code(400).send({ error: "lidarrEnabled must be a boolean" });
+    patch.lidarrEnabled = body.lidarrEnabled;
+  }
+  if ("lidarrUrl" in body) {
+    if (typeof body.lidarrUrl !== "string" || body.lidarrUrl.length > 2048) {
+      return reply.code(400).send({ error: "Invalid Lidarr URL" });
+    }
+    try {
+      patch.lidarrUrl = validateLidarrUrl(body.lidarrUrl);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid Lidarr URL" });
+    }
+  }
+  if ("lidarrApiKey" in body) {
+    if (typeof body.lidarrApiKey !== "string" || body.lidarrApiKey.length > 256) {
+      return reply.code(400).send({ error: "Invalid Lidarr API key" });
+    }
+    patch.lidarrApiKey = body.lidarrApiKey;
+  }
   if ("adminPassword" in body) {
     if (typeof body.adminPassword !== "string" || body.adminPassword.length < 12 || body.adminPassword.length > 256) {
       return reply.code(400).send({ error: "Password must be 12 to 256 characters" });
@@ -291,6 +354,20 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     patch.logLevel = body.logLevel as AppSettings["logLevel"];
   }
 
+  const effectiveSettings = { ...getSettings(), ...patch };
+  if (effectiveSettings.lidarrEnabled) {
+    if (!effectiveSettings.lidarrApiKey) return reply.code(400).send({ error: "A Lidarr API key is required when Lidarr integration is enabled" });
+    if (!effectiveSettings.musicMetadataEnabled) return reply.code(400).send({ error: "Enable MusicBrainz lookup so Lidarr can match the named album and tracks" });
+    if (pathsOverlap(effectiveSettings.musicDir, effectiveSettings.lidarrImportDir)) {
+      return reply.code(400).send({ error: "Lidarr incoming folder must be outside the Jellyfin Music library folder" });
+    }
+    try {
+      await validateReadableDirectory(effectiveSettings.musicDir);
+      await validateDirectory(effectiveSettings.lidarrImportDir);
+    } catch {
+      return reply.code(400).send({ error: "Lidarr Music library and import folders must exist; AutoDisc must read the library and write the import folder" });
+    }
+  }
   const saved = saveSettings(patch);
   if (patch.adminPasswordHash !== undefined) sessions.clear();
   app.log.level = saved.logLevel;

@@ -1,5 +1,5 @@
 import { readdir, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getSettings, interruptedOutputs, recoverPublishedJob } from "./db.js";
 import { mediaDuration } from "./encoding.js";
 import { log } from "./logger.js";
@@ -8,6 +8,12 @@ const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const partialOutput = new RegExp(`^\\.autodisc-${uuid}\\.(mp4|mkv)$`, "i");
 const partialAlbumDirectory = new RegExp(`^\\.autodisc-${uuid}$`, "i");
+
+function isWithin(directory: string, path: string): boolean {
+  const relativePath = relative(resolve(directory), resolve(path));
+  return relativePath === "" ||
+    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
+}
 
 export async function recoverTemporaryFiles(): Promise<void> {
   const settings = getSettings();
@@ -43,10 +49,22 @@ export async function recoverTemporaryFiles(): Promise<void> {
       removedOutputs += 1;
     }
   }
+  if (resolve(settings.lidarrImportDir) !== resolve(settings.musicDir)) {
+    const importEntries = await readdir(settings.lidarrImportDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of importEntries) {
+      if (entry.isDirectory() && partialAlbumDirectory.test(entry.name)) {
+        await rm(join(settings.lidarrImportDir, entry.name), { recursive: true, force: true });
+        removedOutputs += 1;
+      }
+    }
+  }
   let recoveredJobs = 0;
   for (const job of interruptedOutputs()) {
     const isMovieOutput = dirname(resolve(job.outputPath)) === resolve(settings.moviesDir);
-    const isMusicOutput = job.mediaType === "audio_cd" && dirname(resolve(job.outputPath)) === resolve(settings.musicDir);
+    const isMusicOutput = job.mediaType === "audio_cd" && isWithin(settings.musicDir, job.outputPath);
     if (!isMovieOutput && !isMusicOutput) continue;
     try {
       const info = await stat(job.outputPath);

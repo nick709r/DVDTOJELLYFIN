@@ -22,7 +22,16 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.statusCode, 200);
     assert.equal(initial.json().settings.adminPasswordConfigured, false);
     assert.equal(initial.json().settings.musicMetadataEnabled, false);
+    assert.equal(initial.json().settings.lidarrEnabled, false);
     assert.equal("adminPasswordHash" in initial.json().settings, false);
+    assert.equal("lidarrApiKey" in initial.json().settings, false);
+
+    const lidarrWithoutKey = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { lidarrEnabled: true }
+    });
+    assert.equal(lidarrWithoutKey.statusCode, 400);
 
     jobs.addJob("active-job-one", "Disc One");
     assert.equal(jobs.activeJob().mediaType, "dvd");
@@ -46,11 +55,13 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const setMusicSettings = await app.inject({
       method: "PUT",
       url: "/api/v1/settings",
-      payload: { musicMetadataEnabled: true }
+      payload: { musicMetadataEnabled: true, lidarrApiKey: "lidarr-test-secret" }
     });
     assert.equal(setMusicSettings.statusCode, 200);
     assert.equal(setMusicSettings.json().settings.musicDir, "/srv/jellyfin/Music");
     assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
+    assert.equal(setMusicSettings.json().settings.lidarrApiKeyConfigured, true);
+    assert.equal("lidarrApiKey" in setMusicSettings.json().settings, false);
 
     const setPassword = await app.inject({
       method: "PUT",
@@ -98,6 +109,14 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: { quality: 99 }
     });
     assert.equal(invalidQuality.statusCode, 400);
+
+    const invalidLidarrUrl = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { cookie },
+      payload: { lidarrUrl: "ftp://localhost:8686" }
+    });
+    assert.equal(invalidLidarrUrl.statusCode, 400);
   } finally {
     await app.close();
     db.close();

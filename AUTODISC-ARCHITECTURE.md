@@ -8,8 +8,9 @@
 AutoDisc is a single-user, single-optical-drive appliance. It accepts one disc
 at a time: DVDs use MakeMKV and FFmpeg to extract a main feature, while music
 CDs use cdparanoia to extract tracks and FFmpeg to encode lossless FLAC. It
-publishes movies and albums atomically into configured Jellyfin Movies and
-Music directories. A durable SQLite job record is the source of truth. A small web interface is for
+publishes movies atomically into Jellyfin Movies and either publishes named
+music albums directly to Jellyfin Music or submits them to Lidarr for import
+after naming and tagging. A durable SQLite job record is the source of truth. A small web interface is for
 administration, status, history, and configuration—not a prerequisite for normal
 disc processing.
 
@@ -180,11 +181,16 @@ guaranteed.
 ### Music CD policy
 
 Extract each audio track with cdparanoia into the temporary workspace, then
-encode to lossless FLAC with FFmpeg. Publish a complete, tagged album directory
-by same-filesystem rename into the separately configured Jellyfin Music path.
-MusicBrainz lookup is opt-in and uses the CD's MusicBrainz disc ID; if it is
-disabled or no match is available, use explicit generic artist, album, and
-track names. Never send disc IDs to MusicBrainz unless the setting is enabled.
+encode and tag every track as lossless FLAC. Name all output tracks before
+publication. Direct mode publishes a complete album directory by same-filesystem
+rename into Jellyfin Music. Optional Lidarr mode stages the named album in a
+shared incoming directory, submits it to Lidarr's manual-import API with Move
+semantics, waits for the import command, and leaves the source intact if Lidarr
+cannot match or import it. Lidarr and AutoDisc must see the same incoming path,
+and the Jellyfin Music directory must be the Lidarr-managed library root.
+Lidarr mode requires an existing matching artist/album in Lidarr and enabled
+MusicBrainz lookup so metadata can be used for matching. Never send disc IDs to
+MusicBrainz unless the setting is enabled.
 
 ## 5. Encoding, presets, and configuration
 
@@ -227,7 +233,8 @@ Persist validated settings in SQLite, with defaults and a schema version:
 - metadata lookup enabled/disabled, selected provider, and credentials, if
   enabled. Lookup is disabled by default and can be enabled or configured later
   from the Settings page; no external lookup occurs before the user opts in.
-- music destination path and independent opt-in MusicBrainz lookup setting.
+- music destination path, Lidarr URL/API key/shared import directory, and
+  independent opt-in MusicBrainz lookup setting.
 - admin password/session configuration;
 - log level and retention.
 
@@ -301,6 +308,7 @@ under `/api/v1`; keep liveness/readiness at `/api/health`.
 | `GET /api/v1/stats?range=7d\|30d` | Daily success/failure counts and duration series. |
 | `GET /api/v1/settings` | Redacted effective settings and capability diagnostics. |
 | `PUT /api/v1/settings` | Validate and persist settings; active jobs retain their snapshot. |
+| `POST /api/v1/lidarr/test` | Verify the configured Lidarr URL and API key without returning credentials. |
 | `GET /api/v1/encoders` | FFmpeg software/NVENC capability report. |
 | `POST /api/v1/login` / `POST /api/v1/logout` | Configure a password-protected administrator session. |
 | `GET /api/v1/events` | Authenticated SSE for job/status updates. |
@@ -624,8 +632,8 @@ disk, absent GPU, and restart during each major stage.
 
 - Exactly one disc job can run at a time; non-video media is ignored.
 - Audio CDs are ripped as individual lossless FLAC tracks, optionally tagged
-  through MusicBrainz, and atomically published as complete album folders to
-  the configured Jellyfin Music directory.
+  through MusicBrainz, then either atomically published to Jellyfin Music or
+  imported through Lidarr after their filenames and tags are complete.
 - A completed output is probed, safely named, collision-safe, and atomically
   published.
 - Actual encoder is visible and persisted; no GPU/driver/NVENC issue prevents

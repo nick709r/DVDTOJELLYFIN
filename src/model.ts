@@ -26,6 +26,10 @@ export interface AppSettings {
   metadataProvider: "tmdb";
   metadataApiKey: string;
   musicMetadataEnabled: boolean;
+  lidarrEnabled: boolean;
+  lidarrUrl: string;
+  lidarrApiKey: string;
+  lidarrImportDir: string;
   adminPasswordSalt: string;
   adminPasswordHash: string;
   logLevel: "debug" | "info" | "warn" | "error";

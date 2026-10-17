@@ -132,12 +132,16 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["moviesDir", "musicDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel"]) {
+  for (const key of ["moviesDir", "musicDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
   form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
+  form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
+  $("#lidarr-key-status").textContent = data.settings.lidarrApiKeyConfigured
+    ? "A Lidarr API key is saved. It is never displayed."
+    : "No Lidarr API key is saved.";
   $("#metadata-key-status").textContent = data.settings.metadataApiKeyConfigured
     ? "A metadata API key is saved. It is never displayed."
     : "No metadata API key is saved; lookup will use the disc label until one is configured.";
@@ -238,17 +242,24 @@ $("#settings-form").addEventListener("submit", async (event) => {
     autoEject: form.elements.namedItem("autoEject").checked,
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
+    lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
+    lidarrUrl: values.get("lidarrUrl"),
+    lidarrImportDir: values.get("lidarrImportDir"),
     metadataProvider: "tmdb",
     logLevel: values.get("logLevel")
   };
   if (values.get("metadataApiKey")) patch.metadataApiKey = values.get("metadataApiKey");
   if (form.elements.namedItem("clearMetadataKey").checked) patch.metadataApiKey = "";
+  if (values.get("lidarrApiKey")) patch.lidarrApiKey = values.get("lidarrApiKey");
+  if (form.elements.namedItem("clearLidarrApiKey").checked) patch.lidarrApiKey = "";
   if (values.get("adminPassword")) patch.adminPassword = values.get("adminPassword");
   try {
     await api("/api/v1/settings", { method: "PUT", body: JSON.stringify(patch) });
     form.elements.namedItem("adminPassword").value = "";
     form.elements.namedItem("metadataApiKey").value = "";
     form.elements.namedItem("clearMetadataKey").checked = false;
+    form.elements.namedItem("lidarrApiKey").value = "";
+    form.elements.namedItem("clearLidarrApiKey").checked = false;
     $("#settings-message").textContent = "Settings saved.";
     notify("Settings saved. Active jobs continue with their original settings.");
     if (patch.adminPassword) {
@@ -258,6 +269,24 @@ $("#settings-form").addEventListener("submit", async (event) => {
     }
   } catch (error) {
     $("#settings-message").textContent = error.message;
+  }
+});
+
+$("#test-lidarr").addEventListener("click", async () => {
+  const status = $("#lidarr-status");
+  status.textContent = "Connecting to Lidarr…";
+  try {
+    const form = $("#settings-form");
+    const result = await api("/api/v1/lidarr/test", {
+      method: "POST",
+      body: JSON.stringify({
+        url: form.elements.namedItem("lidarrUrl").value,
+        apiKey: form.elements.namedItem("lidarrApiKey").value
+      })
+    });
+    status.textContent = `Connected to Lidarr${result.version ? ` ${result.version}` : ""}.`;
+  } catch (error) {
+    status.textContent = error.message;
   }
 });
 

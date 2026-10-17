@@ -17,6 +17,10 @@ const defaultSettings: AppSettings = {
   metadataProvider: "tmdb",
   metadataApiKey: "",
   musicMetadataEnabled: false,
+  lidarrEnabled: false,
+  lidarrUrl: process.env.LIDARR_URL ?? "http://127.0.0.1:8686",
+  lidarrApiKey: process.env.LIDARR_API_KEY ?? "",
+  lidarrImportDir: process.env.LIDARR_IMPORT_DIR ?? "/var/cache/autodisc/lidarr-import",
   adminPasswordSalt: "",
   adminPasswordHash: "",
   logLevel: "info"
@@ -110,6 +114,8 @@ if (!columnsAfterMigrationThree.some((column) => column.name === "media_type")) 
   db.exec("ALTER TABLE jobs ADD COLUMN media_type TEXT NOT NULL DEFAULT 'dvd'");
 }
 db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)")
+  .run(new Date().toISOString());
+db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?)")
   .run(new Date().toISOString());
 
 const interrupted = db.prepare(`

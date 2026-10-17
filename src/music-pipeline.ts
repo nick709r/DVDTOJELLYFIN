@@ -1,4 +1,4 @@
-import { access, mkdir, rename, rm, stat, statfs } from "node:fs/promises";
+import { access, mkdir, readdir, rename, rm, stat, statfs } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -8,6 +8,7 @@ import { ripAudioTracks } from "./audio-cd.js";
 import { events } from "./events.js";
 import { log } from "./logger.js";
 import { resolveMusicMetadata } from "./music-metadata.js";
+import { importAlbumToLidarr } from "./lidarr.js";
 import { runProcess } from "./process.js";
 import { ejectDisc, safeTitle } from "./media.js";
 import { setRuntimeStatus } from "./runtime-status.js";
@@ -54,7 +55,8 @@ export async function processAudioCd(
   const settings = getSettings();
   const id = randomUUID();
   const workDir = join(settings.workDir, id);
-  const stagingDir = join(settings.musicDir, `.autodisc-${id}`);
+  const outputDir = settings.lidarrEnabled ? settings.lidarrImportDir : settings.musicDir;
+  const stagingDir = join(outputDir, `.autodisc-${id}`);
   let successful = false;
   let failure: string | null = null;
   let finalPath: string | null = null;
@@ -64,7 +66,7 @@ export async function processAudioCd(
     addJob(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", disc.fingerprint, "audio_cd");
     events.emit("status");
     await assertWritableDirectory(settings.workDir, minimumWorkBytes);
-    await assertWritableDirectory(settings.musicDir, minimumMusicBytes);
+    await assertWritableDirectory(outputDir, minimumMusicBytes);
     await mkdir(workDir, { recursive: true, mode: 0o750 });
     await mkdir(stagingDir, { mode: 0o750 });
 
@@ -87,6 +89,7 @@ export async function processAudioCd(
     events.emit("status");
     conversionStartedAt = Date.now();
     let outputBytes = 0;
+    const outputTrackNames: string[] = [];
     for (let index = 0; index < audioTracks.length; index += 1) {
       if (signal?.aborted) throw new Error("Audio CD processing cancelled");
       const track = audioTracks[index];
@@ -97,6 +100,7 @@ export async function processAudioCd(
       const fileName = `${numberedTrack} - ${title}.flac`;
       const partialPath = join(stagingDir, `.${numberedTrack}-${randomUUID()}.flac`);
       const outputPath = join(stagingDir, fileName);
+      outputTrackNames.push(fileName);
       await runProcess(ffmpeg, [
         "-hide_banner", "-nostdin", "-v", "error", "-n",
         "-i", track.path, "-map", "0:a:0", "-vn",
@@ -119,14 +123,41 @@ export async function processAudioCd(
     updateJob(id, { conversionSeconds: (Date.now() - conversionStartedAt) / 1000 });
     await rm(workDir, { recursive: true, force: true });
 
-    setJobStatus(id, "publishing", "Publishing the complete album to Jellyfin Music");
+    setJobStatus(id, "publishing", settings.lidarrEnabled
+      ? "Preparing named tracks for Lidarr library import"
+      : "Publishing the complete album to Jellyfin Music");
     events.emit("status");
-    finalPath = await uniqueAlbumPath(settings.musicDir, albumFolder);
-    updateJob(id, { outputPath: finalPath, outputBytes, encoder: "FLAC lossless", progress: 100 });
+    finalPath = await uniqueAlbumPath(outputDir, albumFolder);
+    updateJob(id, { outputPath: finalPath, outputBytes, encoder: "FLAC lossless", progress: settings.lidarrEnabled ? 99 : 100 });
     await rename(stagingDir, finalPath);
+    if (settings.lidarrEnabled) {
+      setJobStatus(id, "publishing", "Sending named and tagged tracks to Lidarr for categorization");
+      events.emit("status");
+      const importPath = finalPath;
+      const namedTrackPaths = outputTrackNames.map((name) => join(importPath, name));
+      const result = await importAlbumToLidarr(
+        { url: settings.lidarrUrl, apiKey: settings.lidarrApiKey },
+        importPath,
+        namedTrackPaths,
+        signal
+      );
+      const remaining = await readdir(importPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      if (remaining.length > 0) {
+        throw new Error(`Lidarr reported a successful import but left files in ${importPath}; they were retained for safety`);
+      }
+      await rm(importPath, { recursive: true, force: true });
+      if (result.albumPath) updateJob(id, { outputPath: result.albumPath });
+      addEvent(id, "lidarr", "info", `Lidarr imported and categorized ${result.imported} named FLAC tracks`);
+    }
     successful = true;
   } catch (error) {
     failure = error instanceof Error ? error.message : "Unknown audio CD processing failure";
+    if (settings.lidarrEnabled && finalPath) {
+      failure += `; check Lidarr and the staged album at ${finalPath} before retrying to avoid a duplicate import`;
+    }
     if (conversionStartedAt !== undefined) {
       updateJob(id, { conversionSeconds: (Date.now() - conversionStartedAt) / 1000 });
     }
