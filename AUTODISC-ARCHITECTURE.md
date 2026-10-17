@@ -5,10 +5,11 @@
 
 ## 1. Product boundary and operating assumptions
 
-AutoDisc is a single-user, single-optical-drive appliance. It accepts one DVD at a
-time, uses MakeMKV to extract a main feature, converts that feature with FFmpeg,
-and publishes the result atomically into a Jellyfin Movies directory. A durable
-SQLite job record is the source of truth. A small web interface is for
+AutoDisc is a single-user, single-optical-drive appliance. It accepts one disc
+at a time: DVDs use MakeMKV and FFmpeg to extract a main feature, while music
+CDs use cdparanoia to extract tracks and FFmpeg to encode lossless FLAC. It
+publishes movies and albums atomically into configured Jellyfin Movies and
+Music directories. A durable SQLite job record is the source of truth. A small web interface is for
 administration, status, history, and configuration—not a prerequisite for normal
 disc processing.
 
@@ -48,6 +49,7 @@ can make NVENC work on hardware without an NVENC block.
 | Updates | Server-Sent Events (SSE) for live job/dashboard updates; REST for commands | Simple one-way updates without WebSocket infrastructure. |
 | Persistence | SQLite using a maintained Node binding, WAL mode, foreign keys, and migrations | Durable local history/settings, no database service to administer. |
 | Disc extraction | MakeMKV command-line interface (`makemkvcon`) | Proven DVD extraction software; AutoDisc orchestrates it rather than implementing ripping. |
+| Audio CD extraction | cdparanoia and cd-discid | Secure digital audio track extraction, local table-of-contents identity, and MusicBrainz disc matching. |
 | Conversion | FFmpeg/ffprobe subprocesses | Proven conversion, probe, and hardware-encoder support. |
 | Device integration | Linux udev event subscription plus device-state verification | Event-driven detection avoids a busy polling loop; state verification handles noisy or missed events. |
 | Deployment | Native Node.js process managed by systemd | Direct access to host drive, media directories, tools, and GPU avoids container device passthrough complexity. |
@@ -69,10 +71,10 @@ Browser on trusted LAN
 autodisc.service (dedicated unprivileged system account)
   Fastify API + static UI
   SQLite job coordinator + single worker
-  udev listener -> MakeMKV -> FFmpeg/ffprobe
+  udev listener -> cdparanoia or MakeMKV -> FFmpeg/ffprobe
         |                     |                     |
         v                     v                     v
- /dev/sr0                 host GPU         Jellyfin Movies folder
+ /dev/sr0                 host GPU         Jellyfin Movies and Music folders
  /var/lib/autodisc       /dev/nvidia*       /srv/jellyfin/Movies
  /var/cache/autodisc
 ```
@@ -143,8 +145,10 @@ worker so a duplicate udev event cannot queue or start a second rip.
    and track the currently inserted medium. This prevents duplicate work from
    repeated events. Clear the inserted-media marker only when the drive is
    verified empty or a different medium is detected.
-4. Ask MakeMKV for disc information and title/stream metadata. Reject empty,
-   unreadable, and non-video media without creating a conversion job.
+4. Probe for audio tracks with cdparanoia. If present, fingerprint the table of
+   contents and use the audio workflow; otherwise ask MakeMKV for DVD
+   information and title/stream metadata. Reject empty, unreadable, and
+   unsupported media without creating a conversion job.
 5. Persist an accepted job before starting any rip. Keep the drive occupied
    until conversion, publication, cleanup, and configured eject behavior finish.
 6. After a disc is removed/ejected, wait for a new verified insertion. Never
@@ -172,6 +176,15 @@ single-user rename before or after publishing. A title with low confidence must
 not block an unattended conversion. Document that accurate automatic
 identification without disc metadata or an external catalog cannot be
 guaranteed.
+
+### Music CD policy
+
+Extract each audio track with cdparanoia into the temporary workspace, then
+encode to lossless FLAC with FFmpeg. Publish a complete, tagged album directory
+by same-filesystem rename into the separately configured Jellyfin Music path.
+MusicBrainz lookup is opt-in and uses the CD's MusicBrainz disc ID; if it is
+disabled or no match is available, use explicit generic artist, album, and
+track names. Never send disc IDs to MusicBrainz unless the setting is enabled.
 
 ## 5. Encoding, presets, and configuration
 
@@ -207,13 +220,14 @@ enabled safely.
 Persist validated settings in SQLite, with defaults and a schema version:
 
 - drive device and eject-on-success/eject-on-failure policy;
-- movies path, work path, minimum free-space reserve, and failed-job retention;
+- Jellyfin Movies and Music paths, work path, minimum free-space reserve, and failed-job retention;
 - output container, codec, quality, preset, audio/subtitle behavior;
 - encoder policy, NVIDIA preference, strict/best-effort mode, and GPU device
   access status;
 - metadata lookup enabled/disabled, selected provider, and credentials, if
   enabled. Lookup is disabled by default and can be enabled or configured later
   from the Settings page; no external lookup occurs before the user opts in.
+- music destination path and independent opt-in MusicBrainz lookup setting.
 - admin password/session configuration;
 - log level and retention.
 
@@ -231,6 +245,7 @@ transaction while MakeMKV or FFmpeg runs.
 ### `jobs`
 
 - `id` (UUID/text primary key)
+- `media_type` (`dvd` or `audio_cd`)
 - `status` (checked enum: inspecting, ripping, resolving_title, converting,
   validating, publishing, completed, failed, cancelled, interrupted, ignored)
 - `disc_fingerprint`, `disc_label`, `title`, `title_source`, `title_confidence`
@@ -547,15 +562,18 @@ restart-safe job records.
 **Gate:** Integration tests simulate crashes around final rename and database
 updates; no partial file is visible under a final movie name.
 
-### Milestone 3: Drive detection and MakeMKV
+### Milestone 3: Drive detection and disc extraction
 
 - Implement udev subscription, event debounce, drive-state inspection, media
-  fingerprinting, video-disc recognition, MakeMKV info/rip adapters, and eject.
+  fingerprinting, audio CDDA recognition/extraction with cdparanoia,
+  MusicBrainz lookup with local fallback, MakeMKV DVD info/rip adapters, and
+  eject.
 - Add a fake drive adapter for deterministic tests and a documented real-drive
   acceptance procedure.
 
-**Gate:** Repeated events cannot start duplicate jobs; data discs and empty
-drives are ignored; actual target-host insert/remove/eject test passes.
+**Gate:** Repeated events cannot start duplicate jobs; audio CDs produce
+track-complete albums, data discs and empty drives are ignored; actual
+target-host insert/remove/eject test passes.
 
 ### Milestone 4: FFmpeg conversion and GPU fallback
 
@@ -596,14 +614,18 @@ password setup, history pagination, and dashboard metric subscription behavior.
 - Run dependency/build/test checks and end-to-end hardware acceptance on the
   target host.
 
-**Gate:** From a clean host, follow docs to install; insert a video DVD, verify
-  correct title policy and actual encoder, confirm only a finished output enters
-  Jellyfin Movies, confirm work cleanup/eject, then repeat with an unreadable
-  disc, data disc, full disk, absent GPU, and restart during each major stage.
+**Gate:** From a clean host, follow docs to install; insert a video DVD and an
+audio CD, verify DVD title policy/actual encoder and music album/track tags,
+confirm finished outputs enter Jellyfin Movies or Music respectively, and
+confirm work cleanup/eject. Repeat with unreadable media, a data disc, full
+disk, absent GPU, and restart during each major stage.
 
 ### Release acceptance criteria
 
 - Exactly one disc job can run at a time; non-video media is ignored.
+- Audio CDs are ripped as individual lossless FLAC tracks, optionally tagged
+  through MusicBrainz, and atomically published as complete album folders to
+  the configured Jellyfin Music directory.
 - A completed output is probed, safely named, collision-safe, and atomically
   published.
 - Actual encoder is visible and persisted; no GPU/driver/NVENC issue prevents
@@ -631,8 +653,10 @@ restart acceptance still must run on the target Lubuntu server.
 
 ### Current implementation boundary
 
-The initial application includes the serial MakeMKV-to-FFmpeg workflow,
-best-effort NVENC with software fallback, atomic output publication, temporary
+The initial application includes serial DVD and music-CD workflows: MakeMKV to
+FFmpeg for DVDs and cdparanoia to FLAC for audio CDs. MusicBrainz lookup is
+optional and disabled by default. It includes best-effort NVENC with software
+fallback, atomic output publication, temporary
 file cleanup and startup reconciliation, udev monitoring, optional TMDB lookup,
 password setup, history/statistics, and dashboard-only resource sampling.
 Cancellation/retry controls, title editing, configurable disk reserves and

@@ -106,7 +106,9 @@ app.get("/api/health", async () => {
     ["ffmpeg", process.env.FFMPEG_COMMAND ?? "ffmpeg", "-version"],
     ["ffprobe", process.env.FFPROBE_COMMAND ?? "ffprobe", "-version"],
     ["makemkv", process.env.MAKEMKV_COMMAND ?? "makemkvcon", "--version"],
-    ["udevadm", "udevadm", "--version"]
+    ["udevadm", "udevadm", "--version"],
+    ["cdparanoia", process.env.CDPARANOIA_COMMAND ?? "cdparanoia", "-V"],
+    ["cd-discid", process.env.CD_DISCID_COMMAND ?? "cd-discid", "-V"]
   ] as const) {
     try {
       await runProcess(command, [versionArg], { timeoutMs: 3000 });
@@ -115,7 +117,13 @@ app.get("/api/health", async () => {
       checks[name] = false;
     }
   }
-  return { status: "ok", checks, ready: Object.values(checks).every(Boolean) };
+  const requiredChecks = Object.entries(checks).filter(([name]) => name !== "makemkv");
+  return {
+    status: "ok",
+    checks,
+    ready: requiredChecks.every(([, ready]) => ready),
+    dvdReady: checks.makemkv ?? false
+  };
 });
 
 app.get("/api/v1/status", async () => {
@@ -145,7 +153,7 @@ app.get<{ Querystring: { limit?: string } }>("/api/v1/history", async (request) 
 
 app.get<{ Params: { id: string } }>("/api/v1/history/:id", async (request, reply) => {
   const job = db.prepare(`
-    SELECT id, status, disc_label AS discLabel, title, output_path AS outputPath,
+    SELECT id, status, media_type AS mediaType, disc_label AS discLabel, title, output_path AS outputPath,
       encoder, output_bytes AS outputBytes, started_at AS startedAt,
       finished_at AS finishedAt, duration_seconds AS durationSeconds,
       conversion_seconds AS conversionSeconds,
@@ -197,6 +205,15 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "Movies path must exist and be readable and writable by AutoDisc" });
     }
     patch.moviesDir = body.moviesDir;
+  }
+  if ("musicDir" in body) {
+    if (!validAbsolutePath(body.musicDir)) return reply.code(400).send({ error: "Music path must be an absolute Linux path" });
+    try {
+      await validateDirectory(body.musicDir);
+    } catch {
+      return reply.code(400).send({ error: "Music path must exist and be readable and writable by AutoDisc" });
+    }
+    patch.musicDir = body.musicDir;
   }
   if ("workDir" in body) {
     if (!validAbsolutePath(body.workDir)) return reply.code(400).send({ error: "Work path must be an absolute Linux path" });
@@ -254,6 +271,10 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "Invalid metadata API key" });
     }
     patch.metadataApiKey = body.metadataApiKey;
+  }
+  if ("musicMetadataEnabled" in body) {
+    if (typeof body.musicMetadataEnabled !== "boolean") return reply.code(400).send({ error: "musicMetadataEnabled must be a boolean" });
+    patch.musicMetadataEnabled = body.musicMetadataEnabled;
   }
   if ("adminPassword" in body) {
     if (typeof body.adminPassword !== "string" || body.adminPassword.length < 12 || body.adminPassword.length > 256) {
@@ -340,7 +361,7 @@ async function systemSnapshot(signal: AbortSignal): Promise<Record<string, unkno
     memory = null;
   }
   const disks: Record<string, number | null> = {};
-  for (const [name, path] of [["work", settings.workDir], ["movies", settings.moviesDir]] as const) {
+  for (const [name, path] of [["work", settings.workDir], ["movies", settings.moviesDir], ["music", settings.musicDir]] as const) {
     try {
       const space = await statfs(path);
       disks[name] = Number(space.bavail) * Number(space.bsize);

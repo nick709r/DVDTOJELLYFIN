@@ -39,6 +39,8 @@ apt-get install -y \
   acl \
   build-essential \
   ca-certificates \
+  cd-discid \
+  cdparanoia \
   curl \
   eject \
   ffmpeg \
@@ -58,7 +60,7 @@ if [ "$NODE_MAJOR" -lt 22 ]; then
   exit 1
 fi
 
-for tool in ffmpeg ffprobe udevadm eject setfacl; do
+for tool in ffmpeg ffprobe udevadm eject setfacl cdparanoia cd-discid; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Required Linux tool '$tool' is not installed or not on PATH." >&2
     exit 1
@@ -66,9 +68,7 @@ for tool in ffmpeg ffprobe udevadm eject setfacl; do
 done
 
 if ! command -v makemkvcon >/dev/null 2>&1; then
-  echo "System dependencies are installed, but MakeMKV is required to rip DVDs." >&2
-  echo "Install MakeMKV using its official Linux distribution, then rerun this installer." >&2
-  exit 1
+  echo "WARNING: MakeMKV is not installed. DVD ripping will not work until it is installed." >&2
 fi
 
 getent group cdrom >/dev/null 2>&1 || {

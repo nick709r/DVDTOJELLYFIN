@@ -21,9 +21,11 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const initial = await app.inject({ method: "GET", url: "/api/v1/settings" });
     assert.equal(initial.statusCode, 200);
     assert.equal(initial.json().settings.adminPasswordConfigured, false);
+    assert.equal(initial.json().settings.musicMetadataEnabled, false);
     assert.equal("adminPasswordHash" in initial.json().settings, false);
 
     jobs.addJob("active-job-one", "Disc One");
+    assert.equal(jobs.activeJob().mediaType, "dvd");
     assert.throws(() => jobs.addJob("active-job-two", "Disc Two"));
     jobs.finishJob("active-job-one", "failed", "expected test failure");
     jobs.addJob("active-job-two", "Disc Two");
@@ -36,6 +38,19 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(jobs.lastDiscFingerprint(), "test-disc-fingerprint");
     jobs.clearInsertedDisc();
     assert.equal(jobs.lastDiscFingerprint(), null);
+    jobs.addJob("music-job", "Audio CD test", "audio-disc-fingerprint", "audio_cd");
+    jobs.finishJob("music-job", "completed", null, "audio-disc-fingerprint");
+    assert.equal(jobs.listJobs(1)[0].mediaType, "audio_cd");
+    assert.equal(jobs.lastDiscFingerprint(), "audio-disc-fingerprint");
+
+    const setMusicSettings = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { musicMetadataEnabled: true }
+    });
+    assert.equal(setMusicSettings.statusCode, 200);
+    assert.equal(setMusicSettings.json().settings.musicDir, "/srv/jellyfin/Music");
+    assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
 
     const setPassword = await app.inject({
       method: "PUT",

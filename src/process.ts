@@ -8,6 +8,7 @@ export interface ProcessResult {
 interface ProcessOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  cwd?: string;
   onStdoutLine?: (line: string) => void;
 }
 
@@ -36,7 +37,8 @@ export function runProcess(
 
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env
+      env: process.env,
+      ...(options.cwd ? { cwd: options.cwd } : {})
     });
     let stdout = "";
     let stderr = "";

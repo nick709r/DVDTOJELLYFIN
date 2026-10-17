@@ -81,7 +81,8 @@ async function monitor(signal: AbortSignal): Promise<void> {
             clearInsertedDisc();
             discRemoved();
           }
-          if (path === configuredDevice && (action === "add" || action === "change")) scheduleInsert(signal);
+          if ((path === configuredDevice || path === `${configuredDevice}1`) &&
+            (action === "add" || action === "change")) scheduleInsert(signal);
           boundary = eventText.indexOf("\n\n");
         }
       });

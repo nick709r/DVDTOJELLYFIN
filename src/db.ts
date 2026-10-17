@@ -5,6 +5,7 @@ import type { AppSettings, Job, JobStatus } from "./model.js";
 
 const defaultSettings: AppSettings = {
   moviesDir: process.env.MOVIES_DIR ?? "/srv/jellyfin/Movies",
+  musicDir: process.env.MUSIC_DIR ?? "/srv/jellyfin/Music",
   workDir: process.env.WORK_DIR ?? "/var/cache/autodisc",
   opticalDevice: process.env.OPTICAL_DEVICE ?? "/dev/sr0",
   format: "mp4",
@@ -15,6 +16,7 @@ const defaultSettings: AppSettings = {
   metadataEnabled: false,
   metadataProvider: "tmdb",
   metadataApiKey: "",
+  musicMetadataEnabled: false,
   adminPasswordSalt: "",
   adminPasswordHash: "",
   logLevel: "info"
@@ -40,6 +42,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
+    media_type TEXT NOT NULL DEFAULT 'dvd',
     disc_fingerprint TEXT,
     disc_label TEXT,
     title TEXT,
@@ -102,6 +105,12 @@ db.exec(`
 `);
 db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)")
   .run(new Date().toISOString());
+const columnsAfterMigrationThree = db.pragma("table_info(jobs)") as Array<{ name: string }>;
+if (!columnsAfterMigrationThree.some((column) => column.name === "media_type")) {
+  db.exec("ALTER TABLE jobs ADD COLUMN media_type TEXT NOT NULL DEFAULT 'dvd'");
+}
+db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)")
+  .run(new Date().toISOString());
 
 const interrupted = db.prepare(`
   UPDATE jobs SET status = 'interrupted', error = 'Service restarted while this job was active',
@@ -144,10 +153,15 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   return getSettings();
 }
 
-export function addJob(id: string, discLabel: string | null, fingerprint: string | null = null): void {
-  db.prepare("INSERT INTO jobs (id, status, disc_label, disc_fingerprint, started_at) VALUES (?, 'inspecting', ?, ?, ?)")
-    .run(id, discLabel, fingerprint, new Date().toISOString());
-  addEvent(id, "inspecting", "info", "Video disc accepted");
+export function addJob(
+  id: string,
+  discLabel: string | null,
+  fingerprint: string | null = null,
+  mediaType: Job["mediaType"] = "dvd"
+): void {
+  db.prepare("INSERT INTO jobs (id, status, media_type, disc_label, disc_fingerprint, started_at) VALUES (?, 'inspecting', ?, ?, ?, ?)")
+    .run(id, mediaType, discLabel, fingerprint, new Date().toISOString());
+  addEvent(id, "inspecting", "info", mediaType === "audio_cd" ? "Audio CD accepted" : "Video DVD accepted");
 }
 
 export function setJobStatus(id: string, status: JobStatus, message: string): void {
@@ -201,12 +215,12 @@ export function finishJob(
   finish();
 }
 
-export function interruptedOutputs(): Array<{ id: string; outputPath: string }> {
+export function interruptedOutputs(): Array<{ id: string; outputPath: string; mediaType: Job["mediaType"] }> {
   return db.prepare(`
-    SELECT id, output_path AS outputPath FROM jobs
+    SELECT id, output_path AS outputPath, media_type AS mediaType FROM jobs
     WHERE status = 'interrupted' AND output_path IS NOT NULL
       AND error = 'Service restarted while this job was active'
-  `).all() as Array<{ id: string; outputPath: string }>;
+  `).all() as Array<{ id: string; outputPath: string; mediaType: Job["mediaType"] }>;
 }
 
 export function recoverPublishedJob(id: string, outputBytes: number): void {
@@ -223,7 +237,7 @@ export function recoverPublishedJob(id: string, outputBytes: number): void {
       db.prepare("UPDATE drive_state SET last_fingerprint = ?, processed_at = ? WHERE id = 1")
         .run(fingerprint.value, now);
     }
-    addEvent(id, "completed", "info", "Recovered a validated movie published before service restart");
+    addEvent(id, "completed", "info", "Recovered validated media published before service restart");
   });
   recover();
 }
@@ -250,7 +264,7 @@ export function addJobWarning(id: string, message: string): void {
 
 export function activeJob(): Job | null {
   return db.prepare(`
-    SELECT id, status, disc_label AS discLabel, title, output_path AS outputPath,
+    SELECT id, status, media_type AS mediaType, disc_label AS discLabel, title, output_path AS outputPath,
       encoder, output_bytes AS outputBytes, started_at AS startedAt,
       finished_at AS finishedAt, duration_seconds AS durationSeconds,
       conversion_seconds AS conversionSeconds,
@@ -262,7 +276,7 @@ export function activeJob(): Job | null {
 
 export function listJobs(limit = 100): Job[] {
   return db.prepare(`
-    SELECT id, status, disc_label AS discLabel, title, output_path AS outputPath,
+    SELECT id, status, media_type AS mediaType, disc_label AS discLabel, title, output_path AS outputPath,
       encoder, output_bytes AS outputBytes, started_at AS startedAt,
       finished_at AS finishedAt, duration_seconds AS durationSeconds,
       conversion_seconds AS conversionSeconds,

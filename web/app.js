@@ -52,10 +52,11 @@ function renderJob(job, fallbackStatus = "idle") {
   const badge = $("#job-badge");
   badge.textContent = status === "publishing" ? "Moving" : status === "failed" ? "Error" : status;
   badge.className = `badge ${status}`;
-  $("#job-title").textContent = job?.title || job?.discLabel || (status === "idle" ? "Waiting for a DVD" : status === "completed" ? "DVD completed" : status === "failed" ? "DVD processing error" : "Checking inserted disc…");
+  const isMusic = job?.mediaType === "audio_cd";
+  $("#job-title").textContent = job?.title || job?.discLabel || (status === "idle" ? "Waiting for a disc" : status === "completed" ? "Disc completed" : status === "failed" ? "Disc processing error" : "Checking inserted disc…");
   $("#job-detail").textContent = job?.error || (job?.outputPath
     ? job.outputPath
-    : status === "idle" ? "Insert a video DVD to begin." : status === "inspecting" ? "Checking disc contents and title information." : status === "completed" ? "Finished movie is ready in Jellyfin Movies." : status === "failed" ? "Check conversion history and service logs for details." : `Processing stage: ${status === "publishing" ? "moving" : status}`);
+    : status === "idle" ? "Insert a video DVD or music CD to begin." : status === "inspecting" ? "Checking disc contents and title information." : status === "completed" ? (isMusic ? "Finished album is ready in Jellyfin Music." : "Finished movie is ready in Jellyfin Movies.") : status === "failed" ? "Check conversion history and service logs for details." : `Processing stage: ${status === "publishing" ? "moving" : status}`);
   const progress = Number(job?.progress || 0);
   $("#progress-bar").style.width = `${Math.max(0, Math.min(100, progress))}%`;
   $("#progress-label").textContent = status === "idle" ? "Waiting" : `${Math.round(progress)}%`;
@@ -75,7 +76,8 @@ function renderJobList(target, jobs) {
     const when = new Date(job.startedAt).toLocaleString();
     const size = job.outputBytes ? formatBytes(job.outputBytes) : "—";
     const duration = formatDuration(job.durationSeconds);
-    return `<div class="list-row"><div class="list-title">${title}<span class="list-sub">${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
+    const type = job.mediaType === "audio_cd" ? "Music CD" : "DVD";
+    return `<div class="list-row"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
   }).join("");
 }
 
@@ -92,7 +94,8 @@ async function refreshDashboard() {
   $("#success-count").textContent = data.stats.successful ?? 0;
   $("#failure-count").textContent = data.stats.failures ?? 0;
   $("#average-duration").textContent = formatDuration(data.stats.averageSeconds);
-  renderJob(data.active, data.state);
+  const lastFinished = ["completed", "failed"].includes(data.state) ? data.recent[0] : null;
+  renderJob(data.active || lastFinished, data.state);
   renderJobList($("#recent-list"), data.recent);
   await refreshChart(state.statsRange);
 }
@@ -129,11 +132,12 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["moviesDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel"]) {
+  for (const key of ["moviesDir", "musicDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
+  form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
   $("#metadata-key-status").textContent = data.settings.metadataApiKeyConfigured
     ? "A metadata API key is saved. It is never displayed."
     : "No metadata API key is saved; lookup will use the disc label until one is configured.";
@@ -167,6 +171,7 @@ function renderMetrics(snapshot) {
   }
   $("#work-free").textContent = formatBytes(snapshot.freeDiskBytes?.work);
   $("#movies-free").textContent = formatBytes(snapshot.freeDiskBytes?.movies);
+  $("#music-free").textContent = formatBytes(snapshot.freeDiskBytes?.music);
   if (snapshot.job) renderJob(snapshot.job);
 }
 
@@ -223,6 +228,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
   const values = new FormData(form);
   const patch = {
     moviesDir: values.get("moviesDir"),
+    musicDir: values.get("musicDir"),
     workDir: values.get("workDir"),
     opticalDevice: values.get("opticalDevice"),
     format: values.get("format"),
@@ -231,6 +237,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     encoder: values.get("encoder"),
     autoEject: form.elements.namedItem("autoEject").checked,
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
+    musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
     metadataProvider: "tmdb",
     logLevel: values.get("logLevel")
   };
@@ -282,14 +289,20 @@ $("#logout").addEventListener("click", async () => {
 async function initialize() {
   try {
     const health = await api("/api/health");
+    const notices = [];
     if (!health.ready) {
-      $("#warning").textContent = `Service needs attention: ${Object.entries(health.checks).filter(([, ready]) => !ready).map(([name]) => name).join(", ")} unavailable. Check systemd logs and install required host tools.`;
-      $("#warning").classList.remove("hidden");
+      notices.push(`Service needs attention: ${Object.entries(health.checks).filter(([name, ready]) => name !== "makemkv" && !ready).map(([name]) => name).join(", ")} unavailable. Check systemd logs and install required host tools.`);
+    }
+    if (!health.dvdReady) {
+      notices.push("DVD ripping is unavailable until MakeMKV is installed; music CD ripping is unaffected.");
     }
     const status = await api("/api/v1/status");
     if (!status.passwordConfigured) {
       $("#auth-state").textContent = "Password not configured";
-      $("#warning").textContent = "Admin password is unset. The UI is unauthenticated; keep it on localhost or a trusted LAN and configure a password in Settings.";
+      notices.push("Admin password is unset. The UI is unauthenticated; keep it on localhost or a trusted LAN and configure a password in Settings.");
+    }
+    if (notices.length) {
+      $("#warning").textContent = notices.join(" ");
       $("#warning").classList.remove("hidden");
     }
     await refreshDashboard();

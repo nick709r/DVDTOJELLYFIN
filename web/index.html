@@ -19,17 +19,17 @@
     </aside>
     <main>
       <header class="topbar">
-        <div><p class="eyebrow">DVD INGESTION APPLIANCE</p><h1 id="page-title">Dashboard</h1></div>
+        <div><p class="eyebrow">DISC INGESTION APPLIANCE</p><h1 id="page-title">Dashboard</h1></div>
         <div class="top-actions"><span id="auth-state" class="muted"></span><button id="logout" class="button secondary hidden">Log out</button></div>
       </header>
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="page-dashboard" class="page">
         <div id="warning" class="warning hidden"></div>
         <div class="stat-grid">
-          <article class="card stat"><span class="muted">DVDs processed</span><strong id="total-count">0</strong></article>
+          <article class="card stat"><span class="muted">Discs processed</span><strong id="total-count">0</strong></article>
           <article class="card stat"><span class="muted">Successful</span><strong id="success-count">0</strong></article>
           <article class="card stat"><span class="muted">Failures</span><strong id="failure-count">0</strong></article>
-          <article class="card stat"><span class="muted">Average conversion</span><strong id="average-duration">—</strong></article>
+          <article class="card stat"><span class="muted">Average processing</span><strong id="average-duration">—</strong></article>
         </div>
         <div class="dashboard-grid">
           <article class="card current-card">
@@ -48,6 +48,7 @@
             <div class="resource"><span>GPU</span><div class="mini-track"><i id="gpu-bar"></i></div><b id="gpu-value">Unavailable</b></div>
             <div class="resource"><span>Work free</span><b id="work-free">—</b></div>
             <div class="resource"><span>Movies free</span><b id="movies-free">—</b></div>
+            <div class="resource"><span>Music free</span><b id="music-free">—</b></div>
             <p class="hint">Metrics pause when this dashboard is closed.</p>
           </article>
         </div>
@@ -64,6 +65,7 @@
         <form id="settings-form" class="settings-layout">
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
             <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
+            <label>Jellyfin Music folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
             <div class="form-row"><label>Output format<select name="format"><option value="mp4">MP4</option><option value="mkv">MKV</option></select></label><label>Quality <small>(18 = higher quality)</small><input name="quality" type="number" min="18" max="30" step="1"></label></div>
@@ -80,6 +82,10 @@
             <label class="check"><input name="clearMetadataKey" type="checkbox"> Clear saved API key</label>
             <p id="metadata-key-status" class="inline-info"></p>
             <p class="hint">Lookup is off by default. Disc labels are sent to TMDB only when enabled and a key is configured.</p>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">MUSIC CDS</p><h2>Album details</h2>
+            <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
+            <p class="hint">Disabled by default. When enabled, AutoDisc sends the CD's disc ID to MusicBrainz. Without a match, tracks are saved with generic names. Music CDs are stored as lossless FLAC albums.</p>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>

@@ -9,6 +9,8 @@ import { ejectDisc, inspectDisc, ripTitle, safeTitle } from "./media.js";
 import { resolveTitle } from "./title.js";
 import { setRuntimeStatus } from "./runtime-status.js";
 import { log } from "./logger.js";
+import { inspectAudioCd } from "./audio-cd.js";
+import { processAudioCd } from "./music-pipeline.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -41,6 +43,8 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
   if (activeJob()) return true;
   const settings = getSettings();
   const devicePath = settings.opticalDevice;
+  const audioDisc = await inspectAudioCd(devicePath, signal);
+  if (audioDisc) return processAudioCd(devicePath, audioDisc, signal);
   const makemkvDevice = `dev:${devicePath}`;
   let info;
   try {

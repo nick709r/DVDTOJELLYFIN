@@ -14,6 +14,7 @@ export type EncodingPreset = "ultrafast" | "veryfast" | "medium";
 
 export interface AppSettings {
   moviesDir: string;
+  musicDir: string;
   workDir: string;
   opticalDevice: string;
   format: OutputFormat;
@@ -24,6 +25,7 @@ export interface AppSettings {
   metadataEnabled: boolean;
   metadataProvider: "tmdb";
   metadataApiKey: string;
+  musicMetadataEnabled: boolean;
   adminPasswordSalt: string;
   adminPasswordHash: string;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -32,6 +34,7 @@ export interface AppSettings {
 export interface Job {
   id: string;
   status: JobStatus;
+  mediaType: "dvd" | "audio_cd";
   discLabel: string | null;
   title: string | null;
   outputPath: string | null;
