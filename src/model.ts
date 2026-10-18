@@ -27,6 +27,7 @@ export interface AppSettings {
   metadataProvider: "tmdb";
   metadataApiKey: string;
   musicMetadataEnabled: boolean;
+  musicBrainzContactEmail: string;
   lidarrEnabled: boolean;
   lidarrUrl: string;
   lidarrApiKey: string;

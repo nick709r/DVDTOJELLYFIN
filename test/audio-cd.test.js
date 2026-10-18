@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAudioTrackNumbers } from "../dist/audio-cd.js";
+import { parseAudioTrackNumbers, parseRippedAudioTrackNumber } from "../dist/audio-cd.js";
+
+test("audio extraction ignores cdparanoia pregap track 00", () => {
+  assert.equal(parseRippedAudioTrackNumber("track00.cdda.wav"), null);
+  assert.equal(parseRippedAudioTrackNumber("track01.cdda.wav"), 1);
+  assert.equal(parseRippedAudioTrackNumber("track14.cdda.wav"), 14);
+  assert.equal(parseRippedAudioTrackNumber("other-file.wav"), null);
+});
 
 test("audio CD TOC parsing returns unique, ordered audio tracks", () => {
   const output = [

@@ -7,6 +7,16 @@ Movies and lossless FLAC albums to Music.
 
 ## Release history
 
+### Version 1.5.2
+
+- Ignore `track00.cdda.wav` pregap output from cdparanoia so it cannot cause an
+  audio-track count mismatch or be imported as a numbered album track.
+- Check `cd-discid` using its supported `--version` option so the dashboard
+  readiness check does not report the installed tool as missing.
+- Add an optional MusicBrainz contact email setting. Read-only MusicBrainz
+  lookups do not require an API key; AutoDisc includes the email in its
+  identifying User-Agent when supplied.
+
 ### Version 1.5.1
 
 - Add a Settings check that tests the configured Movies, Music, work, optional
@@ -55,7 +65,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.5.1. No version
+These are planned features only and are not included in AutoDisc 1.5.2. No version
 2.0 release date has been announced.
 
 ## Design and behavior
@@ -274,7 +284,9 @@ Conversion history and statistics are stored in
 SQLite at `/var/lib/autodisc/autodisc.sqlite`.
 
 Version 1.5 adds active-job cancellation and history-entry removal. Version
-1.5.1 adds path-permission checks and fixes audio-CD TOC detection. Removing a
+1.5.1 adds path-permission checks and improves audio-CD TOC detection. Version
+1.5.2 skips cdparanoia's pregap track 00 and uses the correct `cd-discid`
+version-check option. Removing a
 history entry deletes its database record and event timeline only; it never
 deletes the associated media file. Test disc insertion/removal, cancellation,
 interrupted jobs, disk-full handling, permissions, cleanup, and eject on the

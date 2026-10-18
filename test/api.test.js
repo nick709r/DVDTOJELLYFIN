@@ -24,6 +24,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.adminPasswordConfigured, false);
     assert.equal(initial.json().settings.musicMetadataEnabled, false);
     assert.equal(initial.json().settings.lidarrEnabled, false);
+    assert.equal(initial.json().settings.musicBrainzContactEmail, "");
     assert.equal("adminPasswordHash" in initial.json().settings, false);
     assert.equal("lidarrApiKey" in initial.json().settings, false);
 
@@ -124,11 +125,16 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const setMusicSettings = await app.inject({
       method: "PUT",
       url: "/api/v1/settings",
-      payload: { musicMetadataEnabled: true, lidarrApiKey: "lidarr-test-secret" }
+      payload: {
+        musicMetadataEnabled: true,
+        musicBrainzContactEmail: "music-admin@example.com",
+        lidarrApiKey: "lidarr-test-secret"
+      }
     });
     assert.equal(setMusicSettings.statusCode, 200);
     assert.equal(setMusicSettings.json().settings.musicDir, "/srv/jellyfin/Music");
     assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
+    assert.equal(setMusicSettings.json().settings.musicBrainzContactEmail, "music-admin@example.com");
     assert.equal(setMusicSettings.json().settings.lidarrApiKeyConfigured, true);
     assert.equal("lidarrApiKey" in setMusicSettings.json().settings, false);
 
@@ -222,6 +228,14 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: { lidarrUrl: "ftp://localhost:8686" }
     });
     assert.equal(invalidLidarrUrl.statusCode, 400);
+
+    const invalidMusicBrainzEmail = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { cookie },
+      payload: { musicBrainzContactEmail: "not-an-email" }
+    });
+    assert.equal(invalidMusicBrainzEmail.statusCode, 400);
   } finally {
     await app.close();
     db.close();

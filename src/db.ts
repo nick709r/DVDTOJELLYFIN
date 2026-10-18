@@ -17,6 +17,7 @@ const defaultSettings: AppSettings = {
   metadataProvider: "tmdb",
   metadataApiKey: "",
   musicMetadataEnabled: false,
+  musicBrainzContactEmail: "",
   lidarrEnabled: false,
   lidarrUrl: process.env.LIDARR_URL ?? "http://127.0.0.1:8686",
   lidarrApiKey: process.env.LIDARR_API_KEY ?? "",

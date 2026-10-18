@@ -92,7 +92,8 @@ export function parseMusicBrainzRelease(
 export async function resolveMusicMetadata(
   disc: AudioDisc,
   enabled: boolean,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  contactEmail = ""
 ): Promise<MusicAlbumMetadata> {
   const fallback = fallbackMetadata(disc.trackNumbers);
   if (!enabled || !disc.discId) return fallback;
@@ -102,8 +103,11 @@ export async function resolveMusicMetadata(
     url.searchParams.set("inc", "artists+recordings");
     url.searchParams.set("fmt", "json");
     const timeout = AbortSignal.timeout(10_000);
+    const contact = contactEmail.trim();
     const response = await fetch(url, {
-      headers: { "User-Agent": "AutoDisc/1.5.1 (https://github.com/nick709r/DVDTOJELLYFIN)" },
+      headers: {
+        "User-Agent": `AutoDisc/1.5.2 (https://github.com/nick709r/DVDTOJELLYFIN${contact ? `; contact: ${contact}` : ""})`
+      },
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout
     });
     if (!response.ok) throw new Error(`MusicBrainz returned HTTP ${response.status}`);

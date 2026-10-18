@@ -114,7 +114,7 @@ app.get("/api/health", async () => {
     ["makemkv", process.env.MAKEMKV_COMMAND ?? "makemkvcon", "--version"],
     ["udevadm", "udevadm", "--version"],
     ["cdparanoia", process.env.CDPARANOIA_COMMAND ?? "cdparanoia", "-V"],
-    ["cd-discid", process.env.CD_DISCID_COMMAND ?? "cd-discid", "-V"]
+    ["cd-discid", process.env.CD_DISCID_COMMAND ?? "cd-discid", "--version"]
   ] as const) {
     try {
       await runProcess(command, [versionArg], { timeoutMs: 3000 });
@@ -482,6 +482,14 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if ("musicMetadataEnabled" in body) {
     if (typeof body.musicMetadataEnabled !== "boolean") return reply.code(400).send({ error: "musicMetadataEnabled must be a boolean" });
     patch.musicMetadataEnabled = body.musicMetadataEnabled;
+  }
+  if ("musicBrainzContactEmail" in body) {
+    if (typeof body.musicBrainzContactEmail !== "string" || body.musicBrainzContactEmail.length > 254 ||
+      (body.musicBrainzContactEmail !== "" &&
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.musicBrainzContactEmail))) {
+      return reply.code(400).send({ error: "MusicBrainz contact email must be a valid email address or blank" });
+    }
+    patch.musicBrainzContactEmail = body.musicBrainzContactEmail.trim();
   }
   if ("lidarrEnabled" in body) {
     if (typeof body.lidarrEnabled !== "boolean") return reply.code(400).send({ error: "lidarrEnabled must be a boolean" });

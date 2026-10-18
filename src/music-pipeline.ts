@@ -81,7 +81,12 @@ export async function processAudioCd(
       throw new Error(`Audio extraction returned tracks [${ripped}], expected [${detected}]`);
     }
 
-    const metadata = await resolveMusicMetadata(disc, settings.musicMetadataEnabled, signal);
+    const metadata = await resolveMusicMetadata(
+      disc,
+      settings.musicMetadataEnabled,
+      signal,
+      settings.musicBrainzContactEmail
+    );
     if (signal?.aborted) throw new Error("Audio CD processing cancelled");
     const albumFolder = safeTitle(`${metadata.artist} - ${metadata.album}${metadata.year ? ` (${metadata.year})` : ""}`);
     const albumTitle = metadata.album;

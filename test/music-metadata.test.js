@@ -18,6 +18,31 @@ test("music metadata stays offline unless explicitly enabled", async () => {
   ]);
 });
 
+test("MusicBrainz lookup identifies AutoDisc and includes the optional contact email", async () => {
+  const disc = {
+    discId: "01234567",
+    fingerprint: "test-fingerprint",
+    trackNumbers: [1]
+  };
+  const originalFetch = globalThis.fetch;
+  let userAgent = "";
+  globalThis.fetch = async (_input, init) => {
+    userAgent = new Headers(init?.headers).get("User-Agent") ?? "";
+    return new Response(JSON.stringify({ releases: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
+  try {
+    const metadata = await resolveMusicMetadata(disc, true, undefined, "music-admin@example.com");
+    assert.equal(metadata.source, "offline");
+    assert.match(userAgent, /^AutoDisc\/1\.5\.2 /);
+    assert.match(userAgent, /contact: music-admin@example\.com/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("MusicBrainz release parsing selects the medium for the matching disc ID", () => {
   const disc = {
     discId: "01234567",

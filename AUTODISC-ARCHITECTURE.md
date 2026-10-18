@@ -192,8 +192,10 @@ semantics, waits for the import command, and leaves the source intact if Lidarr
 cannot match or import it. Lidarr and AutoDisc must see the same incoming path,
 and the Jellyfin Music directory must be the Lidarr-managed library root.
 Lidarr mode requires an existing matching artist/album in Lidarr and enabled
-MusicBrainz lookup so metadata can be used for matching. Never send disc IDs to
-MusicBrainz unless the setting is enabled.
+MusicBrainz lookup so metadata can be used for matching. Read-only MusicBrainz
+Web Service queries do not require an API key. AutoDisc identifies itself with
+an application/version User-Agent and can include an operator-provided contact
+email. Never send disc IDs to MusicBrainz unless the setting is enabled.
 
 ## 5. Encoding, presets, and configuration
 

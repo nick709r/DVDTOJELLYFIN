@@ -98,6 +98,8 @@
           </article>
           <article class="card settings-card"><p class="eyebrow">MUSIC CDS</p><h2>Album details</h2>
             <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
+            <label>Contact email for MusicBrainz<input name="musicBrainzContactEmail" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com (optional)"></label>
+            <p class="hint">MusicBrainz read-only lookups do not require an API key. AutoDisc identifies itself with a User-Agent; adding a contact email helps MusicBrainz reach you if there is an issue.</p>
             <p class="hint">MusicBrainz provides album and track names for the FLAC tags and filenames. Lidarr needs these details to identify and categorize albums.</p>
           </article>
           <article class="card settings-card"><p class="eyebrow">LIBRARY MANAGEMENT</p><h2>Lidarr import</h2>

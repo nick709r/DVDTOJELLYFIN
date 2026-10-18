@@ -144,7 +144,7 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["moviesDir", "musicDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir"]) {
+  for (const key of ["moviesDir", "musicDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
@@ -379,6 +379,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     autoEject: form.elements.namedItem("autoEject").checked,
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
+    musicBrainzContactEmail: values.get("musicBrainzContactEmail"),
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     lidarrUrl: values.get("lidarrUrl"),
     lidarrImportDir: values.get("lidarrImportDir"),

@@ -20,6 +20,13 @@ export interface AudioTrackFile {
   bytes: number;
 }
 
+export function parseRippedAudioTrackNumber(filename: string): number | null {
+  const match = /^track(\d+)\.cdda\.wav$/i.exec(filename);
+  if (!match) return null;
+  const number = Number(match[1]);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
 export function parseAudioTrackNumbers(output: string): number[] {
   return [...new Set(output.split(/\r?\n/)
     .map((line) => audioTrackNumber(line))
@@ -90,10 +97,13 @@ export async function ripAudioTracks(
     ...(signal ? { signal } : {})
   });
   const entries = await readdir(outputDir);
+  if (entries.some((name) => /^track00\.cdda\.wav$/i.test(name))) {
+    log("info", "audio-cd", "Ignoring cdparanoia track 00 pregap file; disc TOC tracks start at 1");
+  }
   const tracks = await Promise.all(entries
     .map((name) => {
-      const match = /^track(\d+)\.cdda\.wav$/i.exec(name);
-      return match ? { number: Number(match[1]), path: join(outputDir, name) } : null;
+      const number = parseRippedAudioTrackNumber(name);
+      return number === null ? null : { number, path: join(outputDir, name) };
     })
     .filter((track): track is { number: number; path: string } => track !== null)
     .map(async (track) => ({ ...track, bytes: (await stat(track.path)).size })));
