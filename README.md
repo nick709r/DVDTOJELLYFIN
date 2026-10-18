@@ -16,8 +16,6 @@ The next major version is planned to add:
 - TV show ripping and Jellyfin TV library organization.
 - Radarr integration for managing imported movies.
 - Sonarr integration for managing imported TV episodes.
-- Dashboard controls to stop/cancel an active disc conversion or ripping job from the web UI.
-- The ability to remove entries from the conversion/history list.
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
