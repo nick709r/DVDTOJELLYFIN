@@ -159,11 +159,11 @@ worker so a duplicate udev event cannot queue or start a second rip.
    verified empty or a different medium is detected.
 4. Probe for audio tracks with cdparanoia. If present, fingerprint the table of
    contents and use the audio workflow; otherwise ask MakeMKV for DVD
-   information and title/stream metadata. An empty MakeMKV response without a
-   disc label is not considered handled: retry recognition so a startup probe
-   against an unready/empty drive cannot latch out the later insertion. A
-   labeled response with no video titles is recognized as non-video and
-   ignored without creating a conversion job.
+   information and title/stream metadata. A MakeMKV response with no video
+   titles is never considered handled, even if it includes a disc label: retry
+   recognition so an early probe against media that is still becoming ready
+   cannot latch out later detection. No conversion job is created until a
+   video title or audio CD is recognized.
 5. Persist an accepted job before starting any rip. Keep the drive occupied
    until conversion, publication, cleanup, and configured eject behavior finish.
 6. After a disc is removed/ejected, wait for a new verified insertion. Never

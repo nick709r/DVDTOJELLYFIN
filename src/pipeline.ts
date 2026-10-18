@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { activeJob, addEvent, addJob, addJobWarning, finishJob, getSettings, lastDiscFingerprint, setJobStatus, updateJob } from "./db.js";
 import { events, notifyStatus } from "./events.js";
 import { convert } from "./encoding.js";
-import { ejectDisc, inspectDisc, isRecognizedNonVideoDisc, ripTitle, safeTitle } from "./media.js";
+import { ejectDisc, inspectDisc, ripTitle, safeTitle, selectMainFeature } from "./media.js";
 import { resolveTitle } from "./title.js";
 import { setRuntimeStatus } from "./runtime-status.js";
 import { log } from "./logger.js";
@@ -61,13 +61,11 @@ async function processInsertedDiscCore(signal: AbortSignal): Promise<boolean> {
     return false;
   }
   if (isUpdatePending()) return false;
-  const selectedTitle = info.titles.sort((left, right) => right.durationSeconds - left.durationSeconds)[0];
+  const selectedTitle = selectMainFeature(info.titles);
   if (!selectedTitle) {
-    if (isRecognizedNonVideoDisc(info)) {
-      log("info", "disc", "Ignoring recognized media with no video titles");
-      return true;
-    }
-    log("info", "disc", "No video titles or disc label recognized; the inserted disc will be retried");
+    log("info", "disc", "No video titles recognized; the inserted disc will be retried", {
+      discLabel: info.label || undefined
+    });
     return false;
   }
   const fingerprint = createHash("sha256").update(JSON.stringify({

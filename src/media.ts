@@ -21,8 +21,8 @@ export interface DiscInfo {
   titles: DiscTitle[];
 }
 
-export function isRecognizedNonVideoDisc(info: DiscInfo): boolean {
-  return info.titles.length === 0 && info.label.trim().length > 0;
+export function selectMainFeature(titles: DiscTitle[]): DiscTitle | undefined {
+  return [...titles].sort((left, right) => right.durationSeconds - left.durationSeconds)[0];
 }
 
 export async function inspectDisc(device: string, signal?: AbortSignal): Promise<DiscInfo> {

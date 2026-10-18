@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isRecognizedNonVideoDisc, safeTitle } from "../dist/media.js";
+import { safeTitle, selectMainFeature } from "../dist/media.js";
 
 test("safeTitle removes unsafe path characters without damaging a dotted movie title", () => {
   assert.equal(safeTitle("../The.Matrix.1999.mkv"), "The.Matrix.1999");
@@ -8,11 +8,12 @@ test("safeTitle removes unsafe path characters without damaging a dotted movie t
   assert.match(safeTitle("  "), /^Unknown Title \d{4}-\d{2}-\d{2}$/);
 });
 
-test("unlabeled empty MakeMKV responses are retryable but named non-video media is ignored", () => {
-  assert.equal(isRecognizedNonVideoDisc({ label: "", titles: [] }), false);
-  assert.equal(isRecognizedNonVideoDisc({ label: "DATA_DISC", titles: [] }), true);
-  assert.equal(isRecognizedNonVideoDisc({
-    label: "MOVIE_DISC",
-    titles: [{ id: 1, name: "Feature", durationSeconds: 7200 }]
-  }), false);
+test("empty MakeMKV title lists remain retryable even when a disc label is present", () => {
+  assert.equal(selectMainFeature([]), undefined);
+  const titles = [
+    { id: 1, name: "Extras", durationSeconds: 600 },
+    { id: 2, name: "Feature", durationSeconds: 7200 }
+  ];
+  assert.deepEqual(selectMainFeature(titles), titles[1]);
+  assert.equal(titles[0].id, 1);
 });

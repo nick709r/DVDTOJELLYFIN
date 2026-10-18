@@ -94,7 +94,7 @@ export function parseMusicBrainzRelease(
 function musicBrainzHeaders(contactEmail: string): HeadersInit {
   const contact = contactEmail.trim();
   return {
-    "User-Agent": `AutoDisc/1.6.4 (https://github.com/nick709r/DVDTOJELLYFIN${contact ? `; contact: ${contact}` : ""})`
+    "User-Agent": `AutoDisc/1.6.5 (https://github.com/nick709r/DVDTOJELLYFIN${contact ? `; contact: ${contact}` : ""})`
   };
 }
 

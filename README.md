@@ -7,6 +7,13 @@ Movies and lossless FLAC albums to Music.
 
 ## Release history
 
+### Version 1.6.5
+
+- Fix the remaining disc-detection latch for DVDs and audio CDs: a MakeMKV
+  response with no video titles is retried even when it contains a disc label.
+  This prevents an early probe while media is still becoming readable from
+  suppressing later recognition until Settings are saved or the service restarts.
+
 ### Version 1.6.4
 
 - Fix missed DVD detection when the initial MakeMKV probe returns no video
@@ -107,7 +114,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.6.4. No version
+These are planned features only and are not included in AutoDisc 1.6.5. No version
 2.0 release date has been announced.
 
 ## Design and behavior
@@ -120,9 +127,9 @@ These are planned features only and are not included in AutoDisc 1.6.4. No versi
   reports media before the disc is ready to read—or its media state is not
   reported reliably—recognition probes retry with a capped backoff. An
   insertion scan requested during another check is queued rather than dropped.
-  A MakeMKV response with no video titles only suppresses further probes when
-  it includes a disc label, identifying recognized non-video media; an empty
-  response remains eligible for retry.
+  Any MakeMKV response with no video titles remains eligible for retry,
+  including responses that contain a disc label, so an early probe cannot
+  suppress detection of a disc that is still becoming readable.
 - Audio CDs are extracted and named/tagged as lossless FLAC tracks. They can be
   published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
   library import and organization after naming. MusicBrainz lookup is disabled
