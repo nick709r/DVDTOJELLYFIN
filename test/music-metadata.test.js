@@ -36,7 +36,7 @@ test("MusicBrainz lookup identifies AutoDisc and includes the optional contact e
   try {
     const metadata = await resolveMusicMetadata(disc, true, undefined, "music-admin@example.com");
     assert.equal(metadata.source, "offline");
-    assert.match(userAgent, /^AutoDisc\/1\.6\.3 /);
+    assert.match(userAgent, /^AutoDisc\/1\.6\.4 /);
     assert.match(userAgent, /contact: music-admin@example\.com/);
   } finally {
     globalThis.fetch = originalFetch;

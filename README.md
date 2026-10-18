@@ -7,6 +7,13 @@ Movies and lossless FLAC albums to Music.
 
 ## Release history
 
+### Version 1.6.4
+
+- Fix missed DVD detection when the initial MakeMKV probe returns no video
+  titles and no disc label. AutoDisc now retries that unrecognized response
+  instead of marking the inserted disc as handled; labeled non-video media
+  continues to be ignored.
+
 ### Version 1.6.3
 
 - Fix missed automatic DVD and audio-CD detection by probing the drive at
@@ -100,7 +107,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.6.3. No version
+These are planned features only and are not included in AutoDisc 1.6.4. No version
 2.0 release date has been announced.
 
 ## Design and behavior
