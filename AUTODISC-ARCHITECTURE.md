@@ -1,6 +1,6 @@
 # AutoDisc Architecture and Implementation Plan
 
-**Status:** Approved design; implementation in progress
+**Status:** Version 1.0 implementation scope; target-hardware acceptance required
 **Deployment:** Native Lubuntu/Linux service managed by systemd (no Docker)
 
 ## 1. Product boundary and operating assumptions
@@ -8,7 +8,8 @@
 AutoDisc is a single-user, single-optical-drive appliance. It accepts one disc
 at a time: DVDs use MakeMKV and FFmpeg to extract a main feature, while music
 CDs use cdparanoia to extract tracks and FFmpeg to encode lossless FLAC. It
-publishes movies atomically into Jellyfin Movies and either publishes named
+publishes each movie atomically inside a title-named folder in Jellyfin Movies
+and either publishes named
 music albums directly to Jellyfin Music or submits them to Lidarr for import
 after naming and tagging. A durable SQLite job record is the source of truth. A small web interface is for
 administration, status, history, and configuration—not a prerequisite for normal
@@ -368,8 +369,11 @@ shutdown. Avoid collecting high-frequency metrics or persisting samples.
 
 ### Publication and cleanup
 
-Write converted output to a hidden temporary filename on the Movies filesystem,
-validate it, fsync as appropriate, then atomically rename to the final safe name.
+Create a collision-safe folder named after the selected movie title, with the
+video file using the same name and configured extension (for example,
+`Movies/Karate Kid/Karate Kid.mkv`). Write converted output to a hidden temporary
+filename inside that folder, validate it, fsync as appropriate, then atomically
+publish the file to its final safe name.
 Handle collisions deterministically (never overwrite an existing movie).
 Update SQLite around the publication boundary so recovery can reconcile a file
 with a job if the process crashes between rename and commit. Jellyfin sees only
@@ -634,8 +638,8 @@ disk, absent GPU, and restart during each major stage.
 - Audio CDs are ripped as individual lossless FLAC tracks, optionally tagged
   through MusicBrainz, then either atomically published to Jellyfin Music or
   imported through Lidarr after their filenames and tags are complete.
-- A completed output is probed, safely named, collision-safe, and atomically
-  published.
+- A completed movie is probed, stored in a collision-safe title-named folder
+  with a matching filename, and atomically published.
 - Actual encoder is visible and persisted; no GPU/driver/NVENC issue prevents
   software fallback in auto mode.
 - Temporary data is removed after success; failed artifacts are bounded and
@@ -651,25 +655,25 @@ disk, absent GPU, and restart during each major stage.
 
 ## 15. Phase 6 — Implementation order
 
-Implementation has started in dependency order: package/build metadata and
-configuration; SQLite persistence; process, disc, and filesystem adapters;
+The Version 1.0 implementation follows dependency order: package/build metadata
+and configuration; SQLite persistence; process, disc, and filesystem adapters;
 serialized pipeline and recovery; REST/auth/SSE and on-demand metrics; static UI;
-systemd installation; then tests and operational documentation. Continue
-validating each coherent layer before adding hardware-specific integration
-features. Real drive, MakeMKV, FFmpeg/NVENC, systemd-permission, eject, and
-restart acceptance still must run on the target Lubuntu server.
+systemd installation; tests and operational documentation. Real drive, MakeMKV,
+FFmpeg/NVENC, systemd-permission, eject, and restart acceptance still must run
+on the target Lubuntu server.
 
-### Current implementation boundary
+### Version 1.0 implementation boundary
 
-The initial application includes serial DVD and music-CD workflows: MakeMKV to
-FFmpeg for DVDs and cdparanoia to FLAC for audio CDs. MusicBrainz lookup is
-optional and disabled by default. It includes best-effort NVENC with software
-fallback, atomic output publication, temporary
+Version 1.0 includes serial DVD and music-CD workflows: MakeMKV to FFmpeg for
+DVDs and cdparanoia to FLAC for audio CDs. Movie files are published into
+title-named folders. MusicBrainz lookup is optional and disabled by default;
+optional Lidarr import organizes named audio tracks. The application includes
+best-effort NVENC with software fallback, atomic output publication, temporary
 file cleanup and startup reconciliation, udev monitoring, optional TMDB lookup,
 password setup, history/statistics, and dashboard-only resource sampling.
-Cancellation/retry controls, title editing, configurable disk reserves and
-failed-artifact retention, per-job rotating logs, and a full readiness report
-are not yet implemented. Treat these as follow-up work rather than assuming the
-design sections above describe already shipped controls. The current automated
-suite is a small smoke suite; the target-host integration gates remain
-mandatory.
+TV show processing, Radarr integration, and Sonarr integration are planned for
+version 2.0 and are not part of this release. Cancellation/retry controls, title
+editing, configurable disk reserves and failed-artifact retention, per-job
+rotating logs, and a full readiness report are also not included in 1.0. Real
+optical-drive, MakeMKV, FFmpeg/NVENC, systemd-permission, eject, and restart
+acceptance must still be performed on the target Lubuntu server.

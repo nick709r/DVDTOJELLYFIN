@@ -5,10 +5,19 @@ Linux and Jellyfin. It watches a configured optical drive, uses MakeMKV and
 FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to
 Movies and lossless FLAC albums to Music.
 
-> **Early development:** the initial application is implemented, but has not
-> been validated on a Lubuntu optical drive. Do not rely on this release for
-> unattended production use until the hardware acceptance tests in
-> `AUTODISC-ARCHITECTURE.md` pass.
+> **Version 1.0:** the current DVD and music-CD feature set is complete. Test
+> your optical drive, media permissions, MakeMKV, and eject behavior on the
+> target Lubuntu server before relying on unattended operation.
+
+## Coming in version 2.0
+
+The next major version is planned to add:
+
+- TV show ripping and Jellyfin TV library organization.
+- Radarr integration for managing imported movies.
+- Sonarr integration for managing imported TV episodes.
+
+These are planned features only and are not included in AutoDisc 1.0.
 
 ## Design and behavior
 
@@ -19,6 +28,8 @@ Movies and lossless FLAC albums to Music.
   published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
   library import and organization after naming. MusicBrainz lookup is disabled
   by default; enable it to supply metadata for Lidarr matching.
+- Movies are organized in a folder named after the selected title, with the
+  movie file using the same name (for example, `Movies/Karate Kid/Karate Kid.mkv`).
 - FFmpeg probes NVENC and tests initialization before selecting it. `auto`
   falls back to software encoding when hardware encoding is absent or unusable.
   A GTX 710 commonly has no NVENC block; GPU use is not guaranteed.
@@ -58,13 +69,21 @@ without it.
    `/var/lib/autodisc`, `/var/cache/autodisc`, and `/var/cache/autodisc/lidarr-import`.
 3. Open AutoDisc locally, go to **Settings**, and set the Movies and Music
    folders, temporary work folder, drive, and encoding preferences. Initial defaults are
-   `/srv/jellyfin/Movies`, `/srv/jellyfin/Music`, `/var/cache/autodisc`, and `/dev/sr0`. For network
-   access, configure `/etc/default/autodisc`:
+   `/srv/jellyfin/Movies`, `/srv/jellyfin/Music`, `/var/cache/autodisc`, and `/dev/sr0`. To allow
+   connections from other devices on the home network, first set an administrator
+   password in Settings, then configure `/etc/default/autodisc`:
 
    ```ini
-   HOST=127.0.0.1
+   HOST=0.0.0.0
    PORT=8787
    ```
+
+   `0.0.0.0` makes the service listen on all IPv4 interfaces. After editing the
+   file, run `sudo systemctl daemon-reload` and
+   `sudo systemctl restart autodisc.service`. Find the server's LAN address
+   with `hostname -I`, then open `http://<server-lan-ip>:8787` on another device.
+   If a firewall is enabled, allow TCP port 8787 only from your home subnet.
+   Do not forward this port from the internet.
 
    The service must have read/write access to the Movies and work directories
    and access to the configured optical drive. In direct-to-Jellyfin music mode,
@@ -115,7 +134,8 @@ without it.
    `journalctl -u autodisc -f`. Open `http://localhost:8787` locally. The
    default bind is localhost; to reach the UI from another trusted device, set
    `HOST` to the server's LAN address, configure an admin password, and restrict
-   access with the host firewall.
+   access with the host firewall. Use `HOST=0.0.0.0` to listen on LAN interfaces;
+   the service unit reads this value from `/etc/default/autodisc`.
 5. Test with a known video DVD and an audio CD; verify the selected encoder,
    album tags, output paths, cleanup, and eject before leaving the appliance
    unattended.

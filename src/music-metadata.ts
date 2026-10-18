@@ -103,7 +103,7 @@ export async function resolveMusicMetadata(
     url.searchParams.set("fmt", "json");
     const timeout = AbortSignal.timeout(10_000);
     const response = await fetch(url, {
-      headers: { "User-Agent": "AutoDisc/0.1.0 (https://github.com/nick709r/DVDTOJELLYFIN)" },
+      headers: { "User-Agent": "AutoDisc/1.0.0 (https://github.com/nick709r/DVDTOJELLYFIN)" },
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout
     });
     if (!response.ok) throw new Error(`MusicBrainz returned HTTP ${response.status}`);

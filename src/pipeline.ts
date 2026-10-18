@@ -1,4 +1,4 @@
-import { access, mkdir, rm, stat, statfs } from "node:fs/promises";
+import { access, mkdir, rm, rmdir, stat, statfs } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -11,6 +11,7 @@ import { setRuntimeStatus } from "./runtime-status.js";
 import { log } from "./logger.js";
 import { inspectAudioCd } from "./audio-cd.js";
 import { processAudioCd } from "./music-pipeline.js";
+import { createMovieOutput } from "./movie-output.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -23,20 +24,6 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
   if (!Number.isFinite(available) || available < reserveBytes) {
     throw new Error(`Insufficient free space at ${path}; at least ${Math.ceil(reserveBytes / 1024 ** 3)} GiB is required`);
   }
-}
-
-async function freeOutputName(directory: string, title: string, format: string): Promise<string> {
-  const base = safeTitle(title);
-  for (let suffix = 0; suffix < 1000; suffix += 1) {
-    const name = suffix === 0 ? base : `${base} (${suffix + 1})`;
-    const path = join(directory, `${name}.${format}`);
-    try {
-      await access(path);
-    } catch {
-      return path;
-    }
-  }
-  throw new Error("Could not generate a unique output filename");
 }
 
 export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean> {
@@ -74,6 +61,7 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
   const id = randomUUID();
   const workDir = join(settings.workDir, id);
   let finalPath: string | null = null;
+  let movieDirectory: string | null = null;
   let successful = false;
   let failure: string | null = null;
   let conversionStartedAt: number | undefined;
@@ -95,7 +83,9 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
 
     setJobStatus(id, "converting", "Converting with FFmpeg");
     notifyStatus();
-    const targetPath = await freeOutputName(settings.moviesDir, cleanTitle, settings.format);
+    const movieOutput = await createMovieOutput(settings.moviesDir, cleanTitle, settings.format);
+    movieDirectory = movieOutput.directory;
+    const targetPath = movieOutput.path;
     finalPath = targetPath;
     conversionStartedAt = Date.now();
     const conversionStart = conversionStartedAt;
@@ -128,6 +118,26 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
       updateJob(id, { conversionSeconds: (Date.now() - conversionStartedAt) / 1000 });
     }
   } finally {
+    if (!successful && finalPath && movieDirectory) {
+      try {
+        await stat(finalPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          try {
+            await rmdir(movieDirectory);
+          } catch (cleanupError) {
+            const code = (cleanupError as NodeJS.ErrnoException).code;
+            if (code !== "ENOENT" && code !== "ENOTEMPTY") {
+              failure = `${failure ? `${failure}; ` : ""}Empty movie-folder cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : "unknown error"}`;
+              successful = false;
+            }
+          }
+        } else {
+          failure = `${failure ? `${failure}; ` : ""}Could not verify failed movie output before cleanup: ${error instanceof Error ? error.message : "unknown error"}`;
+          successful = false;
+        }
+      }
+    }
     if (workDir) {
       try {
         await rm(workDir, { recursive: true, force: true });

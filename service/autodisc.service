@@ -1,5 +1,5 @@
 [Unit]
-Description=AutoDisc DVD ingestion appliance
+Description=AutoDisc DVD and music CD ingestion appliance
 Documentation=file:/opt/autodisc/README.md
 After=network.target systemd-udevd.service
 Wants=systemd-udevd.service
@@ -12,7 +12,6 @@ SupplementaryGroups=cdrom video
 EnvironmentFile=-/etc/default/autodisc
 Environment=NODE_ENV=production
 Environment=HOME=/var/lib/autodisc
-Environment=HOST=127.0.0.1
 Environment=PORT=8787
 Environment=DATABASE_PATH=/var/lib/autodisc/autodisc.sqlite
 Environment=WORK_DIR=/var/cache/autodisc

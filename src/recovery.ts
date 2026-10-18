@@ -1,4 +1,4 @@
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, rmdir, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getSettings, interruptedOutputs, recoverPublishedJob } from "./db.js";
 import { mediaDuration } from "./encoding.js";
@@ -37,6 +37,25 @@ export async function recoverTemporaryFiles(): Promise<void> {
     if (entry.isFile() && partialOutput.test(entry.name)) {
       await rm(join(settings.moviesDir, entry.name), { force: true });
       removedOutputs += 1;
+    } else if (entry.isDirectory()) {
+      const movieDirectory = join(settings.moviesDir, entry.name);
+      const children = await readdir(movieDirectory, { withFileTypes: true });
+      let removedPartial = false;
+      for (const child of children) {
+        if (child.isFile() && partialOutput.test(child.name)) {
+          await rm(join(movieDirectory, child.name), { force: true });
+          removedOutputs += 1;
+          removedPartial = true;
+        }
+      }
+      if (removedPartial) {
+        try {
+          await rmdir(movieDirectory);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOTEMPTY" && code !== "ENOENT") throw error;
+        }
+      }
     }
   }
   const musicEntries = await readdir(settings.musicDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -63,7 +82,7 @@ export async function recoverTemporaryFiles(): Promise<void> {
   }
   let recoveredJobs = 0;
   for (const job of interruptedOutputs()) {
-    const isMovieOutput = dirname(resolve(job.outputPath)) === resolve(settings.moviesDir);
+    const isMovieOutput = job.mediaType === "dvd" && isWithin(settings.moviesDir, job.outputPath);
     const isMusicOutput = job.mediaType === "audio_cd" && isWithin(settings.musicDir, job.outputPath);
     if (!isMovieOutput && !isMusicOutput) continue;
     try {
