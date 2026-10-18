@@ -69,12 +69,18 @@
             <p id="update-version" class="inline-info">Checking installed version…</p>
             <button id="check-updates" class="button secondary" type="button">Check for updates</button>
             <p id="update-status" class="inline-info" role="status">Updates are checked only when you click the button. A newer version is applied automatically.</p>
+            <section class="release-notes" aria-live="polite">
+              <div class="card-heading"><h3 id="release-notes-title">Latest release notes</h3><a id="release-notes-link" class="hidden" target="_blank" rel="noopener noreferrer">View on GitHub</a></div>
+              <pre id="release-notes-body">Click “Check for updates” to load notes for the latest version.</pre>
+            </section>
           </article>
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
             <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
             <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
+            <button id="check-paths" class="button secondary" type="button">Check paths and permissions</button>
+            <div id="paths-status" class="path-check-list hidden" role="status" aria-live="polite"></div>
             <div class="form-row"><label>Output format<select name="format"><option value="mp4">MP4</option><option value="mkv">MKV</option></select></label><label>Quality <small>(18 = higher quality)</small><input name="quality" type="number" min="18" max="30" step="1"></label></div>
             <label>Encoding preset<select name="preset"><option value="ultrafast">Ultrafast — lower CPU, larger file</option><option value="veryfast">Very fast</option><option value="medium">Medium — slower, more efficient</option></select></label>
           </article>
@@ -100,10 +106,10 @@
             <label>Lidarr API key<input name="lidarrApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key"></label>
             <label class="check"><input name="clearLidarrApiKey" type="checkbox"> Clear saved Lidarr API key</label>
             <p id="lidarr-key-status" class="inline-info"></p>
-            <label>Lidarr incoming folder<input name="lidarrImportDir" required placeholder="/var/cache/autodisc/lidarr-import"></label>
+            <label>Lidarr downloads/import folder<input name="lidarrImportDir" required placeholder="/var/cache/autodisc/lidarr-import"></label>
             <button id="test-lidarr" class="button secondary" type="button">Test Lidarr connection</button>
             <p id="lidarr-status" class="inline-info" role="status"></p>
-            <p class="hint">AutoDisc names and tags every FLAC track first, then submits the album to Lidarr for a manual import using Move. Add the artist and album to Lidarr and enable MusicBrainz lookup. Lidarr must be able to read and write the same absolute incoming-folder path; the Jellyfin Music folder must match Lidarr's library root.</p>
+            <p class="hint">Set this to the shared downloads/import folder that Lidarr can read; AutoDisc creates an Artist - Album folder with numbered, tagged FLAC tracks, then asks Lidarr to match and move them into its library. If Lidarr runs in Docker, use the path as mounted inside the Lidarr container and make sure AutoDisc can access that same path. Add the artist and album to Lidarr and enable MusicBrainz lookup. The Jellyfin Music folder must match Lidarr's library root.</p>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>

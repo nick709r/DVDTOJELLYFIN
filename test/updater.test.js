@@ -28,9 +28,29 @@ test("update check selects the highest stable version tag and ignores other tags
   });
 
   assert.equal(requestedUrl, "https://api.github.com/repos/nick709r/DVDTOJELLYFIN/tags?per_page=100");
-  assert.equal(result.currentVersion, "1.5.0");
+  assert.equal(result.currentVersion, "1.5.1");
   assert.equal(result.latestVersion, "v1.10.0");
   assert.equal(result.updateAvailable, true);
+});
+
+test("release notes fall back to the matching README release section", async () => {
+  const { getReleaseNotes } = await import("../dist/updater.js");
+  const result = await getReleaseNotes("v1.5.1", async (input) => {
+    if (String(input).includes("/releases/tags/")) return new Response("", { status: 404 });
+    return new Response([
+      "# AutoDisc",
+      "## Release history",
+      "### Version 1.5.1",
+      "- Fix audio CD detection.",
+      "- Check configured paths.",
+      "### Version 1.5.0",
+      "- Add home-network access."
+    ].join("\n"), { status: 200 });
+  });
+
+  assert.equal(result.releaseNotesSource, "readme");
+  assert.match(result.releaseNotesUrl, /\/blob\/v1\.5\.1\/README\.md$/);
+  assert.equal(result.releaseNotes, "- Fix audio CD detection.\n- Check configured paths.");
 });
 
 test("update status reads only recognized state values", async () => {

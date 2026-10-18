@@ -7,6 +7,21 @@ Movies and lossless FLAC albums to Music.
 
 ## Release history
 
+### Version 1.5.1
+
+- Add a Settings check that tests the configured Movies, Music, work, optional
+  Lidarr import folders, and optical-drive access using the AutoDisc service
+  account. Folder checks create and remove a uniquely named temporary probe
+  file; no media is changed.
+- Show release notes for the latest tagged version in the Settings updater.
+- Fix audio CD detection by recognizing the numbered track rows emitted by
+  `cdparanoia -Q`, as well as the previously supported track format.
+- Shorten the optical-drive event debounce so inserted media begins inspection
+  sooner, and log CD inspection errors to help diagnose unreadable or
+  unsupported discs.
+- Clarify the Lidarr downloads/import folder setting: AutoDisc stages properly
+  named albums there and hands them to Lidarr for matching and library import.
+
 ### Version 1.5.0
 
 - Listen on all IPv4 interfaces by default, making the web interface reachable
@@ -40,7 +55,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.5. No version
+These are planned features only and are not included in AutoDisc 1.5.1. No version
 2.0 release date has been announced.
 
 ## Design and behavior
@@ -141,13 +156,21 @@ without it.
    To use Lidarr, grant its service account read/write access to the incoming
    folder too. Lidarr and AutoDisc must see the folder using the same absolute
    path (including when Lidarr runs in a container). In AutoDisc **Settings**,
-   enable MusicBrainz lookup, enter the Lidarr URL and API key, set the incoming
-   folder, then enable Lidarr import and use **Test Lidarr connection**. Add the
-   artist and album in Lidarr first, and configure Lidarr's root folder and
-   Jellyfin's Music library to the same Music directory. AutoDisc writes and names every FLAC file before
-   asking Lidarr to match and move it into its managed library. If matching or
-   import fails, AutoDisc preserves any remaining named files in the incoming
-   folder for manual import rather than deleting the ripped music.
+   enable MusicBrainz lookup, enter the Lidarr URL and API key, set **Lidarr
+   downloads/import folder** to the shared folder Lidarr can read, then enable
+   Lidarr import and use **Test Lidarr connection**. This is the location
+   AutoDisc writes the album into before requesting Lidarr's manual import; it
+   is not automatically discovered from Lidarr's download-client settings.
+   Add the artist and album in Lidarr first, and configure Lidarr's root folder
+   and Jellyfin's Music library to the same Music directory. AutoDisc creates
+   an `Artist - Album (Year)` folder containing numbered, tagged FLAC tracks
+   before asking Lidarr to match and move them into its managed library. If
+   Lidarr runs in Docker, configure the same shared folder path as Lidarr sees
+   it inside the container, and ensure both services have access. If matching
+   or import fails, AutoDisc preserves any remaining named files there for
+   manual import rather than deleting the ripped music. Use **Check paths and
+   permissions** in Settings to verify AutoDisc's access to its configured
+   folders and optical drive.
 
    For a local Lidarr service account named `lidarr`, one example is:
 
@@ -250,7 +273,8 @@ samples are generated only while the dashboard metrics stream is connected.
 Conversion history and statistics are stored in
 SQLite at `/var/lib/autodisc/autodisc.sqlite`.
 
-Version 1.5 adds active-job cancellation and history-entry removal. Removing a
+Version 1.5 adds active-job cancellation and history-entry removal. Version
+1.5.1 adds path-permission checks and fixes audio-CD TOC detection. Removing a
 history entry deletes its database record and event timeline only; it never
 deletes the associated media file. Test disc insertion/removal, cancellation,
 interrupted jobs, disk-full handling, permissions, cleanup, and eject on the

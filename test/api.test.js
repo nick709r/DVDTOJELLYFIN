@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -26,6 +26,45 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.lidarrEnabled, false);
     assert.equal("adminPasswordHash" in initial.json().settings, false);
     assert.equal("lidarrApiKey" in initial.json().settings, false);
+
+    const pathCheck = await app.inject({
+      method: "POST",
+      url: "/api/v1/paths/check",
+      payload: {
+        moviesDir: root,
+        musicDir: root,
+        workDir: root,
+        opticalDevice: path.join(root, "missing-device"),
+        lidarrImportDir: path.join(root, "lidarr-import"),
+        lidarrEnabled: false
+      }
+    });
+    assert.equal(pathCheck.statusCode, 200);
+    assert.equal(pathCheck.json().ok, false);
+    assert.equal(pathCheck.json().checks.length, 4);
+    assert.deepEqual(pathCheck.json().checks.map((check) => check.name), [
+      "Movies folder", "Music folder", "Temporary work folder", "Optical drive"
+    ]);
+    assert.equal(pathCheck.json().checks.find((check) => check.name === "Optical drive").ok, false);
+    assert.equal((await readdir(root)).some((name) => name.startsWith(".autodisc-permission-check-")), false);
+    const lidarrPathCheck = await app.inject({
+      method: "POST",
+      url: "/api/v1/paths/check",
+      payload: {
+        moviesDir: root,
+        musicDir: root,
+        workDir: root,
+        opticalDevice: path.join(root, "missing-device"),
+        lidarrImportDir: root,
+        lidarrEnabled: true
+      }
+    });
+    assert.equal(lidarrPathCheck.statusCode, 200);
+    assert.equal(lidarrPathCheck.json().checks.length, 5);
+    assert.equal(
+      lidarrPathCheck.json().checks.some((check) => check.name === "Lidarr downloads/import folder"),
+      true
+    );
 
     const lidarrWithoutKey = await app.inject({
       method: "PUT",
@@ -125,11 +164,18 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal("adminPasswordHash" in authenticated.json().settings, false);
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(JSON.stringify([
-      { name: "v1.5.0" },
-      { name: "v1.6.0" },
-      { name: "main" }
-    ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("/tags?")) {
+        return new Response(JSON.stringify([
+          { name: "v1.5.0" },
+          { name: "v1.6.0" },
+          { name: "main" }
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/releases/tags/")) return new Response("", { status: 404 });
+      return new Response("### Version 1.6.0\n- Test release notes.", { status: 200 });
+    };
     try {
       const updateCheck = await app.inject({
         method: "GET",
@@ -139,6 +185,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       assert.equal(updateCheck.statusCode, 200);
       assert.equal(updateCheck.json().latestVersion, "v1.6.0");
       assert.equal(updateCheck.json().updateAvailable, true);
+      assert.match(updateCheck.json().releaseNotes, /Test release notes/);
     } finally {
       globalThis.fetch = originalFetch;
     }

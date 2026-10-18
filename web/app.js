@@ -186,6 +186,28 @@ async function refreshUpdateStatus() {
   }
 }
 
+function renderReleaseNotes(check) {
+  $("#release-notes-title").textContent = `Release notes · ${check.latestVersion}`;
+  $("#release-notes-body").textContent = check.releaseNotes ||
+    check.releaseNotesMessage ||
+    `Release notes are unavailable for ${check.latestVersion}.`;
+  const link = $("#release-notes-link");
+  if (check.releaseNotesUrl) {
+    try {
+      const url = new URL(check.releaseNotesUrl);
+      if (url.protocol !== "https:" || url.hostname !== "github.com") throw new Error("Invalid release notes URL");
+      link.href = url.href;
+      link.classList.remove("hidden");
+    } catch {
+      link.removeAttribute("href");
+      link.classList.add("hidden");
+    }
+  } else {
+    link.removeAttribute("href");
+    link.classList.add("hidden");
+  }
+}
+
 async function waitForUpdate() {
   const deadline = Date.now() + 30 * 60 * 1000;
   let sawApplying = false;
@@ -321,6 +343,7 @@ $("#check-updates").addEventListener("click", async () => {
   status.textContent = "Checking GitHub for a newer AutoDisc release…";
   try {
     const check = await api("/api/v1/updates/check");
+    renderReleaseNotes(check);
     if (!check.updateAvailable) {
       status.textContent = `AutoDisc ${check.currentVersion} is up to date.`;
       return;
@@ -383,6 +406,36 @@ $("#settings-form").addEventListener("submit", async (event) => {
     }
   } catch (error) {
     $("#settings-message").textContent = error.message;
+  }
+});
+
+$("#check-paths").addEventListener("click", async () => {
+  const button = $("#check-paths");
+  const status = $("#paths-status");
+  const form = $("#settings-form");
+  const values = new FormData(form);
+  button.disabled = true;
+  status.classList.remove("hidden");
+  status.textContent = "Checking configured folders and optical drive permissions…";
+  try {
+    const result = await api("/api/v1/paths/check", {
+      method: "POST",
+      body: JSON.stringify({
+        moviesDir: values.get("moviesDir"),
+        musicDir: values.get("musicDir"),
+        workDir: values.get("workDir"),
+        opticalDevice: values.get("opticalDevice"),
+        lidarrImportDir: values.get("lidarrImportDir"),
+        lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked
+      })
+    });
+    status.innerHTML = `<strong>${result.ok ? "All configured paths passed." : "Some path checks failed."}</strong>${result.checks.map((check) =>
+      `<div class="path-check ${check.ok ? "passed" : "failed"}"><span>${check.ok ? "OK" : "FAIL"} · ${escapeHtml(check.name)}</span><span>${escapeHtml(check.message)}</span><small>${escapeHtml(check.path)}</small></div>`
+    ).join("")}`;
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
   }
 });
 

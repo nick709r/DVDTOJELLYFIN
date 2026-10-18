@@ -1,8 +1,9 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { access, stat, statfs } from "node:fs/promises";
+import { access, open, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, activeJob, deleteJob, getSettings, jobStats, listJobs, saveSettings } from "./db.js";
@@ -14,7 +15,7 @@ import { DashboardMetricSampler } from "./metrics-sampler.js";
 import { getRuntimeStatus } from "./runtime-status.js";
 import { configureLogLevel } from "./logger.js";
 import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
-import { checkForUpdate, clearUpdatePending, getInstalledVersion, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
+import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
@@ -220,6 +221,106 @@ async function validateReadableDirectory(path: string): Promise<void> {
   await access(path, constants.R_OK | constants.X_OK);
 }
 
+interface PathCheck {
+  name: string;
+  path: string;
+  ok: boolean;
+  message: string;
+}
+
+async function checkDirectoryPermissions(name: string, path: string, writable: boolean): Promise<PathCheck> {
+  try {
+    if (!validAbsolutePath(path)) throw new Error("Path must be an absolute Linux path");
+    const info = await stat(path);
+    if (!info.isDirectory()) throw new Error("Path is not a directory");
+    await access(path, constants.R_OK | constants.X_OK | (writable ? constants.W_OK : 0));
+    await readdir(path);
+    if (!writable) return { name, path, ok: true, message: "Readable and searchable" };
+
+    const probePath = join(path, `.autodisc-permission-check-${randomUUID()}`);
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    let probeCreated = false;
+    try {
+      handle = await open(probePath, "wx", 0o600);
+      probeCreated = true;
+      await handle.close();
+      handle = undefined;
+      await unlink(probePath);
+      probeCreated = false;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const reason = `${error instanceof Error ? error.message : "unknown filesystem error"}${code ? ` (${code})` : ""}`;
+      const cleanupErrors: string[] = [];
+      if (handle) {
+        try {
+          await handle.close();
+        } catch (cleanupError) {
+          cleanupErrors.push(`closing the probe file failed: ${cleanupError instanceof Error ? cleanupError.message : "unknown error"}`);
+        }
+      }
+      if (probeCreated) {
+        try {
+          await unlink(probePath);
+        } catch (cleanupError) {
+          cleanupErrors.push(`removing ${probePath} failed: ${cleanupError instanceof Error ? cleanupError.message : "unknown error"}`);
+        }
+      }
+      throw new Error(`Could not create and remove a temporary test file: ${reason}${cleanupErrors.length ? `; ${cleanupErrors.join("; ")}` : ""}`);
+    }
+    return { name, path, ok: true, message: "Readable, searchable, and can create and remove files" };
+  } catch (error) {
+    return {
+      name,
+      path,
+      ok: false,
+      message: error instanceof Error ? error.message : "Path check failed"
+    };
+  }
+}
+
+async function checkOpticalDevice(path: string): Promise<PathCheck> {
+  try {
+    if (typeof path !== "string" || !/^\/dev\/[a-zA-Z0-9._/-]+$/.test(path) ||
+      path.split("/").some((segment) => segment === "." || segment === "..")) {
+      throw new Error("Optical drive must be a valid /dev path");
+    }
+    const info = await stat(path);
+    if (!info.isCharacterDevice() && !info.isBlockDevice()) {
+      throw new Error("Path is not an optical device file");
+    }
+    await access(path, constants.R_OK | constants.W_OK);
+    return { name: "Optical drive", path, ok: true, message: "Device exists and is readable and writable" };
+  } catch (error) {
+    return {
+      name: "Optical drive",
+      path,
+      ok: false,
+      message: error instanceof Error ? error.message : "Optical drive check failed"
+    };
+  }
+}
+
+app.post<{ Body: unknown }>("/api/v1/paths/check", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Path check request must be a JSON object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  if (typeof body.moviesDir !== "string" || typeof body.musicDir !== "string" ||
+    typeof body.workDir !== "string" || typeof body.opticalDevice !== "string" ||
+    typeof body.lidarrImportDir !== "string" || typeof body.lidarrEnabled !== "boolean") {
+    return reply.code(400).send({ error: "Path check requires Movies, Music, work, optical drive, and Lidarr settings" });
+  }
+
+  const checks = await Promise.all([
+    checkDirectoryPermissions("Movies folder", body.moviesDir, true),
+    checkDirectoryPermissions("Music folder", body.musicDir, !body.lidarrEnabled),
+    checkDirectoryPermissions("Temporary work folder", body.workDir, true),
+    ...(body.lidarrEnabled ? [checkDirectoryPermissions("Lidarr downloads/import folder", body.lidarrImportDir, true)] : []),
+    checkOpticalDevice(body.opticalDevice)
+  ]);
+  return { ok: checks.every((check) => check.ok), checks };
+});
+
 function pathsOverlap(first: string, second: string): boolean {
   const firstToSecond = relative(resolve(first), resolve(second));
   const secondToFirst = relative(resolve(second), resolve(first));
@@ -237,7 +338,8 @@ app.get("/api/v1/updates/status", async () => ({
 
 app.get("/api/v1/updates/check", async (_request, reply) => {
   try {
-    return await checkForUpdate();
+    const check = await checkForUpdate();
+    return { ...check, ...await getReleaseNotes(check.latestVersion) };
   } catch (error) {
     app.log.error({ err: error }, "AutoDisc update check failed");
     return reply.code(502).send({ error: error instanceof Error ? error.message : "AutoDisc update check failed" });

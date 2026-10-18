@@ -21,10 +21,17 @@ export interface AudioTrackFile {
 }
 
 export function parseAudioTrackNumbers(output: string): number[] {
-  return [...new Set([...output.matchAll(/^\s*track\s+(\d+):/gim)]
-    .map((match) => Number(match[1]))
-    .filter((track) => Number.isInteger(track) && track > 0))]
+  return [...new Set(output.split(/\r?\n/)
+    .map((line) => audioTrackNumber(line))
+    .filter((track): track is number => track !== null))]
     .sort((left, right) => left - right);
+}
+
+function audioTrackNumber(line: string): number | null {
+  const trackStyle = /^\s*track\s+(\d+)\s*:/i.exec(line);
+  const tableStyle = /^\s*(\d+)\.\s+\d+\s+\[\d{1,2}:\d{2}\.\d{2}\]/.exec(line);
+  const number = Number(trackStyle?.[1] ?? tableStyle?.[1]);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 export async function inspectAudioCd(device: string, signal?: AbortSignal): Promise<AudioDisc | null> {
@@ -36,15 +43,20 @@ export async function inspectAudioCd(device: string, signal?: AbortSignal): Prom
     });
   } catch (error) {
     if (signal?.aborted) throw error;
-    if (error instanceof ProcessFailure && error.message.includes("ENOENT")) {
-      log("warn", "audio-cd", "cdparanoia is unavailable; audio CD detection is disabled");
-    }
+    const missingTool = error instanceof ProcessFailure && error.message.includes("ENOENT");
+    log(missingTool ? "warn" : "info", "audio-cd",
+      missingTool ? "cdparanoia is unavailable; audio CD detection is disabled" : "Could not inspect the disc as an audio CD", {
+      error: error instanceof Error ? error.message : "cdparanoia failed"
+    });
     return null;
   }
 
   const output = `${result.stdout}\n${result.stderr}`;
   const trackNumbers = parseAudioTrackNumbers(output);
-  if (trackNumbers.length === 0) return null;
+  if (trackNumbers.length === 0) {
+    log("debug", "audio-cd", "No audio tracks found in cdparanoia table-of-contents output");
+    return null;
+  }
 
   let discId: string | null = null;
   try {
@@ -60,7 +72,7 @@ export async function inspectAudioCd(device: string, signal?: AbortSignal): Prom
     });
   }
 
-  const toc = output.split(/\r?\n/).filter((line) => /^\s*track\s+\d+:/i.test(line)).join("\n");
+  const toc = output.split(/\r?\n/).filter((line) => audioTrackNumber(line) !== null).join("\n");
   const fingerprint = createHash("sha256").update(discId ?? toc).digest("hex");
   return { trackNumbers, discId, fingerprint };
 }

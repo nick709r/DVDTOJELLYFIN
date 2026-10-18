@@ -17,6 +17,13 @@ export interface UpdateCheck {
   updateAvailable: boolean;
 }
 
+export interface ReleaseNotes {
+  releaseNotes: string | null;
+  releaseNotesUrl: string;
+  releaseNotesSource: "release" | "readme" | "unavailable";
+  releaseNotesMessage?: string;
+}
+
 let pending = false;
 
 function versionParts(version: string): bigint[] | null {
@@ -74,6 +81,79 @@ export async function checkForUpdate(fetcher: typeof fetch = fetch): Promise<Upd
     latestVersion,
     updateAvailable: compareVersions(latestVersion, installedVersion) > 0
   };
+}
+
+function releaseNotesFromReadme(readme: string, version: string): string | null {
+  const lines = readme.split(/\r?\n/);
+  const targetHeading = new RegExp(`^###\\s+Version\\s+v?${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i");
+  const headingIndex = lines.findIndex((line) => targetHeading.test(line));
+  if (headingIndex < 0) return null;
+  const nextHeading = lines.findIndex((line, index) => index > headingIndex && /^#{1,3}\s/.test(line));
+  const notes = lines.slice(headingIndex + 1, nextHeading < 0 ? undefined : nextHeading).join("\n").trim();
+  return notes || null;
+}
+
+export async function getReleaseNotes(
+  version: string,
+  fetcher: typeof fetch = fetch
+): Promise<ReleaseNotes> {
+  if (!versionParts(version)) throw new Error("Invalid AutoDisc release-notes version");
+  const tag = version.startsWith("v") ? version : `v${version}`;
+  const readmeUrl = `https://github.com/${repository}/blob/${encodeURIComponent(tag)}/README.md`;
+  let releaseError: string | null = null;
+  try {
+    const response = await fetcher(`https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "AutoDisc"
+      },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (response.ok) {
+      const release: unknown = await response.json();
+      if (typeof release === "object" && release !== null) {
+        const body = "body" in release && typeof release.body === "string" ? release.body.trim() : "";
+        const url = "html_url" in release && typeof release.html_url === "string" ? release.html_url : readmeUrl;
+        if (body) return { releaseNotes: body, releaseNotesUrl: url, releaseNotesSource: "release" };
+      }
+    } else if (response.status !== 404) {
+      releaseError = `GitHub release notes request failed (HTTP ${response.status})`;
+    }
+  } catch (error) {
+    releaseError = error instanceof Error ? error.message : "GitHub release notes request failed";
+  }
+
+  const rawReadmeUrl = `https://raw.githubusercontent.com/${repository}/${encodeURIComponent(tag)}/README.md`;
+  try {
+    const response = await fetcher(rawReadmeUrl, {
+      headers: { "User-Agent": "AutoDisc" },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) {
+      return {
+        releaseNotes: null,
+        releaseNotesUrl: readmeUrl,
+        releaseNotesSource: "unavailable",
+        releaseNotesMessage: `Could not load release notes from GitHub (HTTP ${response.status})`
+      };
+    }
+    const notes = releaseNotesFromReadme(await response.text(), version.replace(/^v/, ""));
+    if (notes) return { releaseNotes: notes, releaseNotesUrl: readmeUrl, releaseNotesSource: "readme" };
+    return {
+      releaseNotes: null,
+      releaseNotesUrl: readmeUrl,
+      releaseNotesSource: "unavailable",
+      releaseNotesMessage: `No release notes were published for AutoDisc ${tag}${releaseError ? `; ${releaseError}` : ""}`
+    };
+  } catch (error) {
+    return {
+      releaseNotes: null,
+      releaseNotesUrl: readmeUrl,
+      releaseNotesSource: "unavailable",
+      releaseNotesMessage: `Could not load release notes from GitHub: ${error instanceof Error ? error.message : "network request failed"}`
+    };
+  }
 }
 
 export async function queueUpdate(version: string): Promise<void> {

@@ -42,7 +42,7 @@ async function handleInsert(signal: AbortSignal): Promise<void> {
 
 function scheduleInsert(signal: AbortSignal): void {
   if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => void handleInsert(signal), 1800);
+  debounceTimer = setTimeout(() => void handleInsert(signal), 450);
 }
 
 async function mediaPresent(device: string): Promise<boolean> {

@@ -310,6 +310,7 @@ under `/api/v1`; keep liveness/readiness at `/api/health`.
 | `GET /api/v1/history/:id` | Job details and bounded event timeline. |
 | `DELETE /api/v1/history/:id` | Remove a finished job and its events from SQLite; never deletes media files. |
 | `POST /api/v1/jobs/:id/cancel` | Cancel a currently ripping/converting job without stopping disc monitoring or ejecting the disc. |
+| `POST /api/v1/paths/check` | Check service-account access and create/remove a temporary probe file in configured folders. |
 | `GET /api/v1/stats?range=7d\|30d` | Daily success/failure counts and duration series. |
 | `GET /api/v1/settings` | Redacted effective settings and capability diagnostics. |
 | `PUT /api/v1/settings` | Validate and persist settings; active jobs retain their snapshot. |
