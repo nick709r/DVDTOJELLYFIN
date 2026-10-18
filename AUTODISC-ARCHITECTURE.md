@@ -1,6 +1,6 @@
 # AutoDisc Architecture and Implementation Plan
 
-**Status:** Version 1.0 implementation scope; target-hardware acceptance required
+**Status:** Version 1.5 implementation scope; target-hardware acceptance required
 **Deployment:** Native Lubuntu/Linux service managed by systemd (no Docker)
 
 ## 1. Product boundary and operating assumptions
@@ -96,8 +96,10 @@ directories, build native Node dependencies, install the unit, and preserve
 operator configuration on upgrades. MakeMKV remains a separately licensed
 manual prerequisite. The operator must grant the service account
 explicit read/write permissions for the selected work and Movies directories,
-and device access to the selected optical drive. Start with a localhost bind;
-LAN access is an explicit settings/environment and firewall decision. Do not
+and device access to the selected optical drive. The default bind is `0.0.0.0` on port 8787 for home-network access; `HOST` and
+`PORT` can override it. Passwordless first-run mode grants administration to
+anyone who can reach the port, so restrict it to the trusted LAN with the host
+firewall and configure a password. Do not
 run as root or grant broad capabilities. MakeMKV is separately licensed and is
 installed on the host; private/beta keys are never kept in this repository.
 
@@ -306,6 +308,8 @@ under `/api/v1`; keep liveness/readiness at `/api/health`.
 | `GET /api/v1/dashboard` | Summary counts, average conversion time, and recent jobs. |
 | `GET /api/v1/history?limit=` | Bounded recent job history. |
 | `GET /api/v1/history/:id` | Job details and bounded event timeline. |
+| `DELETE /api/v1/history/:id` | Remove a finished job and its events from SQLite; never deletes media files. |
+| `POST /api/v1/jobs/:id/cancel` | Cancel a currently ripping/converting job without stopping disc monitoring or ejecting the disc. |
 | `GET /api/v1/stats?range=7d\|30d` | Daily success/failure counts and duration series. |
 | `GET /api/v1/settings` | Redacted effective settings and capability diagnostics. |
 | `PUT /api/v1/settings` | Validate and persist settings; active jobs retain their snapshot. |
@@ -326,9 +330,11 @@ parsed from its machine-readable progress pipe, not human-readable stderr text.
 ### Authentication and network boundary
 
 Honor the requested initial `admin` username and no-password setup, but treat it
-as an explicit insecure bootstrap mode: display a persistent warning and
-recommend setting a password before exposing the UI beyond a trusted LAN. Do not
-claim that LAN-only binding is authentication. Password-enabled mode uses a
+as an explicit insecure bootstrap mode. The service binds to all IPv4 interfaces
+by default for home-network access; clearly warn that anyone reaching port 8787
+can administer it until a password is configured, and recommend limiting
+access with the host firewall. Do not claim that LAN-only binding is
+authentication. Password-enabled mode uses a
 hashed password, short-lived HTTP-only SameSite cookies, session rotation, and
 CSRF protection for state-changing requests. Provide logout and password-change
 flows. Never log credentials or session tokens. Do not add public internet
@@ -605,7 +611,8 @@ GT 710 outcome on the target machine rather than relying on model-name guesses.
 ### Milestone 5: REST, authentication, and on-demand metrics
 
 - Implement versioned APIs, validation, status/history/stats/settings,
-  cancellation/retry/title edit, SSE, password setup/change, and health checks.
+  active-job cancellation, history deletion, SSE, password setup/change, and
+  health checks.
 - Add dashboard-session lifecycle and resource sampling that stops when the
   final metrics subscriber disconnects.
 
@@ -659,7 +666,7 @@ disk, absent GPU, and restart during each major stage.
 
 ## 15. Phase 6 — Implementation order
 
-The Version 1.0 implementation follows dependency order: package/build metadata
+The Version 1.5 implementation follows dependency order: package/build metadata
 and configuration; SQLite persistence; process, disc, and filesystem adapters;
 serialized pipeline and recovery; REST/auth/SSE and on-demand metrics; static UI;
 systemd installation; tests and operational documentation. Real drive, MakeMKV,
@@ -668,18 +675,23 @@ on the target Lubuntu server. Versioned application updates are checked only
 when requested from Settings and applied through the constrained systemd
 updater, with service/database rollback on failed startup.
 
-### Version 1.0 implementation boundary
+### Version 1.5 implementation boundary
 
-Version 1.0 includes serial DVD and music-CD workflows: MakeMKV to FFmpeg for
+Version 1.5 includes serial DVD and music-CD workflows: MakeMKV to FFmpeg for
 DVDs and cdparanoia to FLAC for audio CDs. Movie files are published into
 title-named folders. MusicBrainz lookup is optional and disabled by default;
 optional Lidarr import organizes named audio tracks. The application includes
 best-effort NVENC with software fallback, atomic output publication, temporary
 file cleanup and startup reconciliation, udev monitoring, optional TMDB lookup,
-password setup, history/statistics, and dashboard-only resource sampling.
+password setup, history/statistics, dashboard-only resource sampling, active
+job cancellation, and removal of finished history records without deleting
+published media. Cancellation is available during ripping and encoding, before
+the publication stage. The default web bind is `0.0.0.0:8787`; passwordless mode is
+available to any client that can reach the service, so the host firewall must
+limit it to the trusted network until a password is configured.
 TV show processing, Radarr integration, and Sonarr integration are planned for
-version 2.0 and are not part of this release. Cancellation/retry controls, title
-editing, configurable disk reserves and failed-artifact retention, per-job
-rotating logs, and a full readiness report are also not included in 1.0. Real
+version 2.0 and are not part of this release. Retry controls, title editing,
+configurable disk reserves and failed-artifact retention, per-job
+rotating logs, and a full readiness report are not included in 1.5. Real
 optical-drive, MakeMKV, FFmpeg/NVENC, systemd-permission, eject, and restart
 acceptance must still be performed on the target Lubuntu server.

@@ -61,12 +61,20 @@ function renderJob(job, fallbackStatus = "idle") {
   $("#progress-bar").style.width = `${Math.max(0, Math.min(100, progress))}%`;
   $("#progress-label").textContent = status === "idle" ? "Waiting" : `${Math.round(progress)}%`;
   $("#encoder-label").textContent = job?.encoder ? `Encoder: ${job.encoder}` : "Encoder —";
+  const canCancel = job && ["ripping", "converting"].includes(status);
+  $("#cancel-job").classList.toggle("hidden", !canCancel);
+  $("#cancel-job").dataset.jobId = canCancel ? job.id : "";
+  if (!canCancel) {
+    $("#cancel-job").disabled = false;
+    $("#cancel-status").classList.add("hidden");
+    $("#cancel-status").textContent = "";
+  }
   document.querySelectorAll("[data-stage]").forEach((element) => {
     element.classList.toggle("active", ["ripping", "converting", "publishing"].includes(status) && element.dataset.stage === status);
   });
 }
 
-function renderJobList(target, jobs) {
+function renderJobList(target, jobs, allowDelete = false) {
   if (!jobs.length) {
     target.innerHTML = '<div class="empty-state">No discs have been processed yet.</div>';
     return;
@@ -77,7 +85,11 @@ function renderJobList(target, jobs) {
     const size = job.outputBytes ? formatBytes(job.outputBytes) : "—";
     const duration = formatDuration(job.durationSeconds);
     const type = job.mediaType === "audio_cd" ? "Music CD" : "DVD";
-    return `<div class="list-row"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
+    const isActive = ["inspecting", "ripping", "converting", "publishing"].includes(job.status);
+    const action = allowDelete && !isActive
+      ? `<button class="button danger remove-job" type="button" data-job-id="${escapeHtml(job.id)}" aria-label="Remove ${title} from history">Remove</button>`
+      : "";
+    return `<div class="list-row${action ? " with-actions" : ""}"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${action}</div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
   }).join("");
 }
 
@@ -94,7 +106,7 @@ async function refreshDashboard() {
   $("#success-count").textContent = data.stats.successful ?? 0;
   $("#failure-count").textContent = data.stats.failures ?? 0;
   $("#average-duration").textContent = formatDuration(data.stats.averageSeconds);
-  const lastFinished = ["completed", "failed"].includes(data.state) ? data.recent[0] : null;
+  const lastFinished = ["completed", "failed", "cancelled"].includes(data.state) ? data.recent[0] : null;
   renderJob(data.active || lastFinished, data.state);
   renderJobList($("#recent-list"), data.recent);
   await refreshChart(state.statsRange);
@@ -102,7 +114,7 @@ async function refreshDashboard() {
 
 async function refreshHistory() {
   const data = await api("/api/v1/history?limit=250");
-  renderJobList($("#history-list"), data.jobs);
+  renderJobList($("#history-list"), data.jobs, true);
 }
 
 async function refreshChart(range) {
@@ -272,6 +284,34 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
   refreshChart(button.dataset.range).catch((error) => notify(error.message, true));
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
+$("#cancel-job").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const id = button.dataset.jobId;
+  if (!id || !confirm("Cancel the current disc job? Any finished media remains untouched.")) return;
+  button.disabled = true;
+  $("#cancel-status").textContent = "Sending cancellation request…";
+  $("#cancel-status").classList.remove("hidden");
+  try {
+    await api(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    $("#cancel-status").textContent = "Cancellation requested. Temporary files will be cleaned up.";
+  } catch (error) {
+    button.disabled = false;
+    $("#cancel-status").textContent = error.message;
+    notify(error.message, true);
+  }
+});
+$("#history-list").addEventListener("click", async (event) => {
+  const button = event.target.closest(".remove-job");
+  if (!button || !confirm("Remove this entry from history? The finished media file will not be deleted.")) return;
+  button.disabled = true;
+  try {
+    await api(`/api/v1/history/${encodeURIComponent(button.dataset.jobId)}`, { method: "DELETE" });
+    await refreshHistory();
+  } catch (error) {
+    button.disabled = false;
+    notify(error.message, true);
+  }
+});
 document.addEventListener("visibilitychange", updateStreams);
 
 $("#check-updates").addEventListener("click", async () => {
@@ -402,7 +442,7 @@ async function initialize() {
     const status = await api("/api/v1/status");
     if (!status.passwordConfigured) {
       $("#auth-state").textContent = "Password not configured";
-      notices.push("Admin password is unset. The UI is unauthenticated; keep it on localhost or a trusted LAN and configure a password in Settings.");
+      notices.push("Admin password is unset. Anyone who can reach the service can administer it; restrict access to your trusted LAN and configure a password in Settings. Do not expose port 8787 to the internet.");
     }
     if (notices.length) {
       $("#warning").textContent = notices.join(" ");

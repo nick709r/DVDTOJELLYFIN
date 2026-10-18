@@ -5,8 +5,9 @@ import { access, stat, statfs } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, activeJob, getSettings, jobStats, listJobs, saveSettings } from "./db.js";
+import { db, activeJob, deleteJob, getSettings, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
+import { cancelActiveJob } from "./job-control.js";
 import { availableEncoders } from "./encoding.js";
 import { runProcess } from "./process.js";
 import { DashboardMetricSampler } from "./metrics-sampler.js";
@@ -153,6 +154,26 @@ app.get("/api/v1/dashboard", async () => {
 app.get<{ Querystring: { limit?: string } }>("/api/v1/history", async (request) => {
   const limit = Math.max(1, Math.min(250, Number(request.query.limit ?? 100) || 100));
   return { jobs: listJobs(limit) };
+});
+
+app.delete<{ Params: { id: string } }>("/api/v1/history/:id", async (request, reply) => {
+  if (activeJob()?.id === request.params.id) {
+    return reply.code(409).send({ error: "An active job cannot be removed from history" });
+  }
+  if (!deleteJob(request.params.id)) return reply.code(404).send({ error: "Job not found" });
+  return { ok: true };
+});
+
+app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/cancel", async (request, reply) => {
+  const job = activeJob();
+  if (job?.id !== request.params.id || !["ripping", "converting"].includes(job.status)) {
+    return reply.code(409).send({ error: "This job is not currently in a cancellable stage" });
+  }
+  if (!cancelActiveJob(request.params.id)) {
+    return reply.code(409).send({ error: "This job can no longer be cancelled" });
+  }
+  events.emit("status");
+  return { ok: true };
 });
 
 app.get<{ Params: { id: string } }>("/api/v1/history/:id", async (request, reply) => {
@@ -537,7 +558,7 @@ app.get("/api/v1/system/events", async (request, reply) => {
 });
 
 export async function startServer(): Promise<void> {
-  const host = process.env.HOST ?? "127.0.0.1";
+  const host = process.env.HOST ?? "0.0.0.0";
   const port = Number(process.env.PORT ?? 8787);
   await app.listen({ host, port });
   if (!passwordConfigured()) {

@@ -5,6 +5,7 @@ export type JobStatus =
   | "publishing"
   | "completed"
   | "failed"
+  | "cancelled"
   | "ignored"
   | "interrupted";
 

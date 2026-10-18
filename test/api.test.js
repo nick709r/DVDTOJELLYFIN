@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
   const { app } = await import("../dist/server.js");
   const { db } = await import("../dist/db.js");
   const jobs = await import("../dist/db.js");
+  const jobControl = await import("../dist/job-control.js");
   try {
     const home = await app.inject({ method: "GET", url: "/" });
     assert.equal(home.statusCode, 200);
@@ -51,6 +52,35 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     jobs.finishJob("music-job", "completed", null, "audio-disc-fingerprint");
     assert.equal(jobs.listJobs(1)[0].mediaType, "audio_cd");
     assert.equal(jobs.lastDiscFingerprint(), "audio-disc-fingerprint");
+
+    jobs.addJob("active-history-entry", "Active disc");
+    const activeDelete = await app.inject({ method: "DELETE", url: "/api/v1/history/active-history-entry" });
+    assert.equal(activeDelete.statusCode, 409);
+    jobs.finishJob("active-history-entry", "failed", "test cleanup");
+
+    const cancelController = new AbortController();
+    jobs.addJob("cancelled-job", "Disc to cancel");
+    jobs.setJobStatus("cancelled-job", "converting", "Encoding disc");
+    jobControl.beginDiscOperation(cancelController);
+    jobControl.registerActiveJob("cancelled-job");
+    const cancelResponse = await app.inject({ method: "POST", url: "/api/v1/jobs/cancelled-job/cancel" });
+    assert.equal(cancelResponse.statusCode, 200);
+    assert.equal(cancelController.signal.aborted, true);
+    jobs.updateJob("cancelled-job", { outputPath: path.join(root, "finished-movie.mkv") });
+    await writeFile(path.join(root, "finished-movie.mkv"), "finished media");
+    jobs.finishJob("cancelled-job", "cancelled", "Cancelled by user");
+    jobControl.endDiscOperation(cancelController);
+    assert.equal(jobs.jobStats().total, 4);
+    assert.equal(jobs.jobStats().successful, 2);
+    assert.equal(jobs.jobStats().failures, 2);
+    const deleteResponse = await app.inject({ method: "DELETE", url: "/api/v1/history/cancelled-job" });
+    assert.equal(deleteResponse.statusCode, 200);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE id = ?").get("cancelled-job").count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM job_events WHERE job_id = ?").get("cancelled-job").count, 0);
+    assert.equal(jobs.jobStats().total, 4);
+    await access(path.join(root, "finished-movie.mkv"));
+    const missingDelete = await app.inject({ method: "DELETE", url: "/api/v1/history/cancelled-job" });
+    assert.equal(missingDelete.statusCode, 404);
 
     const setMusicSettings = await app.inject({
       method: "PUT",
@@ -96,8 +126,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response(JSON.stringify([
-      { name: "v1.0.0" },
-      { name: "v1.1.0" },
+      { name: "v1.5.0" },
+      { name: "v1.6.0" },
       { name: "main" }
     ]), { status: 200, headers: { "Content-Type": "application/json" } });
     try {
@@ -107,7 +137,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         headers: { cookie }
       });
       assert.equal(updateCheck.statusCode, 200);
-      assert.equal(updateCheck.json().latestVersion, "v1.1.0");
+      assert.equal(updateCheck.json().latestVersion, "v1.6.0");
       assert.equal(updateCheck.json().updateAvailable, true);
     } finally {
       globalThis.fetch = originalFetch;

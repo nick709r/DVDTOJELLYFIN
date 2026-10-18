@@ -5,9 +5,9 @@ Linux and Jellyfin. It watches a configured optical drive, uses MakeMKV and
 FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to
 Movies and lossless FLAC albums to Music.
 
-> **Version 1.0:** the current DVD and music-CD feature set is complete. Test
-> your optical drive, media permissions, MakeMKV, and eject behavior on the
-> target Lubuntu server before relying on unattended operation.
+> **Version 1.5:** AutoDisc now listens on all IPv4 interfaces by default so it
+> can be opened from other devices on a trusted home network. It also supports
+> cancelling an active disc job and removing entries from history.
 
 ## Coming in version 2.0
 
@@ -21,7 +21,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.0.
+These are planned features only and are not included in AutoDisc 1.5.
 
 ## Design and behavior
 
@@ -41,9 +41,15 @@ These are planned features only and are not included in AutoDisc 1.0.
   A GTX 710 commonly has no NVENC block; GPU use is not guaranteed.
 - Title lookup uses disc labels by default. External metadata lookup is disabled
   until explicitly configured in Settings.
-- The first-run web interface has no password, as requested. Bind it to
-  localhost or a trusted LAN and configure a password before exposing it more
-  broadly.
+- The first-run web interface has no password, as requested. By default it
+  listens on `0.0.0.0:8787` for access from the home network. Anyone who can
+  reach that port can administer AutoDisc until a password is configured.
+  Configure a password in Settings and restrict access with the host firewall;
+  never forward this port to the internet.
+- The dashboard can cancel a DVD or audio-CD job while it is ripping or
+  converting. Cancellation stops the current job without stopping the disc
+  monitor, removes temporary files, and does not automatically eject the disc.
+  History entries can be removed without deleting completed media files.
 - AutoDisc does not bypass copy protection. Use MakeMKV and the appliance only
   for discs and purposes permitted by applicable law.
 
@@ -75,21 +81,24 @@ without it.
    `/var/lib/autodisc`, `/var/cache/autodisc`, and `/var/cache/autodisc/lidarr-import`.
 3. Open AutoDisc locally, go to **Settings**, and set the Movies and Music
    folders, temporary work folder, drive, and encoding preferences. Initial defaults are
-   `/srv/jellyfin/Movies`, `/srv/jellyfin/Music`, `/var/cache/autodisc`, and `/dev/sr0`. To allow
-   connections from other devices on the home network, first set an administrator
-   password in Settings, then configure `/etc/default/autodisc`:
+   `/srv/jellyfin/Movies`, `/srv/jellyfin/Music`, `/var/cache/autodisc`, and `/dev/sr0`.
+   The service listens on `0.0.0.0:8787` by default, so find the server's
+   current LAN address with `hostname -I` and open
+   `http://<server-lan-ip>:8787` from another device. No server IP is hard-coded;
+   the address may change if your router assigns a new one. To use a different
+   bind address or port, configure `/etc/default/autodisc`:
 
    ```ini
    HOST=0.0.0.0
    PORT=8787
    ```
 
-   `0.0.0.0` makes the service listen on all IPv4 interfaces. After editing the
-   file, run `sudo systemctl daemon-reload` and
-   `sudo systemctl restart autodisc.service`. Find the server's LAN address
-   with `hostname -I`, then open `http://<server-lan-ip>:8787` on another device.
-   If a firewall is enabled, allow TCP port 8787 only from your home subnet.
-   Do not forward this port from the internet.
+   The `HOST` setting defaults to `0.0.0.0` and `PORT` defaults to `8787`.
+   After editing the file, run `sudo systemctl daemon-reload` and
+   `sudo systemctl restart autodisc.service`. If a firewall is enabled, allow
+   TCP port 8787 only from your home subnet. Because the initial interface has
+   no password, restrict network access and configure a password promptly. Do
+   not forward this port from the internet.
 
    The service must have read/write access to the Movies and work directories
    and access to the configured optical drive. In direct-to-Jellyfin music mode,
@@ -138,10 +147,9 @@ without it.
    configured), and confirm that the Jellyfin service account can read produced
    files. Check status and logs with `systemctl status autodisc` and
    `journalctl -u autodisc -f`. Open `http://localhost:8787` locally. The
-   default bind is localhost; to reach the UI from another trusted device, set
-   `HOST` to the server's LAN address, configure an admin password, and restrict
-   access with the host firewall. Use `HOST=0.0.0.0` to listen on LAN interfaces;
-   the service unit reads this value from `/etc/default/autodisc`.
+   default bind is `0.0.0.0`, so it is available at the server's current LAN IP
+   on port 8787. Use `HOST=127.0.0.1` in `/etc/default/autodisc` to limit access
+   to the server itself. The service unit reads overrides from that file.
 5. Test with a known video DVD and an audio CD; verify the selected encoder,
    album tags, output paths, cleanup, and eject before leaving the appliance
    unattended.
@@ -222,8 +230,10 @@ samples are generated only while the dashboard metrics stream is connected.
 Conversion history and statistics are stored in
 SQLite at `/var/lib/autodisc/autodisc.sqlite`.
 
-The initial implementation does not yet include job cancellation/retry,
-pre-publish title editing, configurable failed-artifact retention, or a
-configurable disk reserve. Test disc insertion/removal, interrupted jobs,
-disk-full handling, permissions, cleanup, and eject on the target Lubuntu host
-before unattended operation.
+Version 1.5 adds active-job cancellation and history-entry removal. Removing a
+history entry deletes its database record and event timeline only; it never
+deletes the associated media file. Test disc insertion/removal, cancellation,
+interrupted jobs, disk-full handling, permissions, cleanup, and eject on the
+target Lubuntu host before unattended operation. Retry, pre-publish title
+editing, configurable failed-artifact retention, and a configurable disk
+reserve are not included.

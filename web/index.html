@@ -35,6 +35,8 @@
           <article class="card current-card">
             <div class="card-heading"><div><p class="eyebrow">LIVE JOB</p><h2 id="job-title">Waiting for a DVD</h2></div><span id="job-badge" class="badge idle">Idle</span></div>
             <p id="job-detail" class="muted">Insert a video DVD to begin.</p>
+            <button id="cancel-job" class="button danger hidden" type="button">Cancel job</button>
+            <p id="cancel-status" class="inline-info hidden" role="status"></p>
             <div class="progress-track"><div id="progress-bar"></div></div>
             <div class="progress-meta"><span id="progress-label">Waiting</span><span id="encoder-label">Encoder —</span></div>
             <div class="stage-row" id="stage-row">
@@ -105,7 +107,7 @@
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
-            <p class="hint">Username is <b>admin</b>. A password must be at least 12 characters. Keep the UI on localhost or a trusted LAN.</p>
+            <p class="hint">Username is <b>admin</b>. A password must be at least 12 characters. Without a password, anyone who can reach the service can administer it. Never expose it to the internet.</p>
             <label>Logging level<select name="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
           </article>
           <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>

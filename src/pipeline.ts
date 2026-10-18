@@ -13,6 +13,7 @@ import { inspectAudioCd } from "./audio-cd.js";
 import { processAudioCd } from "./music-pipeline.js";
 import { createMovieOutput } from "./movie-output.js";
 import { isUpdatePending } from "./updater.js";
+import { beginDiscOperation, endDiscOperation, registerActiveJob, wasJobCancelled } from "./job-control.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -28,6 +29,19 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
 }
 
 export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean> {
+  if (isUpdatePending()) return false;
+  if (activeJob()) return true;
+  const controller = new AbortController();
+  beginDiscOperation(controller);
+  const jobSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  try {
+    return await processInsertedDiscCore(jobSignal);
+  } finally {
+    endDiscOperation(controller);
+  }
+}
+
+async function processInsertedDiscCore(signal: AbortSignal): Promise<boolean> {
   if (isUpdatePending()) return false;
   if (activeJob()) return true;
   const settings = getSettings();
@@ -71,6 +85,7 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
   let conversionStartedAt: number | undefined;
   try {
     addJob(id, info.label || null, fingerprint);
+    registerActiveJob(id);
     notifyStatus();
     await assertWritableDirectory(settings.workDir, minimumWorkBytes);
     await assertWritableDirectory(settings.moviesDir, minimumOutputBytes);
@@ -79,6 +94,7 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
     setJobStatus(id, "ripping", "Ripping the longest detected video title with MakeMKV");
     notifyStatus();
     const input = await ripTitle(makemkvDevice, selectedTitle.id, workDir, signal);
+    if (signal.aborted) throw new Error("DVD processing cancelled");
 
     const title = await resolveTitle(info.label || selectedTitle.name, settings, signal);
     const cleanTitle = safeTitle(title.title);
@@ -106,6 +122,7 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
       events.emit("status");
     }, signal);
 
+    if (signal.aborted) throw new Error("DVD processing cancelled");
     updateJob(id, { conversionSeconds: (Date.now() - conversionStartedAt) / 1000 });
     const outputStat = await stat(targetPath);
     if (outputStat.size < 1024) throw new Error("Published movie failed size validation");
@@ -167,8 +184,14 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
       }
     }
   } else {
-    finishJob(id, signal?.aborted ? "interrupted" : "failed", failure ?? "Processing failed");
-    if (!signal?.aborted) setRuntimeStatus("failed");
+    const cancelled = wasJobCancelled(id);
+    const interrupted = signal.aborted && !cancelled;
+    finishJob(
+      id,
+      cancelled ? "cancelled" : interrupted ? "interrupted" : "failed",
+      cancelled ? `Cancelled by user${failure ? `; ${failure}` : ""}` : failure ?? "Processing failed"
+    );
+    setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
   }
   notifyStatus();
   return true;

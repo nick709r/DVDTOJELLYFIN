@@ -12,6 +12,7 @@ import { importAlbumToLidarr } from "./lidarr.js";
 import { runProcess } from "./process.js";
 import { ejectDisc, safeTitle } from "./media.js";
 import { setRuntimeStatus } from "./runtime-status.js";
+import { registerActiveJob, wasJobCancelled } from "./job-control.js";
 
 const minimumWorkBytes = 2 * 1024 ** 3;
 const minimumMusicBytes = 256 * 1024 ** 2;
@@ -64,6 +65,7 @@ export async function processAudioCd(
 
   try {
     addJob(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", disc.fingerprint, "audio_cd");
+    registerActiveJob(id);
     events.emit("status");
     await assertWritableDirectory(settings.workDir, minimumWorkBytes);
     await assertWritableDirectory(outputDir, minimumMusicBytes);
@@ -80,6 +82,7 @@ export async function processAudioCd(
     }
 
     const metadata = await resolveMusicMetadata(disc, settings.musicMetadataEnabled, signal);
+    if (signal?.aborted) throw new Error("Audio CD processing cancelled");
     const albumFolder = safeTitle(`${metadata.artist} - ${metadata.album}${metadata.year ? ` (${metadata.year})` : ""}`);
     const albumTitle = metadata.album;
     updateJob(id, { title: albumTitle });
@@ -127,6 +130,7 @@ export async function processAudioCd(
       ? "Preparing named tracks for Lidarr library import"
       : "Publishing the complete album to Jellyfin Music");
     events.emit("status");
+    if (signal?.aborted) throw new Error("Audio CD processing cancelled");
     finalPath = await uniqueAlbumPath(outputDir, albumFolder);
     updateJob(id, { outputPath: finalPath, outputBytes, encoder: "FLAC lossless", progress: settings.lidarrEnabled ? 99 : 100 });
     await rename(stagingDir, finalPath);
@@ -186,8 +190,14 @@ export async function processAudioCd(
       }
     }
   } else {
-    finishJob(id, signal?.aborted ? "interrupted" : "failed", failure ?? "Audio CD processing failed");
-    if (!signal?.aborted) setRuntimeStatus("failed");
+    const cancelled = wasJobCancelled(id);
+    const interrupted = signal?.aborted && !cancelled;
+    finishJob(
+      id,
+      cancelled ? "cancelled" : interrupted ? "interrupted" : "failed",
+      cancelled ? `Cancelled by user${failure ? `; ${failure}` : ""}` : failure ?? "Audio CD processing failed"
+    );
+    setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
   }
   events.emit("status");
   return true;

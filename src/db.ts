@@ -200,7 +200,7 @@ export function updateJob(id: string, patch: Partial<Pick<Job, "title" | "output
 
 export function finishJob(
   id: string,
-  status: "completed" | "failed" | "interrupted",
+  status: "completed" | "failed" | "cancelled" | "interrupted",
   error: string | null,
   fingerprint?: string
 ): void {
@@ -289,6 +289,11 @@ export function listJobs(limit = 100): Job[] {
       progress, error
     FROM jobs ORDER BY started_at DESC LIMIT ?
   `).all(limit) as Job[];
+}
+
+export function deleteJob(id: string): boolean {
+  return db.prepare("DELETE FROM jobs WHERE id = ? AND status NOT IN ('inspecting', 'ripping', 'converting', 'publishing')")
+    .run(id).changes > 0;
 }
 
 export function jobStats(): {
