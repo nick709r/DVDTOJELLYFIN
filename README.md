@@ -113,6 +113,9 @@ These are planned features only and are not included in AutoDisc 1.6.3. No versi
   reports media before the disc is ready to read—or its media state is not
   reported reliably—recognition probes retry with a capped backoff. An
   insertion scan requested during another check is queued rather than dropped.
+  A MakeMKV response with no video titles only suppresses further probes when
+  it includes a disc label, identifying recognized non-video media; an empty
+  response remains eligible for retry.
 - Audio CDs are extracted and named/tagged as lossless FLAC tracks. They can be
   published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
   library import and organization after naming. MusicBrainz lookup is disabled

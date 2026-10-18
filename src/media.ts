@@ -21,6 +21,10 @@ export interface DiscInfo {
   titles: DiscTitle[];
 }
 
+export function isRecognizedNonVideoDisc(info: DiscInfo): boolean {
+  return info.titles.length === 0 && info.label.trim().length > 0;
+}
+
 export async function inspectDisc(device: string, signal?: AbortSignal): Promise<DiscInfo> {
   const result = await runProcess(makeMkv, ["--robot", "--noscan", "info", device], {
     timeoutMs: 120_000,
