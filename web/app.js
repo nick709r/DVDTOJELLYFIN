@@ -147,10 +147,58 @@ async function loadSettings() {
     : "No metadata API key is saved; lookup will use the disc label until one is configured.";
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
+  await refreshUpdateStatus();
   const encoders = await api("/api/v1/encoders");
   $("#encoder-capability").textContent = encoders.encoders.error
     ? encoders.encoders.error
     : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
+}
+
+async function refreshUpdateStatus() {
+  const data = await api("/api/v1/updates/status");
+  $("#update-version").textContent = `Installed version: ${data.currentVersion}`;
+  const status = $("#update-status");
+  const button = $("#check-updates");
+  if (data.state === "applying") {
+    status.textContent = "An update is being installed. AutoDisc will restart automatically; do not power off the server.";
+    button.disabled = true;
+  } else if (data.state === "success") {
+    status.textContent = `AutoDisc ${data.currentVersion} was updated successfully.`;
+    button.disabled = false;
+  } else if (data.state === "failed") {
+    status.textContent = "The update failed. Check the updater journal for recovery details.";
+    button.disabled = false;
+  } else {
+    status.textContent = "Updates are checked only when you click the button. A newer version is applied automatically.";
+    button.disabled = false;
+  }
+}
+
+async function waitForUpdate() {
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let sawApplying = false;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const data = await api("/api/v1/updates/status");
+      $("#update-version").textContent = `Installed version: ${data.currentVersion}`;
+      if (data.state === "applying") {
+        sawApplying = true;
+        $("#update-status").textContent = "Installing update… AutoDisc will restart when it is complete.";
+      } else if (data.state === "success") {
+        $("#update-status").textContent = `AutoDisc ${data.currentVersion} was updated successfully.`;
+        return;
+      } else if (data.state === "failed") {
+        $("#update-status").textContent = "The update failed. Check the updater journal for recovery details.";
+        return;
+      } else if (sawApplying) {
+        $("#update-status").textContent = "Update service restarted. Confirming the installed version…";
+      }
+    } catch {
+      $("#update-status").textContent = "AutoDisc is restarting to apply the update…";
+    }
+  }
+  $("#update-status").textContent = "The update is taking longer than expected. Check the AutoDisc system service and updater logs.";
 }
 
 function renderMetrics(snapshot) {
@@ -225,6 +273,32 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
 document.addEventListener("visibilitychange", updateStreams);
+
+$("#check-updates").addEventListener("click", async () => {
+  const button = $("#check-updates");
+  const status = $("#update-status");
+  button.disabled = true;
+  status.textContent = "Checking GitHub for a newer AutoDisc release…";
+  try {
+    const check = await api("/api/v1/updates/check");
+    if (!check.updateAvailable) {
+      status.textContent = `AutoDisc ${check.currentVersion} is up to date.`;
+      return;
+    }
+    status.textContent = `AutoDisc ${check.latestVersion} is available. Starting the automatic update…`;
+    await api("/api/v1/updates/apply", { method: "POST" });
+    await waitForUpdate();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    try {
+      const update = await api("/api/v1/updates/status");
+      button.disabled = update.state === "applying";
+    } catch {
+      button.disabled = false;
+    }
+  }
+});
 
 $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();

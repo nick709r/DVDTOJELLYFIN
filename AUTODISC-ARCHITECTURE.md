@@ -309,6 +309,9 @@ under `/api/v1`; keep liveness/readiness at `/api/health`.
 | `GET /api/v1/stats?range=7d\|30d` | Daily success/failure counts and duration series. |
 | `GET /api/v1/settings` | Redacted effective settings and capability diagnostics. |
 | `PUT /api/v1/settings` | Validate and persist settings; active jobs retain their snapshot. |
+| `GET /api/v1/updates/status` | Installed version and last system-updater state. |
+| `GET /api/v1/updates/check` | Check the newest stable, versioned GitHub tag on demand. |
+| `POST /api/v1/updates/apply` | Queue a newer tagged version; refuse while a disc job is active. |
 | `POST /api/v1/lidarr/test` | Verify the configured Lidarr URL and API key without returning credentials. |
 | `GET /api/v1/encoders` | FFmpeg software/NVENC capability report. |
 | `POST /api/v1/login` / `POST /api/v1/logout` | Configure a password-protected administrator session. |
@@ -431,6 +434,7 @@ Do not expose detailed host information to unauthenticated callers.
 | FFmpeg option differences | Encoder and subtitle/audio options vary by build, driver, and source streams; static capability claims are unsafe. |
 | Crash at the publish/DB boundary | A final movie may exist while its job is not marked complete, or vice versa, without startup reconciliation. |
 | One service process runs UI and worker | A process failure temporarily stops both; persistent job records and systemd restart/recovery are essential. |
+| In-app updater needs privileged file replacement | Keep root authority in a fixed systemd path-triggered helper; never run downloaded scripts as root or grant the web service sudo. The helper independently verifies the latest stable repository tag, stages and builds source as the service account, snapshots SQLite while stopped, verifies startup, and retains application/database rollback until healthy. |
 | Eject behavior is hardware-dependent | Some drives do not report tray/media changes consistently; never assume eject implies successful removal. |
 | Jellyfin scanning is outside AutoDisc | A successful file move does not guarantee immediate library visibility unless Jellyfin's library monitoring works. |
 
@@ -660,7 +664,9 @@ and configuration; SQLite persistence; process, disc, and filesystem adapters;
 serialized pipeline and recovery; REST/auth/SSE and on-demand metrics; static UI;
 systemd installation; tests and operational documentation. Real drive, MakeMKV,
 FFmpeg/NVENC, systemd-permission, eject, and restart acceptance still must run
-on the target Lubuntu server.
+on the target Lubuntu server. Versioned application updates are checked only
+when requested from Settings and applied through the constrained systemd
+updater, with service/database rollback on failed startup.
 
 ### Version 1.0 implementation boundary
 

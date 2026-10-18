@@ -13,6 +13,7 @@ import { DashboardMetricSampler } from "./metrics-sampler.js";
 import { getRuntimeStatus } from "./runtime-status.js";
 import { configureLogLevel } from "./logger.js";
 import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
+import { checkForUpdate, clearUpdatePending, getInstalledVersion, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
@@ -207,6 +208,46 @@ function pathsOverlap(first: string, second: string): boolean {
 }
 
 app.get("/api/v1/settings", async () => ({ settings: publicSettings(getSettings()) }));
+
+app.get("/api/v1/updates/status", async () => ({
+  currentVersion: await getInstalledVersion(),
+  state: await getUpdateStatus()
+}));
+
+app.get("/api/v1/updates/check", async (_request, reply) => {
+  try {
+    return await checkForUpdate();
+  } catch (error) {
+    app.log.error({ err: error }, "AutoDisc update check failed");
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "AutoDisc update check failed" });
+  }
+});
+
+app.post("/api/v1/updates/apply", async (_request, reply) => {
+  const updaterState = await getUpdateStatus();
+  if (updaterState === "applying") return reply.code(409).send({ error: "An AutoDisc update is already running" });
+  if (updaterState === "failed") clearUpdatePending();
+  if (activeJob()) return reply.code(409).send({ error: "Wait for the current disc job to finish before updating AutoDisc" });
+  if (isUpdatePending()) return reply.code(409).send({ error: "An AutoDisc update is already queued" });
+
+  let update: UpdateCheck;
+  try {
+    update = await checkForUpdate();
+  } catch (error) {
+    app.log.error({ err: error }, "AutoDisc update check before apply failed");
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "AutoDisc update check failed" });
+  }
+  if (!update.updateAvailable) return reply.code(409).send({ error: "AutoDisc is already up to date" });
+  if (activeJob()) return reply.code(409).send({ error: "A disc job started; wait for it to finish before updating AutoDisc" });
+
+  try {
+    await queueUpdate(`v${update.latestVersion.replace(/^v/, "")}`);
+  } catch (error) {
+    app.log.error({ err: error }, "Could not queue AutoDisc update");
+    return reply.code(503).send({ error: error instanceof Error ? error.message : "Could not queue AutoDisc update" });
+  }
+  return reply.code(202).send({ queued: true, version: update.latestVersion });
+});
 
 app.post<{ Body: { url?: unknown; apiKey?: unknown } }>("/api/v1/lidarr/test", async (request, reply) => {
   const settings = getSettings();

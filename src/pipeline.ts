@@ -12,6 +12,7 @@ import { log } from "./logger.js";
 import { inspectAudioCd } from "./audio-cd.js";
 import { processAudioCd } from "./music-pipeline.js";
 import { createMovieOutput } from "./movie-output.js";
+import { isUpdatePending } from "./updater.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -27,10 +28,12 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
 }
 
 export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean> {
+  if (isUpdatePending()) return false;
   if (activeJob()) return true;
   const settings = getSettings();
   const devicePath = settings.opticalDevice;
   const audioDisc = await inspectAudioCd(devicePath, signal);
+  if (isUpdatePending()) return false;
   if (audioDisc) return processAudioCd(devicePath, audioDisc, signal);
   const makemkvDevice = `dev:${devicePath}`;
   let info;
@@ -43,6 +46,7 @@ export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean
     });
     return false;
   }
+  if (isUpdatePending()) return false;
   const selectedTitle = info.titles.sort((left, right) => right.durationSeconds - left.durationSeconds)[0];
   if (!selectedTitle) {
     log("info", "disc", "Ignoring media with no video titles");

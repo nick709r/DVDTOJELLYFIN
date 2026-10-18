@@ -30,6 +30,8 @@ These are planned features only and are not included in AutoDisc 1.0.
   by default; enable it to supply metadata for Lidarr matching.
 - Movies are organized in a folder named after the selected title, with the
   movie file using the same name (for example, `Movies/Karate Kid/Karate Kid.mkv`).
+- Settings can manually check for a newer stable GitHub version tag and apply
+  it automatically without polling for updates in the background.
 - FFmpeg probes NVENC and tests initialization before selecting it. `auto`
   falls back to software encoding when hardware encoding is absent or unusable.
   A GTX 710 commonly has no NVENC block; GPU use is not guaranteed.
@@ -159,18 +161,37 @@ sudo systemctl stop autodisc.service
 sudo systemctl restart autodisc.service
 sudo systemctl status autodisc.service
 sudo journalctl -u autodisc.service -f
+sudo systemctl status autodisc-update.path
+sudo journalctl -u autodisc-update.service
 ```
 
 `start` starts a stopped service, `stop` shuts it down, and `restart` stops and
 starts it again (for example, after changing `/etc/default/autodisc`). Follow
 the logs with `journalctl` when diagnosing startup or disc-processing issues.
 
-To update AutoDisc from the latest `main` branch, first wait for the dashboard
-to show **Idle**. Stopping the service during a disc job interrupts that job.
-The installer preserves settings and history in `/var/lib/autodisc`, replaces
-the deployed application in `/opt/autodisc`, rebuilds it, then enables and
-starts the service again. Back up the database while the service is stopped if
-you want an extra recovery copy:
+To update AutoDisc, open **Settings** and click **Check for updates**. AutoDisc
+checks the repository's versioned tags and automatically installs the newest
+stable version when it is newer than the installed version. Checks happen only
+when requested; the appliance does not poll GitHub in the background. Updates
+are refused while a disc job is active, and the service restarts during
+installation. Settings and history remain in `/var/lib/autodisc`. The updater
+keeps the previous application until the new service starts successfully and
+rolls back the application and a stopped-service SQLite snapshot if startup
+fails.
+
+In-app updates are installed by a narrowly scoped, root-owned systemd updater;
+the web service itself is not granted root access. This updater is installed by
+the current installer. Upgrade an existing installation once with the
+one-line install/update command below to enable the Settings updater. Updates
+download source archives for versioned tags over HTTPS; untagged commits on
+`main` are not applied automatically. To follow an untagged development commit,
+use the manual installer procedure instead. In-app updates replace the
+application and its systemd units but do not install new operating-system
+packages; use the installer manually if a release adds system dependencies.
+
+For a manual update or a recovery copy, first wait for the dashboard to show
+**Idle**. Stopping the service during a disc job interrupts that job. Back up
+the database while the service is stopped if you want an extra recovery copy:
 
 ```sh
 sudo systemctl stop autodisc.service
@@ -183,14 +204,16 @@ Then run the same one-line install/update command from the deployment section:
 sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output /tmp/autodisc-main.tar.gz && tar -xzf /tmp/autodisc-main.tar.gz -C /tmp && rm /tmp/autodisc-main.tar.gz && cd /tmp/DVDTOJELLYFIN-main && sudo sh ./scripts/install.sh
 ```
 
-The installer starts the service when it finishes. Confirm the update with
-`sudo systemctl status autodisc.service` and open `http://localhost:8787`.
+The installer starts the service and updater watcher when it finishes. Confirm
+the update with `sudo systemctl status autodisc.service`. For updater
+diagnostics, inspect `sudo journalctl -u autodisc-update.service`.
 
 ## Settings and operations
 
 The dashboard shows service status and conversion progress. Settings include
 Movies/Music output and work paths, optional Lidarr import, format/quality,
-encoder policy, eject behavior, password, and optional TMDB/MusicBrainz metadata lookup. Resource
+encoder policy, eject behavior, password, optional TMDB/MusicBrainz metadata
+lookup, and manually triggered application updates. Resource
 samples are generated only while the dashboard metrics stream is connected.
 Conversion history and statistics are stored in
 SQLite at `/var/lib/autodisc/autodisc.sqlite`.

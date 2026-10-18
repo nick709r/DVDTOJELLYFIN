@@ -63,6 +63,11 @@
       </section>
       <section id="page-settings" class="page hidden">
         <form id="settings-form" class="settings-layout">
+          <article class="card settings-card update-card"><p class="eyebrow">SOFTWARE</p><h2>AutoDisc updates</h2>
+            <p id="update-version" class="inline-info">Checking installed version…</p>
+            <button id="check-updates" class="button secondary" type="button">Check for updates</button>
+            <p id="update-status" class="inline-info" role="status">Updates are checked only when you click the button. A newer version is applied automatically.</p>
+          </article>
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
             <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
             <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>

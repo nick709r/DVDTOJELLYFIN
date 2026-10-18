@@ -94,6 +94,34 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal("metadataApiKey" in authenticated.json().settings, false);
     assert.equal("adminPasswordHash" in authenticated.json().settings, false);
 
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify([
+      { name: "v1.0.0" },
+      { name: "v1.1.0" },
+      { name: "main" }
+    ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    try {
+      const updateCheck = await app.inject({
+        method: "GET",
+        url: "/api/v1/updates/check",
+        headers: { cookie }
+      });
+      assert.equal(updateCheck.statusCode, 200);
+      assert.equal(updateCheck.json().latestVersion, "v1.1.0");
+      assert.equal(updateCheck.json().updateAvailable, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    jobs.addJob("update-blocked-by-active-job", "Disc during update test");
+    const updateDuringJob = await app.inject({
+      method: "POST",
+      url: "/api/v1/updates/apply",
+      headers: { cookie }
+    });
+    assert.equal(updateDuringJob.statusCode, 409);
+    jobs.finishJob("update-blocked-by-active-job", "failed", "expected test cleanup");
+
     const invalidBody = await app.inject({
       method: "PUT",
       url: "/api/v1/settings",

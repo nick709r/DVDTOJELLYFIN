@@ -47,6 +47,7 @@ apt-get install -y \
   gpg \
   nodejs \
   python3 \
+  util-linux \
   udev
 
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
@@ -96,6 +97,7 @@ fi
 install -d -o root -g root -m 0755 /opt/autodisc
 install -d -o autodisc -g autodisc -m 0750 /var/lib/autodisc /var/cache/autodisc /var/cache/autodisc/lidarr-import
 install -d -o autodisc -g autodisc -m 0700 /var/lib/autodisc/.MakeMKV
+install -d -o root -g autodisc -m 1770 /var/lib/autodisc/updater
 cp "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/tsconfig.json" /opt/autodisc/
 cp "$ROOT/README.md" "$ROOT/AUTODISC-ARCHITECTURE.md" /opt/autodisc/
 rm -rf /opt/autodisc/src /opt/autodisc/web
@@ -108,10 +110,14 @@ npm run build
 npm prune --omit=dev
 
 install -o root -g root -m 0644 "$ROOT/service/autodisc.service" /etc/systemd/system/autodisc.service
+install -d -o root -g root -m 0755 /usr/local/libexec
+install -o root -g root -m 0755 "$ROOT/scripts/autodisc-update.sh" /usr/local/libexec/autodisc-update
+install -o root -g root -m 0644 "$ROOT/service/autodisc-update.service" /etc/systemd/system/autodisc-update.service
+install -o root -g root -m 0644 "$ROOT/service/autodisc-update.path" /etc/systemd/system/autodisc-update.path
 if [ ! -e /etc/default/autodisc ]; then
   install -o root -g root -m 0640 /dev/null /etc/default/autodisc
 fi
-
 systemctl daemon-reload
+systemctl enable --now autodisc-update.path
 systemctl enable --now autodisc.service
 echo "AutoDisc installed and started. Configure /etc/default/autodisc and restart with: systemctl restart autodisc"
