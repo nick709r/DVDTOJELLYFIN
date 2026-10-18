@@ -11,24 +11,34 @@ import { log as writeLog } from "./logger.js";
 let stopping = false;
 let seenInsertedDisc = false;
 let checking = false;
+let scanRequested = false;
+let mediaWasPresent: boolean | undefined;
 let debounceTimer: NodeJS.Timeout | undefined;
+let presenceTimer: NodeJS.Timeout | undefined;
 let monitorChild: ChildProcess | undefined;
 let pendingJob: Promise<boolean> | undefined;
+let lastMediaStateWarningAt = 0;
 
 function log(level: "info" | "warn" | "error", message: string): void {
   writeLog(level, "disc-monitor", message);
 }
 
 async function handleInsert(signal: AbortSignal): Promise<void> {
-  if (checking || seenInsertedDisc || activeJob() || signal.aborted) return;
+  if (signal.aborted) return;
+  if (checking) {
+    scanRequested = true;
+    return;
+  }
+  if (seenInsertedDisc || activeJob()) return;
   checking = true;
   setRuntimeStatus("inspecting");
   try {
     const device = getSettings().opticalDevice;
-    if (await mediaPresent(device)) {
+    const present = await mediaPresent(device);
+    if (present) {
       pendingJob = processInsertedDisc(signal);
       seenInsertedDisc = await pendingJob;
-    } else {
+    } else if (present === false) {
       clearInsertedDisc();
     }
   } catch (error) {
@@ -37,6 +47,10 @@ async function handleInsert(signal: AbortSignal): Promise<void> {
     if (getRuntimeStatus() === "inspecting") setRuntimeStatus("idle");
     pendingJob = undefined;
     checking = false;
+    if (scanRequested && !signal.aborted) {
+      scanRequested = false;
+      scheduleInsert(signal);
+    }
   }
 }
 
@@ -45,14 +59,39 @@ function scheduleInsert(signal: AbortSignal): void {
   debounceTimer = setTimeout(() => void handleInsert(signal), 450);
 }
 
-async function mediaPresent(device: string): Promise<boolean> {
+async function mediaPresent(device: string): Promise<boolean | null> {
   try {
     const sectors = Number((await readFile(`/sys/class/block/${basename(device)}/size`, "utf8")).trim());
     return Number.isFinite(sectors) && sectors > 0;
   } catch (error) {
-    log("error", `Cannot verify optical media state: ${error instanceof Error ? error.message : "unknown error"}`);
-    return false;
+    const now = Date.now();
+    if (now - lastMediaStateWarningAt >= 60_000) {
+      lastMediaStateWarningAt = now;
+      log("warn", `Cannot verify optical media state: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
+    return null;
   }
+}
+
+async function reconcileMediaPresence(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  const device = getSettings().opticalDevice;
+  const present = await mediaPresent(device);
+  if (present === null) return;
+  if (!present) {
+    if (mediaWasPresent !== false || seenInsertedDisc) {
+      clearInsertedDisc();
+    }
+    if (seenInsertedDisc && !activeJob()) {
+      seenInsertedDisc = false;
+      discRemoved();
+    }
+    mediaWasPresent = false;
+    return;
+  }
+  const newlyPresent = mediaWasPresent !== true;
+  mediaWasPresent = true;
+  if (newlyPresent && !seenInsertedDisc && !activeJob()) scheduleInsert(signal);
 }
 
 async function monitor(signal: AbortSignal): Promise<void> {
@@ -78,6 +117,7 @@ async function monitor(signal: AbortSignal): Promise<void> {
           if (path === configuredDevice) writeLog("debug", "disc-monitor", "udev event", { action, path });
           if (path === configuredDevice && action === "remove") {
             seenInsertedDisc = false;
+            mediaWasPresent = false;
             clearInsertedDisc();
             discRemoved();
           }
@@ -91,6 +131,7 @@ async function monitor(signal: AbortSignal): Promise<void> {
       const onSettings = (changed: { opticalDevice?: string }): void => {
         if (!changed.opticalDevice) return;
         seenInsertedDisc = false;
+        mediaWasPresent = undefined;
         clearInsertedDisc();
         scheduleInsert(signal);
       };
@@ -121,12 +162,25 @@ async function monitor(signal: AbortSignal): Promise<void> {
 
 export function startDiscMonitor(signal: AbortSignal): () => Promise<void> {
   stopping = false;
+  scanRequested = false;
+  mediaWasPresent = undefined;
   const onAbort = (): void => {
     stopping = true;
     if (debounceTimer) clearTimeout(debounceTimer);
+    if (presenceTimer) clearInterval(presenceTimer);
+    presenceTimer = undefined;
     monitorChild?.kill("SIGTERM");
   };
   signal.addEventListener("abort", onAbort, { once: true });
+  void reconcileMediaPresence(signal).catch((error: unknown) => {
+    log("error", `Initial optical media state check failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  });
+  presenceTimer = setInterval(() => {
+    void reconcileMediaPresence(signal).catch((error: unknown) => {
+      log("error", `Optical media state reconciliation failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    });
+  }, 2000);
+  presenceTimer.unref();
   const running = monitor(signal);
   return async () => {
     onAbort();

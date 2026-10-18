@@ -167,11 +167,12 @@ worker so a duplicate udev event cannot queue or start a second rip.
    automatically start a second job while one is active.
 
 udev delivery and optical drive state vary across distributions and drive
-firmware. A startup self-test and a physical-drive integration test are release
-requirements; event subscription alone is not proof that disc detection works.
-Do not use frequent shell polling as the primary detection mechanism. A slow
-state check can be a configurable recovery fallback if events are known to be
-unreliable.
+firmware. Start with a media-presence check and use a lightweight two-second
+state reconciliation as a fallback for missed insertion/removal events. Only
+schedule a scan on a newly observed insertion, so an unreadable disc is not
+re-probed continuously. Queue an insertion scan that arrives while another
+check is in progress. A physical-drive integration test is still required;
+simulated events alone do not prove detection on the target host.
 
 ### Title selection
 

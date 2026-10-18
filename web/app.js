@@ -596,7 +596,7 @@ async function initialize() {
       notices.push(`Service needs attention: ${Object.entries(health.checks).filter(([name, ready]) => name !== "makemkv" && !ready).map(([name]) => name).join(", ")} unavailable. Check systemd logs and install required host tools.`);
     }
     if (!health.dvdReady) {
-      notices.push("DVD ripping is unavailable until MakeMKV is installed; music CD ripping is unaffected.");
+      notices.push("DVD ripping is unavailable because AutoDisc cannot find an executable makemkvcon on the service PATH. Install MakeMKV or make sure its command is available to the AutoDisc service; music CD ripping is unaffected.");
     }
     const status = await api("/api/v1/status");
     if (!status.passwordConfigured) {

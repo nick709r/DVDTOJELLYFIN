@@ -10,6 +10,7 @@ import { db, activeJob, deleteJob, getSettings, jobStats, listJobs, saveSettings
 import { events } from "./events.js";
 import { cancelActiveJob } from "./job-control.js";
 import { availableEncoders } from "./encoding.js";
+import { executableAvailable } from "./executable.js";
 import { runProcess } from "./process.js";
 import { DashboardMetricSampler } from "./metrics-sampler.js";
 import { getRuntimeStatus } from "./runtime-status.js";
@@ -113,7 +114,6 @@ app.get("/api/health", async () => {
   for (const [name, command, versionArg] of [
     ["ffmpeg", process.env.FFMPEG_COMMAND ?? "ffmpeg", "-version"],
     ["ffprobe", process.env.FFPROBE_COMMAND ?? "ffprobe", "-version"],
-    ["makemkv", process.env.MAKEMKV_COMMAND ?? "makemkvcon", "--version"],
     ["udevadm", "udevadm", "--version"],
     ["cdparanoia", process.env.CDPARANOIA_COMMAND ?? "cdparanoia", "-V"],
     ["cd-discid", process.env.CD_DISCID_COMMAND ?? "cd-discid", "--version"]
@@ -125,6 +125,7 @@ app.get("/api/health", async () => {
       checks[name] = false;
     }
   }
+  checks.makemkv = await executableAvailable(process.env.MAKEMKV_COMMAND ?? "makemkvcon");
   const requiredChecks = Object.entries(checks).filter(([name]) => name !== "makemkv");
   return {
     status: "ok",
