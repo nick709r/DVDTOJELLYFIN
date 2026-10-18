@@ -168,11 +168,14 @@ worker so a duplicate udev event cannot queue or start a second rip.
 
 udev delivery and optical drive state vary across distributions and drive
 firmware. Start with a media-presence check and use a lightweight two-second
-state reconciliation as a fallback for missed insertion/removal events. Only
-schedule the initial scan on a newly observed insertion. If a disc is present
-but not yet readable, retry recognition with an exponential backoff capped at
-30 seconds; reset the backoff after removal or successful recognition. Queue
-an insertion scan that arrives while another check is in progress. A
+state reconciliation as a hint for missed insertion/removal events. Always
+probe once at service startup; do not rely on the sysfs media-size value to gate
+recognition probes, since some drives do not update or report it reliably.
+While no job or recognized disc is active, retry failed recognition with an
+exponential backoff capped at 30 seconds. The presence check may trigger an
+immediate probe on newly observed media but must not override a scheduled
+retry. Reset the backoff after removal or successful recognition. Queue an
+insertion scan that arrives while another check is in progress. A
 physical-drive integration test is still required; simulated events alone do
 not prove detection on the target host.
 

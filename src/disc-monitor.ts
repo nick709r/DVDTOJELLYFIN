@@ -33,31 +33,20 @@ async function handleInsert(signal: AbortSignal): Promise<void> {
   if (seenInsertedDisc || activeJob()) return;
   checking = true;
   setRuntimeStatus("inspecting");
-  let mediaConfirmedPresent = false;
   try {
-    const device = getSettings().opticalDevice;
-    const present = await mediaPresent(device);
-    if (present) {
-      mediaConfirmedPresent = true;
-      pendingJob = processInsertedDisc(signal);
-      seenInsertedDisc = await pendingJob;
-      if (seenInsertedDisc) retryDelayMs = 2000;
-      else if (!signal.aborted) {
-        log("warn", `Disc is present but could not be recognized; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
-        scheduleInsert(signal, retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
-      }
-    } else if (present === false) {
-      clearInsertedDisc();
-      retryDelayMs = 2000;
+    pendingJob = processInsertedDisc(signal);
+    seenInsertedDisc = await pendingJob;
+    if (seenInsertedDisc) retryDelayMs = 2000;
+    else if (!signal.aborted) {
+      log("warn", `Disc is not ready or could not be recognized; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
+      scheduleInsert(signal, retryDelayMs);
+      retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } catch (error) {
     if (!signal.aborted) {
       log("error", `Disc processing could not start: ${error instanceof Error ? error.message : "unknown error"}`);
-      if (mediaConfirmedPresent) {
-        scheduleInsert(signal, retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
-      }
+      scheduleInsert(signal, retryDelayMs);
+      retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } finally {
     if (getRuntimeStatus() === "inspecting") setRuntimeStatus("idle");
@@ -72,7 +61,10 @@ async function handleInsert(signal: AbortSignal): Promise<void> {
 
 function scheduleInsert(signal: AbortSignal, delayMs = 450): void {
   if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => void handleInsert(signal), delayMs);
+  debounceTimer = setTimeout(() => {
+    debounceTimer = undefined;
+    void handleInsert(signal);
+  }, delayMs);
 }
 
 async function mediaPresent(device: string): Promise<boolean | null> {
@@ -93,24 +85,24 @@ async function reconcileMediaPresence(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
   const device = getSettings().opticalDevice;
   const present = await mediaPresent(device);
-  if (present === null) return;
-  if (!present) {
-    if (mediaWasPresent !== false || seenInsertedDisc) {
+  if (present === false) {
+    const confirmedRemoval = mediaWasPresent === true;
+    if (confirmedRemoval) {
       clearInsertedDisc();
-    }
-    if (seenInsertedDisc && !activeJob()) {
-      seenInsertedDisc = false;
-      discRemoved();
+      if (seenInsertedDisc && !activeJob()) {
+        seenInsertedDisc = false;
+        discRemoved();
+      }
+      retryDelayMs = 2000;
     }
     mediaWasPresent = false;
-    retryDelayMs = 2000;
-    return;
-  }
-  const newlyPresent = mediaWasPresent !== true;
-  mediaWasPresent = true;
-  if (newlyPresent && !seenInsertedDisc && !activeJob()) {
-    retryDelayMs = 2000;
-    scheduleInsert(signal);
+  } else if (present === true) {
+    const newlyPresent = mediaWasPresent !== true;
+    mediaWasPresent = true;
+    if (newlyPresent) retryDelayMs = 2000;
+    if (newlyPresent && !seenInsertedDisc && !activeJob()) {
+      scheduleInsert(signal);
+    }
   }
 }
 
@@ -195,6 +187,7 @@ export function startDiscMonitor(signal: AbortSignal): () => Promise<void> {
     monitorChild?.kill("SIGTERM");
   };
   signal.addEventListener("abort", onAbort, { once: true });
+  scheduleInsert(signal);
   void reconcileMediaPresence(signal).catch((error: unknown) => {
     log("error", `Initial optical media state check failed: ${error instanceof Error ? error.message : "unknown error"}`);
   });
