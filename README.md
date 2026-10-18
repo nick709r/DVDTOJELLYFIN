@@ -5,9 +5,30 @@ Linux and Jellyfin. It watches a configured optical drive, uses MakeMKV and
 FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to
 Movies and lossless FLAC albums to Music.
 
-> **Version 1.5:** AutoDisc now listens on all IPv4 interfaces by default so it
-> can be opened from other devices on a trusted home network. It also supports
-> cancelling an active disc job and removing entries from history.
+## Release history
+
+### Version 1.5.0
+
+- Listen on all IPv4 interfaces by default, making the web interface reachable
+  from devices on the trusted home network without hard-coding a server IP.
+- Cancel an active DVD or audio-CD job while it is ripping or converting.
+- Remove completed jobs from history without deleting their media files.
+- Check for and apply stable, versioned GitHub updates manually from Settings.
+- Retain the 1.0 DVD and music-CD workflows, Jellyfin organization, optional
+  Lidarr integration, and Linux service installer.
+
+Passwordless first-run access is available, but anyone who can reach the
+service can administer it. Restrict access to the trusted LAN and configure an
+administrator password.
+
+### Version 1.0.0
+
+- Automatically detect and process video DVDs with MakeMKV and FFmpeg, with
+  hardware-encoder detection and software fallback.
+- Rip audio CDs to named and tagged FLAC tracks, with optional Lidarr import.
+- Organize movies into title-named folders for Jellyfin.
+- Provide a web dashboard, settings, conversion history, and systemd service
+  installation for Linux.
 
 ## Coming in version 2.0
 
@@ -19,7 +40,8 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.5.
+These are planned features only and are not included in AutoDisc 1.5. No version
+2.0 release date has been announced.
 
 ## Design and behavior
 
