@@ -7,6 +7,13 @@ Movies and lossless FLAC albums to Music.
 
 ## Release history
 
+### Version 1.6.2
+
+- Retry recognition when a disc is detected but is not yet readable, using an
+  exponential backoff capped at 30 seconds. Retries stop after successful
+  recognition or media removal, fixing delayed drive readiness without
+  requiring a Settings save to trigger another scan.
+
 ### Version 1.6.1
 
 - Fix automatic disc detection by checking media presence at startup and
@@ -85,7 +92,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.6.1. No version
+These are planned features only and are not included in AutoDisc 1.6.2. No version
 2.0 release date has been announced.
 
 ## Design and behavior
@@ -94,8 +101,10 @@ These are planned features only and are not included in AutoDisc 1.6.1. No versi
   [`AUTODISC-ARCHITECTURE.md`](./AUTODISC-ARCHITECTURE.md).
 - One job at a time; repeated disc events are coalesced.
 - Disc insertion is monitored through udev, with a lightweight two-second
-  media-presence check to recover from missed insertion events. An insertion
-  scan requested during another check is queued rather than dropped.
+  media-presence check to recover from missed insertion events. If the drive
+  reports media before the disc is ready to read, recognition retries with a
+  capped backoff. An insertion scan requested during another check is queued
+  rather than dropped.
 - Audio CDs are extracted and named/tagged as lossless FLAC tracks. They can be
   published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
   library import and organization after naming. MusicBrainz lookup is disabled
