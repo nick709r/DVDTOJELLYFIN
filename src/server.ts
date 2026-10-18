@@ -15,6 +15,8 @@ import { DashboardMetricSampler } from "./metrics-sampler.js";
 import { getRuntimeStatus } from "./runtime-status.js";
 import { configureLogLevel } from "./logger.js";
 import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
+import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manual-music-metadata.js";
+import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
 
@@ -137,6 +139,7 @@ app.get("/api/v1/status", async () => {
   return {
     state: active?.status ?? getRuntimeStatus(),
     job: active,
+    manualMusicMetadata: active ? getManualMusicMetadataPrompt(active.id) : null,
     passwordConfigured: passwordConfigured(),
     encoderPreference: getSettings().encoder
   };
@@ -148,6 +151,7 @@ app.get("/api/v1/dashboard", async () => {
     stats: jobStats(),
     recent: listJobs(10),
     active,
+    manualMusicMetadata: active ? getManualMusicMetadataPrompt(active.id) : null,
     state: active?.status ?? getRuntimeStatus()
   };
 });
@@ -172,6 +176,89 @@ app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/cancel", async (request, 
   }
   if (!cancelActiveJob(request.params.id)) {
     return reply.code(409).send({ error: "This job can no longer be cancelled" });
+  }
+  events.emit("status");
+  return { ok: true };
+});
+
+app.post<{ Body: unknown }>("/api/v1/musicbrainz/release", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "MusicBrainz lookup request must be a JSON object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  if (typeof body.jobId !== "string" || typeof body.releaseId !== "string") {
+    return reply.code(400).send({ error: "A job ID and MusicBrainz release ID are required" });
+  }
+  const prompt = getManualMusicMetadataPrompt(body.jobId);
+  if (!prompt) return reply.code(409).send({ error: "This job is not waiting for manual music metadata" });
+  try {
+    const metadata = await resolveMusicBrainzRelease(
+      body.releaseId,
+      { discId: prompt.discId, fingerprint: "", trackNumbers: prompt.tracks.map((track) => track.number) },
+      getSettings().musicBrainzContactEmail
+    );
+    if (!metadata) {
+      return reply.code(422).send({
+        error: "That release has no medium with matching tracks. You can still enter the album and each track manually."
+      });
+    }
+    return { metadata };
+  } catch (error) {
+    if (error instanceof Error && error.message === "Enter a valid MusicBrainz release ID") {
+      return reply.code(400).send({ error: error.message });
+    }
+    app.log.warn({ err: error }, "Manual MusicBrainz release lookup failed");
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "MusicBrainz lookup failed" });
+  }
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/jobs/:id/music-metadata", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Music metadata must be a JSON object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  const prompt = getManualMusicMetadataPrompt(request.params.id);
+  if (!prompt) return reply.code(409).send({ error: "This job is not waiting for manual music metadata" });
+
+  if (typeof body.artist !== "string" || !body.artist.trim() || body.artist.trim().length > 200 ||
+    typeof body.album !== "string" || !body.album.trim() || body.album.trim().length > 200) {
+    return reply.code(400).send({ error: "Artist and album are required and must be 200 characters or fewer" });
+  }
+  if (body.year !== undefined && body.year !== "" &&
+    (typeof body.year !== "string" || !/^\d{4}$/.test(body.year))) {
+    return reply.code(400).send({ error: "Year must be blank or a four-digit year" });
+  }
+  if (body.source !== undefined && body.source !== "manual" && body.source !== "musicbrainz") {
+    return reply.code(400).send({ error: "Metadata source must be manual or musicbrainz" });
+  }
+  if (!Array.isArray(body.tracks) || body.tracks.length !== prompt.tracks.length) {
+    return reply.code(400).send({ error: "Submit a title for every detected track" });
+  }
+  const tracks: MusicAlbumMetadata["tracks"] = [];
+  for (let index = 0; index < prompt.tracks.length; index += 1) {
+    const expected = prompt.tracks[index];
+    const entry = body.tracks[index];
+    if (!expected || typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return reply.code(400).send({ error: "Track metadata is invalid" });
+    }
+    const track = entry as Record<string, unknown>;
+    if (track.number !== expected.number || typeof track.title !== "string" ||
+      !track.title.trim() || track.title.trim().length > 200) {
+      return reply.code(400).send({ error: `Track ${expected.number} needs a title of 1 to 200 characters` });
+    }
+    tracks.push({ number: expected.number, title: track.title.trim() });
+  }
+
+  const source = body.source === "musicbrainz" ? "musicbrainz" : "manual";
+  const metadata: MusicAlbumMetadata = {
+    artist: body.artist.trim(),
+    album: body.album.trim(),
+    year: typeof body.year === "string" && body.year ? body.year : null,
+    tracks,
+    source
+  };
+  if (!submitManualMusicMetadata(request.params.id, metadata)) {
+    return reply.code(409).send({ error: "This job is no longer waiting for manual music metadata" });
   }
   events.emit("status");
   return { ok: true };
@@ -562,7 +649,8 @@ app.get("/api/v1/events", async (request, reply) => {
   const write = (): void => {
     const active = activeJob();
     const state = active?.status ?? getRuntimeStatus();
-    if (!reply.raw.destroyed && !reply.raw.write(`event: status\ndata: ${JSON.stringify({ active, state })}\n\n`)) {
+    const manualMusicMetadata = active ? getManualMusicMetadataPrompt(active.id) : null;
+    if (!reply.raw.destroyed && !reply.raw.write(`event: status\ndata: ${JSON.stringify({ active, state, manualMusicMetadata })}\n\n`)) {
       reply.raw.end();
     }
   };

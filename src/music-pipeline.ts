@@ -8,6 +8,7 @@ import { ripAudioTracks } from "./audio-cd.js";
 import { events } from "./events.js";
 import { log } from "./logger.js";
 import { resolveMusicMetadata } from "./music-metadata.js";
+import { waitForManualMusicMetadata } from "./manual-music-metadata.js";
 import { importAlbumToLidarr } from "./lidarr.js";
 import { runProcess } from "./process.js";
 import { ejectDisc, safeTitle } from "./media.js";
@@ -81,13 +82,20 @@ export async function processAudioCd(
       throw new Error(`Audio extraction returned tracks [${ripped}], expected [${detected}]`);
     }
 
-    const metadata = await resolveMusicMetadata(
+    let metadata = await resolveMusicMetadata(
       disc,
       settings.musicMetadataEnabled,
       signal,
       settings.musicBrainzContactEmail
     );
     if (signal?.aborted) throw new Error("Audio CD processing cancelled");
+    if (settings.musicMetadataEnabled && metadata.source === "offline") {
+      setJobStatus(id, "ripping", "Waiting for manual MusicBrainz or track metadata in the dashboard");
+      events.emit("status");
+      addEvent(id, "metadata", "warn", "Automatic MusicBrainz matching failed; waiting for manual album and track metadata");
+      metadata = await waitForManualMusicMetadata(id, disc, signal);
+      addEvent(id, "metadata", "info", `Music details supplied ${metadata.source === "musicbrainz" ? "from a MusicBrainz release" : "manually"}`);
+    }
     const albumFolder = safeTitle(`${metadata.artist} - ${metadata.album}${metadata.year ? ` (${metadata.year})` : ""}`);
     const albumTitle = metadata.album;
     updateJob(id, { title: albumTitle });

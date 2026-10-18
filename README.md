@@ -7,6 +7,17 @@ Movies and lossless FLAC albums to Music.
 
 ## Release history
 
+### Version 1.6.0
+
+- Add an automatic-failure fallback for MusicBrainz-enabled audio CD jobs:
+  when a usable release cannot be identified, the job pauses with the disc in
+  the drive and requests metadata in the dashboard.
+- Allow entering a MusicBrainz release ID to populate album and track details,
+  or manually entering the artist, album, year, and title of each track.
+- Wait without a timeout for metadata submission, with an option to cancel the
+  paused job. Successful automatic matches and disabled-lookup generic naming
+  continue without intervention.
+
 ### Version 1.5.2
 
 - Ignore `track00.cdda.wav` pregap output from cdparanoia so it cannot cause an
@@ -65,7 +76,7 @@ The next major version is planned to add:
 - A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
 - Manual filename/title editing in the dashboard for cases where automatic title detection fails.
 
-These are planned features only and are not included in AutoDisc 1.5.2. No version
+These are planned features only and are not included in AutoDisc 1.6.0. No version
 2.0 release date has been announced.
 
 ## Design and behavior
@@ -77,6 +88,14 @@ These are planned features only and are not included in AutoDisc 1.5.2. No versi
   published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
   library import and organization after naming. MusicBrainz lookup is disabled
   by default; enable it to supply metadata for Lidarr matching.
+- When MusicBrainz lookup is enabled and an automatic CD match fails, the job
+  pauses with the disc in the drive and opens a manual metadata form in the
+  dashboard. Enter a MusicBrainz release ID to load its matching album/tracks,
+  or provide the artist, album, year, and each track title yourself. The job
+  waits without a timeout, resumes when the metadata is submitted, and can be
+  cancelled from the form.
+  Successful automatic matches are never interrupted; with lookup disabled,
+  CDs retain the unattended generic-name workflow.
 - Movies are organized in a folder named after the selected title, with the
   movie file using the same name (for example, `Movies/Karate Kid/Karate Kid.mkv`).
 - Settings can manually check for a newer stable GitHub version tag and apply

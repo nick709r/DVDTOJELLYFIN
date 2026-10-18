@@ -11,7 +11,7 @@ export interface MusicAlbumMetadata {
   album: string;
   year: string | null;
   tracks: MusicTrackMetadata[];
-  source: "musicbrainz" | "offline";
+  source: "musicbrainz" | "manual" | "offline";
 }
 
 interface MusicBrainzTrack {
@@ -73,20 +73,55 @@ export function parseMusicBrainzRelease(
     );
     medium = release?.media?.find((item) => item.tracks?.length === disc.trackNumbers.length);
   }
-  if (!release?.title || !medium?.tracks) return fallback;
+  if (!release?.title || !medium?.tracks || medium.tracks.length !== disc.trackNumbers.length) return fallback;
   const artist = releaseArtist(release);
   if (!artist) return fallback;
+  const tracks = disc.trackNumbers.map((number, index) => ({
+    number,
+    title: medium.tracks?.[index]?.recording?.title ?? medium.tracks?.[index]?.title ?? ""
+  }));
+  if (tracks.some((track) => !track.title.trim())) return fallback;
 
   return {
     artist,
     album: release.title,
     year: release.date?.match(/^\d{4}/)?.[0] ?? null,
-    tracks: disc.trackNumbers.map((number, index) => ({
-      number,
-      title: medium.tracks?.[index]?.recording?.title ?? medium.tracks?.[index]?.title ?? `Track ${String(number).padStart(2, "0")}`
-    })),
+    tracks,
     source: "musicbrainz"
   };
+}
+
+function musicBrainzHeaders(contactEmail: string): HeadersInit {
+  const contact = contactEmail.trim();
+  return {
+    "User-Agent": `AutoDisc/1.6.0 (https://github.com/nick709r/DVDTOJELLYFIN${contact ? `; contact: ${contact}` : ""})`
+  };
+}
+
+export async function resolveMusicBrainzRelease(
+  releaseId: string,
+  disc: AudioDisc,
+  contactEmail = "",
+  signal?: AbortSignal
+): Promise<MusicAlbumMetadata | null> {
+  const id = releaseId.trim();
+  if (!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(id)) {
+    throw new Error("Enter a valid MusicBrainz release ID");
+  }
+
+  const url = new URL(`https://musicbrainz.org/ws/2/release/${encodeURIComponent(id)}`);
+  url.searchParams.set("inc", "artists+recordings");
+  url.searchParams.set("fmt", "json");
+  const timeout = AbortSignal.timeout(10_000);
+  const response = await fetch(url, {
+    headers: musicBrainzHeaders(contactEmail),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`MusicBrainz returned HTTP ${response.status}`);
+  const release = await response.json() as MusicBrainzRelease;
+  const metadata = parseMusicBrainzRelease({ releases: [release] }, disc);
+  return metadata.source === "musicbrainz" ? metadata : null;
 }
 
 export async function resolveMusicMetadata(
@@ -103,11 +138,8 @@ export async function resolveMusicMetadata(
     url.searchParams.set("inc", "artists+recordings");
     url.searchParams.set("fmt", "json");
     const timeout = AbortSignal.timeout(10_000);
-    const contact = contactEmail.trim();
     const response = await fetch(url, {
-      headers: {
-        "User-Agent": `AutoDisc/1.5.2 (https://github.com/nick709r/DVDTOJELLYFIN${contact ? `; contact: ${contact}` : ""})`
-      },
+      headers: musicBrainzHeaders(contactEmail),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout
     });
     if (!response.ok) throw new Error(`MusicBrainz returned HTTP ${response.status}`);
@@ -115,7 +147,7 @@ export async function resolveMusicMetadata(
     return parseMusicBrainzRelease(payload, disc);
   } catch (error) {
     if (signal?.aborted) throw error;
-    log("warn", "music-metadata", "Optional MusicBrainz lookup failed; using generic track names", {
+    log("warn", "music-metadata", "Automatic MusicBrainz lookup failed; manual metadata may be needed", {
       errorType: error instanceof Error ? error.name : "unknown"
     });
     return fallback;

@@ -14,6 +14,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
   const { db } = await import("../dist/db.js");
   const jobs = await import("../dist/db.js");
   const jobControl = await import("../dist/job-control.js");
+  const manualMetadata = await import("../dist/manual-music-metadata.js");
   try {
     const home = await app.inject({ method: "GET", url: "/" });
     assert.equal(home.statusCode, 200);
@@ -90,7 +91,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(jobs.lastDiscFingerprint(), null);
     jobs.addJob("music-job", "Audio CD test", "audio-disc-fingerprint", "audio_cd");
     jobs.finishJob("music-job", "completed", null, "audio-disc-fingerprint");
-    assert.equal(jobs.listJobs(1)[0].mediaType, "audio_cd");
+    assert.equal(jobs.listJobs(10).find((job) => job.id === "music-job").mediaType, "audio_cd");
     assert.equal(jobs.lastDiscFingerprint(), "audio-disc-fingerprint");
 
     jobs.addJob("active-history-entry", "Active disc");
@@ -175,12 +176,12 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       if (url.includes("/tags?")) {
         return new Response(JSON.stringify([
           { name: "v1.5.0" },
-          { name: "v1.6.0" },
+          { name: "v1.7.0" },
           { name: "main" }
         ]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.includes("/releases/tags/")) return new Response("", { status: 404 });
-      return new Response("### Version 1.6.0\n- Test release notes.", { status: 200 });
+      return new Response("### Version 1.7.0\n- Test release notes.", { status: 200 });
     };
     try {
       const updateCheck = await app.inject({
@@ -189,7 +190,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         headers: { cookie }
       });
       assert.equal(updateCheck.statusCode, 200);
-      assert.equal(updateCheck.json().latestVersion, "v1.6.0");
+      assert.equal(updateCheck.json().latestVersion, "v1.7.0");
       assert.equal(updateCheck.json().updateAvailable, true);
       assert.match(updateCheck.json().releaseNotes, /Test release notes/);
     } finally {
@@ -236,6 +237,96 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: { musicBrainzContactEmail: "not-an-email" }
     });
     assert.equal(invalidMusicBrainzEmail.statusCode, 400);
+
+    jobs.addJob("manual-metadata-job", "Audio CD test", "manual-audio-fingerprint", "audio_cd");
+    const pendingMetadata = manualMetadata.waitForManualMusicMetadata("manual-metadata-job", {
+      discId: "01234567",
+      fingerprint: "manual-audio-fingerprint",
+      trackNumbers: [1, 2]
+    });
+    const dashboardWithPrompt = await app.inject({
+      method: "GET",
+      url: "/api/v1/dashboard",
+      headers: { cookie }
+    });
+    assert.equal(dashboardWithPrompt.json().manualMusicMetadata.jobId, "manual-metadata-job");
+
+    const invalidReleaseId = await app.inject({
+      method: "POST",
+      url: "/api/v1/musicbrainz/release",
+      headers: { cookie },
+      payload: { jobId: "manual-metadata-job", releaseId: "invalid" }
+    });
+    assert.equal(invalidReleaseId.statusCode, 400);
+
+    const originalMusicBrainzFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      title: "Test album",
+      date: "2002-03-04",
+      "artist-credit": [{ name: "Test artist" }],
+      media: [{
+        discs: [{ id: "01234567" }],
+        tracks: [
+          { recording: { title: "Opening track" } },
+          { recording: { title: "Closing track" } }
+        ]
+      }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+    try {
+      const lookup = await app.inject({
+        method: "POST",
+        url: "/api/v1/musicbrainz/release",
+        headers: { cookie },
+        payload: {
+          jobId: "manual-metadata-job",
+          releaseId: "12345678-1234-1234-1234-123456789abc"
+        }
+      });
+      assert.equal(lookup.statusCode, 200);
+      assert.equal(lookup.json().metadata.album, "Test album");
+      assert.equal(lookup.json().metadata.tracks[1].title, "Closing track");
+    } finally {
+      globalThis.fetch = originalMusicBrainzFetch;
+    }
+
+    const invalidTrackSubmit = await app.inject({
+      method: "POST",
+      url: "/api/v1/jobs/manual-metadata-job/music-metadata",
+      headers: { cookie },
+      payload: {
+        artist: "Test artist",
+        album: "Test album",
+        tracks: [{ number: 1, title: "Only one" }]
+      }
+    });
+    assert.equal(invalidTrackSubmit.statusCode, 400);
+    const submitMetadata = await app.inject({
+      method: "POST",
+      url: "/api/v1/jobs/manual-metadata-job/music-metadata",
+      headers: { cookie },
+      payload: {
+        artist: "Test artist",
+        album: "Test album",
+        year: "2002",
+        source: "musicbrainz",
+        tracks: [
+          { number: 1, title: "Opening track" },
+          { number: 2, title: "Closing track" }
+        ]
+      }
+    });
+    assert.equal(submitMetadata.statusCode, 200);
+    assert.deepEqual(await pendingMetadata, {
+      artist: "Test artist",
+      album: "Test album",
+      year: "2002",
+      source: "musicbrainz",
+      tracks: [
+        { number: 1, title: "Opening track" },
+        { number: 2, title: "Closing track" }
+      ]
+    });
+    jobs.finishJob("manual-metadata-job", "completed", null);
   } finally {
     await app.close();
     db.close();

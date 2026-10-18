@@ -100,6 +100,7 @@
             <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
             <label>Contact email for MusicBrainz<input name="musicBrainzContactEmail" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com (optional)"></label>
             <p class="hint">MusicBrainz read-only lookups do not require an API key. AutoDisc identifies itself with a User-Agent; adding a contact email helps MusicBrainz reach you if there is an issue.</p>
+            <p class="hint">When enabled, a successful automatic match continues without interruption. If no usable match is found, the CD job waits for you to enter a release ID or provide album and track names in the dashboard. With lookup disabled, CDs keep processing unattended with generic track names.</p>
             <p class="hint">MusicBrainz provides album and track names for the FLAC tags and filenames. Lidarr needs these details to identify and categorize albums.</p>
           </article>
           <article class="card settings-card"><p class="eyebrow">LIBRARY MANAGEMENT</p><h2>Lidarr import</h2>
@@ -130,6 +131,26 @@
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
         <p id="login-error" class="error-text"></p>
         <button class="button primary" type="submit">Sign in</button>
+      </form>
+    </dialog>
+    <dialog id="music-metadata-dialog" class="metadata-dialog">
+      <form id="music-metadata-form">
+        <p class="eyebrow">MANUAL MUSIC DETAILS</p><h2>MusicBrainz could not identify this CD</h2>
+        <p id="music-metadata-disc" class="muted"></p>
+        <label>MusicBrainz release ID<input name="releaseId" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+        <button id="lookup-musicbrainz-release" class="button secondary" type="button">Look up release ID</button>
+        <p id="music-metadata-status" class="inline-info" role="status">Enter a release ID to load matching album and track details, or fill them in below.</p>
+        <input name="source" type="hidden" value="manual">
+        <div class="form-row">
+          <label>Artist<input name="artist" maxlength="200" required></label>
+          <label>Album<input name="album" maxlength="200" required></label>
+        </div>
+        <label>Year<input name="year" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="Optional"></label>
+        <div id="manual-track-fields" class="manual-track-fields"></div>
+        <div class="metadata-actions">
+          <button class="button primary" type="submit">Save metadata and continue</button>
+          <button id="cancel-metadata-job" class="button danger" type="button">Cancel disc job</button>
+        </div>
       </form>
     </dialog>
     <script type="module" src="/app.js"></script>

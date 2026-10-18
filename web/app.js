@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null };
+const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null };
 const loginDialog = $("#login-dialog");
 
 function notify(message, isError = false) {
@@ -74,6 +74,30 @@ function renderJob(job, fallbackStatus = "idle") {
   });
 }
 
+function renderManualMusicMetadata(prompt) {
+  const dialog = $("#music-metadata-dialog");
+  if (!prompt) {
+    if (dialog.open) dialog.close();
+    state.manualMusicMetadata = null;
+    return;
+  }
+  if (state.manualMusicMetadata?.jobId === prompt.jobId && dialog.open) return;
+  state.manualMusicMetadata = prompt;
+  $("#music-metadata-disc").textContent = prompt.discId
+    ? `Disc ID: ${prompt.discId}. The job is paused; the disc will remain in the drive.`
+    : "No disc ID was available. The job is paused; the disc will remain in the drive.";
+  $("#manual-track-fields").innerHTML = prompt.tracks.map((track) =>
+    `<label>Track ${String(track.number).padStart(2, "0")} title<input name="track-${track.number}" maxlength="200" value="${escapeHtml(track.title)}" required></label>`
+  ).join("");
+  $("#music-metadata-form").elements.namedItem("artist").value = "";
+  $("#music-metadata-form").elements.namedItem("album").value = "";
+  $("#music-metadata-form").elements.namedItem("year").value = "";
+  $("#music-metadata-form").elements.namedItem("source").value = "manual";
+  $("#music-metadata-form").elements.namedItem("releaseId").value = "";
+  $("#music-metadata-status").textContent = "Enter a release ID to load matching album and track details, or fill them in below.";
+  $("#music-metadata-dialog").showModal();
+}
+
 function renderJobList(target, jobs, allowDelete = false) {
   if (!jobs.length) {
     target.innerHTML = '<div class="empty-state">No discs have been processed yet.</div>';
@@ -102,6 +126,7 @@ function escapeHtml(value) {
 async function refreshDashboard() {
   const data = await api("/api/v1/dashboard");
   state.hasActiveJob = Boolean(data.active);
+  renderManualMusicMetadata(data.manualMusicMetadata);
   $("#total-count").textContent = data.stats.total ?? 0;
   $("#success-count").textContent = data.stats.successful ?? 0;
   $("#failure-count").textContent = data.stats.failures ?? 0;
@@ -277,6 +302,7 @@ function updateStreams() {
     const payload = JSON.parse(event.data);
     const active = payload.active;
     state.hasActiveJob = Boolean(active);
+    renderManualMusicMetadata(payload.manualMusicMetadata);
     renderJob(active, payload.state);
     if (previous && !active) {
       if (state.page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
@@ -320,6 +346,85 @@ $("#cancel-job").addEventListener("click", async (event) => {
     button.disabled = false;
     $("#cancel-status").textContent = error.message;
     notify(error.message, true);
+  }
+});
+$("#cancel-metadata-job").addEventListener("click", async () => {
+  const jobId = state.manualMusicMetadata?.jobId;
+  if (!jobId || !confirm("Cancel this disc job? The disc will not be processed.")) return;
+  try {
+    await api(`/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+    $("#music-metadata-status").textContent = "Cancellation requested. Temporary files will be cleaned up.";
+  } catch (error) {
+    $("#music-metadata-status").textContent = error.message;
+  }
+});
+$("#music-metadata-dialog").addEventListener("cancel", (event) => event.preventDefault());
+$("#lookup-musicbrainz-release").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const prompt = state.manualMusicMetadata;
+  const form = $("#music-metadata-form");
+  const releaseId = form.elements.namedItem("releaseId").value.trim();
+  if (!prompt || !releaseId) {
+    $("#music-metadata-status").textContent = "Enter a MusicBrainz release ID first.";
+    return;
+  }
+  button.disabled = true;
+  $("#music-metadata-status").textContent = "Looking up this release on MusicBrainz…";
+  try {
+    const result = await api("/api/v1/musicbrainz/release", {
+      method: "POST",
+      body: JSON.stringify({ jobId: prompt.jobId, releaseId })
+    });
+    const metadata = result.metadata;
+    form.elements.namedItem("artist").value = metadata.artist;
+    form.elements.namedItem("album").value = metadata.album;
+    form.elements.namedItem("year").value = metadata.year || "";
+    form.elements.namedItem("source").value = "musicbrainz";
+    for (const track of metadata.tracks) {
+      const field = form.elements.namedItem(`track-${track.number}`);
+      if (field) field.value = track.title;
+    }
+    $("#music-metadata-status").textContent = "Release matched. Review the details and save to continue.";
+  } catch (error) {
+    $("#music-metadata-status").textContent = `${error.message} Manual album and track entry is still available below.`;
+  } finally {
+    button.disabled = false;
+  }
+});
+$("#music-metadata-form").addEventListener("input", (event) => {
+  if (event.target.name !== "source") {
+    $("#music-metadata-form").elements.namedItem("source").value = "manual";
+  }
+});
+$("#music-metadata-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const prompt = state.manualMusicMetadata;
+  if (!prompt || !form.reportValidity()) return;
+  const values = new FormData(form);
+  const button = form.querySelector('[type="submit"]');
+  button.disabled = true;
+  $("#music-metadata-status").textContent = "Saving metadata and resuming CD processing…";
+  try {
+    await api(`/api/v1/jobs/${encodeURIComponent(prompt.jobId)}/music-metadata`, {
+      method: "POST",
+      body: JSON.stringify({
+        artist: values.get("artist"),
+        album: values.get("album"),
+        year: values.get("year"),
+        source: values.get("source"),
+        tracks: prompt.tracks.map((track) => ({
+          number: track.number,
+          title: values.get(`track-${track.number}`)
+        }))
+      })
+    });
+    renderManualMusicMetadata(null);
+    notify("Music metadata saved. CD processing resumed.");
+  } catch (error) {
+    $("#music-metadata-status").textContent = error.message;
+  } finally {
+    button.disabled = false;
   }
 });
 $("#history-list").addEventListener("click", async (event) => {

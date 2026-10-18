@@ -30,6 +30,14 @@ The first release assumes:
 - Network access is local for the UI. Optional external metadata lookup is
   disabled unless configured.
 
+For music CDs, enabling MusicBrainz lookup preserves unattended processing when
+a usable match is found. If that lookup cannot identify a matching release and
+medium, the audio is retained in the work directory while the active job waits
+for dashboard input. An operator can resolve a MusicBrainz release ID against
+the detected track count or submit album and per-track names manually. The
+job waits without a timeout until submitted or cancelled. Disabling MusicBrainz
+lookup retains the existing offline, generic-name behavior.
+
 ### Important GPU reality
 
 The product should detect actual FFmpeg and device capabilities at runtime, not
