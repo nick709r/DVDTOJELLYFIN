@@ -326,11 +326,12 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         return new Response(JSON.stringify([
           { name: "v1.5.0" },
           { name: "v1.10.0" },
+          { name: "v1.11.0" },
           { name: "main" }
         ]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.includes("/releases/tags/")) return new Response("", { status: 404 });
-      return new Response("### Version 1.10.0\n- Test release notes.", { status: 200 });
+      return new Response("### Version 1.11.0\n- Test release notes.", { status: 200 });
     };
     try {
       const updateCheck = await app.inject({
@@ -339,7 +340,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         headers: { cookie }
       });
       assert.equal(updateCheck.statusCode, 200);
-      assert.equal(updateCheck.json().latestVersion, "v1.10.0");
+      assert.equal(updateCheck.json().latestVersion, "v1.11.0");
       assert.equal(updateCheck.json().updateAvailable, true);
       assert.match(updateCheck.json().releaseNotes, /Test release notes/);
     } finally {

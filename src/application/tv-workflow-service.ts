@@ -153,7 +153,7 @@ function parseDiscStructure(label: string): { seasonNumber?: number; discNumber?
   };
 }
 
-function tvShapeIsPlausible(source: TvWorkflowSource): boolean {
+export function tvPrefilterRejectionReasons(source: TvWorkflowSource): string[] {
   const titleItems = source.manifest.items.filter((item) =>
     item.kind === "title" && item.durationSeconds !== undefined &&
     item.durationSeconds >= tvWorkflowPolicy.episodeMinimumSeconds &&
@@ -167,7 +167,22 @@ function tvShapeIsPlausible(source: TvWorkflowSource): boolean {
     longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) <= tvWorkflowPolicy.runtimeRatioMaximum &&
     !source.manifest.items.some((item) => item.kind === "title" &&
       item.durationSeconds !== undefined && item.durationSeconds > tvWorkflowPolicy.episodeMaximumSeconds);
-  return hasSeasonOrSeriesLabel || hasEpisodeStructure;
+  if (hasSeasonOrSeriesLabel || hasEpisodeStructure) return [];
+
+  const reasons: string[] = [];
+  reasons.push(`disc label "${source.label || "(empty)"}" has no explicit season or series marker`);
+  if (titleItems.length < tvWorkflowPolicy.structuralTitleCount) {
+    reasons.push(
+      `only ${titleItems.length} episode-length titles were found; at least ${tvWorkflowPolicy.structuralTitleCount} are required`
+    );
+  } else if (longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) > tvWorkflowPolicy.runtimeRatioMaximum) {
+    reasons.push("episode-length title runtimes vary too widely to establish episode structure");
+  }
+  if (source.manifest.items.some((item) => item.kind === "title" &&
+    item.durationSeconds !== undefined && item.durationSeconds > tvWorkflowPolicy.episodeMaximumSeconds)) {
+    reasons.push("a title longer than the maximum episode runtime was found");
+  }
+  return reasons;
 }
 
 function bandFor(confidence: number): TvConfidenceBand {
@@ -284,7 +299,7 @@ export class TvWorkflowService {
     fingerprint: string,
     signal?: AbortSignal
   ): Promise<TvWorkflowResult | undefined> {
-    if (!tvShapeIsPlausible(source)) return undefined;
+    if (tvPrefilterRejectionReasons(source).length > 0) return undefined;
 
     const seasonStructure = parseDiscStructure(source.label);
     const [seriesResult, seasonResult, episodeResult] = await Promise.all([
@@ -365,7 +380,7 @@ export class TvWorkflowService {
 }
 
 export function isPotentialTvDisc(source: TvWorkflowSource): boolean {
-  return tvShapeIsPlausible(source);
+  return tvPrefilterRejectionReasons(source).length === 0;
 }
 
 export function summarizeTvPlan(plan: TvProcessingPlan): string {

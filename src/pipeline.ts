@@ -12,7 +12,10 @@ export async function processInsertedDisc(
   metadata: MetadataResolver,
   signal?: AbortSignal
 ): Promise<boolean> {
-  if (isUpdatePending()) return false;
+  if (isUpdatePending()) {
+    log("info", "disc", "Disc inspection deferred because an application update is pending");
+    return false;
+  }
   if (jobs.activeJob()) return true;
   const controller = new AbortController();
   jobs.beginOperation(controller);
@@ -59,13 +62,33 @@ async function processInsertedDiscCore(
     });
     return false;
   }
-  if (isUpdatePending()) return false;
-  if (!inspectedSource) return false;
-  return workflows.process(inspectedSource, {
+  if (isUpdatePending()) {
+    log("info", "disc", "Inspected media was not routed because an application update became pending", {
+      devicePath
+    });
+    return false;
+  }
+  if (!inspectedSource) {
+    log("warn", "disc", "No processing job was created because no source provider recognized the inserted media", {
+      devicePath
+    });
+    return false;
+  }
+  const processed = await workflows.process(inspectedSource, {
     sources,
     jobs,
     metadata,
     signal,
     devicePath
   });
+  if (!processed) {
+    log("warn", "disc", "The selected media workflow declined processing; no job was created", {
+      devicePath,
+      sourceId: inspectedSource.candidate.sourceId,
+      providerId: inspectedSource.candidate.providerId,
+      mediaKind: inspectedSource.candidate.mediaKind,
+      discLabel: inspectedSource.candidate.label
+    });
+  }
+  return processed;
 }

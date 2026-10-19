@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import test from "node:test";
 import { MetadataResolver } from "../dist/application/metadata-resolver.js";
-import { TvWorkflowService, isPotentialTvDisc } from "../dist/application/tv-workflow-service.js";
+import {
+  TvWorkflowService,
+  isPotentialTvDisc,
+  tvPrefilterRejectionReasons
+} from "../dist/application/tv-workflow-service.js";
 import { TvReviewService } from "../dist/application/tv-review-service.js";
 import { defaultSettings } from "../dist/infrastructure/database/default-settings.js";
 import { migrateDatabase } from "../dist/infrastructure/database/migrations.js";
@@ -164,13 +168,53 @@ test("TV workflow only queries TV metadata for a structurally plausible series d
 });
 
 test("generic TV wording alone does not divert a movie disc from the movie workflow", () => {
-  assert.equal(isPotentialTvDisc({
+  const source = {
     ...tvSource("TV Edition"),
     manifest: {
       mediaKind: "dvd",
       items: [{ id: "1", kind: "title", title: "Feature", durationSeconds: 7200 }]
     }
-  }), false);
+  };
+  assert.equal(isPotentialTvDisc(source), false);
+  assert.deepEqual(tvPrefilterRejectionReasons(source), [
+    'disc label "TV Edition" has no explicit season or series marker',
+    "only 0 episode-length titles were found; at least 3 are required",
+    "a title longer than the maximum episode runtime was found"
+  ]);
+});
+
+test("DVD with no usable titles logs why no job was created", async () => {
+  const workflow = new DvdWorkflow();
+  const messages = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => messages.push(JSON.parse(message));
+  try {
+    const result = await workflow.process({
+      source: {
+        provider: {},
+        candidate: {
+          providerId: "source.video-dvd.makemkv",
+          sourceId: "drive-1",
+          mediaKind: "dvd",
+          label: "Burned TV disc",
+          manifest: { mediaKind: "dvd", items: [] }
+        }
+      },
+      sources: {},
+      jobs: { getSettings: () => ({ tvDetectionEnabled: true }) },
+      metadata: {},
+      signal: new AbortController().signal,
+      devicePath: "/dev/sr0"
+    });
+    assert.equal(result, false);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].message, "Disc inspection produced no usable video titles; no job was created and detection will retry");
+  assert.equal(messages[0].sourceId, "drive-1");
+  assert.equal(messages[0].titleItemCount, 0);
 });
 
 test("DVD workflow holds potential TV discs for review and never invokes movie acquisition", async () => {

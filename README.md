@@ -57,6 +57,14 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 
 ## Release history
 
+### Version 1.10.0
+
+- Diagnose disc detections that return to waiting without starting a job:
+  report attempted source providers, no-title DVD inspections, workflow
+  declines, and the reasons TV analysis prefiltering did not match.
+- Preserve Disc Read Error review items for inspection failures and document
+  where to find actionable disc-detection diagnostics.
+
 ### Version 1.9.2
 
 - Integrate TVDB and TMDB TV metadata lookup with TV analysis, configurable
@@ -409,6 +417,12 @@ sudo journalctl -u autodisc-update.service
 `start` starts a stopped service, `stop` shuts it down, and `restart` stops and
 starts it again (for example, after changing `/etc/default/autodisc`). Follow
 the logs with `journalctl` when diagnosing startup or disc-processing issues.
+If the dashboard returns from "Checking Disc" to "Waiting For Disc", inspect
+these logs for the source providers tried and the reason no job started (for
+example, no recognized source or no usable DVD titles). Source-inspection
+errors are also added to the Review Centre as Disc Read Errors. TV-prefilter
+rejections are logged with their reasons and continue through the movie
+workflow; they do not discard the disc.
 
 To update AutoDisc, open **Settings** and click **Check for updates**. AutoDisc
 checks the repository's versioned tags and automatically installs the newest

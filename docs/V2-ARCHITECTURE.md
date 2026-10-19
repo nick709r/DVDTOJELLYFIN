@@ -1,6 +1,6 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** Current as of AutoDisc v1.9.2 on `main`. The v2 provider foundation,
+**Status:** Current as of AutoDisc v1.10.0 on `main`. The v2 provider foundation,
 TV analysis/matching/workflow integration, TV dashboard and validation
 evidence, universal Review Centre, and audio-CD destination recovery are
 implemented. TVDB/TMDB TV metadata lookup, provider failover, provider-aware

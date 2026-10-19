@@ -48,7 +48,7 @@ async function handleInsert(
     seenInsertedDisc = await pendingJob;
     if (seenInsertedDisc) retryDelayMs = 2000;
     else if (!signal.aborted) {
-      log("warn", `Disc is not ready or could not be recognized; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
+      log("warn", `Inspection created no processing job; see the preceding disc diagnostics; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
       scheduleInsert(signal, sources, workflows, metadata, jobs, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }

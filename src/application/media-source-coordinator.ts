@@ -4,6 +4,7 @@ import type {
   MediaSourceProvider,
   SourceAcquisitionOptions
 } from "../contracts/media-source.js";
+import { log } from "../logger.js";
 
 export interface InspectedMediaSource {
   provider: MediaSourceProvider;
@@ -16,8 +17,10 @@ export class MediaSourceCoordinator {
   }
 
   async inspect(sourceId: string, signal?: AbortSignal): Promise<InspectedMediaSource | null> {
+    const attemptedProviders: string[] = [];
     for (const provider of this.providers) {
       if (signal?.aborted) throw signal.reason ?? new Error("Source inspection cancelled");
+      attemptedProviders.push(provider.describe().id);
       const candidate = await provider.inspect(sourceId, signal);
       if (!candidate) continue;
       if (typeof candidate !== "object" || candidate === null ||
@@ -35,6 +38,10 @@ export class MediaSourceCoordinator {
       }
       return { provider, candidate };
     }
+    log("warn", "media-source", "No registered source provider recognized the inserted media", {
+      sourceId,
+      attemptedProviders
+    });
     return null;
   }
 

@@ -82,6 +82,25 @@ test("source coordinator requires at least one configured provider", () => {
   assert.throws(() => new MediaSourceCoordinator([]), /At least one media source provider/);
 });
 
+test("source coordinator logs when no provider recognizes the inserted media", async () => {
+  const provider = createProvider("source.video-dvd.makemkv", null, () => {
+    throw new Error("No source candidate should be acquired");
+  });
+  const messages = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => messages.push(JSON.parse(message));
+  try {
+    const coordinator = new MediaSourceCoordinator([provider]);
+    assert.equal(await coordinator.inspect("/dev/sr0"), null);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].message, "No registered source provider recognized the inserted media");
+  assert.deepEqual(messages[0].attemptedProviders, ["source.video-dvd.makemkv"]);
+});
+
 test("source coordinator accepts a media kind unknown to core orchestration", async () => {
   const candidate = {
     providerId: "source.future",

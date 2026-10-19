@@ -10,7 +10,11 @@ import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
 import { createMovieOutput } from "../../movie-output.js";
-import { summarizeTvPlan, TvWorkflowService } from "../../application/tv-workflow-service.js";
+import {
+  summarizeTvPlan,
+  TvWorkflowService,
+  tvPrefilterRejectionReasons
+} from "../../application/tv-workflow-service.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -38,8 +42,12 @@ export class DvdWorkflow implements MediaWorkflow {
       .map((item) => ({ id: Number(item.id), name: item.title ?? "", durationSeconds: item.durationSeconds ?? 0 }));
     const selectedTitle = selectMainFeature(titles);
     if (!selectedTitle) {
-      log("info", "disc", "No video titles recognized; the inserted disc will be retried", {
-        discLabel: info.label || undefined
+      log("warn", "disc", "Disc inspection produced no usable video titles; no job was created and detection will retry", {
+        sourceId: info.sourceId,
+        providerId: info.providerId,
+        discLabel: info.label || undefined,
+        manifestItemCount: info.manifest.items.length,
+        titleItemCount: info.manifest.items.filter((item) => item.kind === "title").length
       });
       return false;
     }
@@ -74,6 +82,19 @@ export class DvdWorkflow implements MediaWorkflow {
           notifyStatus();
           return true;
         }
+        const reasons = tvPrefilterRejectionReasons({
+          sourceId: info.sourceId,
+          providerId: info.providerId,
+          mediaKind: info.mediaKind,
+          label: info.label,
+          manifest: info.manifest
+        });
+        log("info", "disc", "TV analysis prefilter did not match; disc will continue through the movie workflow", {
+          jobId: id,
+          sourceId: info.sourceId,
+          discLabel: info.label || undefined,
+          reasons
+        });
       } catch (error) {
         const cancelled = jobs.wasJobCancelled(context);
         const interrupted = Boolean(signal.aborted && !cancelled);
