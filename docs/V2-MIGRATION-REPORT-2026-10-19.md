@@ -6,7 +6,7 @@
 This report tracks the Version 2 architecture, TV intelligence, validation
 evidence, and universal Review Centre delivered in v1.9.0. TV output execution,
 parallel jobs, multi-drive processing, and new library integrations remain out
-of scope. The v1.9.1 follow-up now includes TVDB/TMDB TV metadata lookup,
+of scope. The v1.9.2 follow-up now includes TVDB/TMDB TV metadata lookup,
 provider failover, caching, and audit metrics; see
 [TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md).
 

@@ -57,6 +57,18 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 
 ## Release history
 
+### Version 1.9.2
+
+- Integrate TVDB and TMDB TV metadata lookup with TV analysis, configurable
+  provider preference/fallback, and provider health-aware failover.
+- Add provider-specific SQLite result caching with expiry, cache refresh/clear,
+  and durable lookup audit metrics.
+- Replace unavailable metadata dashboard placeholders with real lookup,
+  cache, latency, provider usage, and health statistics.
+- Remove TV metadata settings that did not affect runtime behavior. TV metadata
+  remains review-only; automatic episode assignment and TV publishing remain
+  disabled.
+
 ### Version 1.9.1
 
 - Add TV metadata provider settings for registered providers, lookup preferences,

@@ -28,7 +28,7 @@ test("update check selects the highest stable version tag and ignores other tags
   });
 
   assert.equal(requestedUrl, "https://api.github.com/repos/nick709r/DVDTOJELLYFIN/tags?per_page=100");
-  assert.equal(result.currentVersion, "1.9.1");
+  assert.equal(result.currentVersion, "1.9.2");
   assert.equal(result.latestVersion, "v1.10.0");
   assert.equal(result.updateAvailable, true);
 });

@@ -1,10 +1,10 @@
 AutoDisc Roadmap
 
-This roadmap separates the capabilities already shipped in v1.9.1 from
+This roadmap separates the capabilities already shipped in v1.9.2 from
 remaining Version 2 development. Priorities may change based on community
 feedback and validation results.
 
-## Current status in v1.9.1
+## Current status in v1.9.2
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ queue/event infrastructure remain future gates. See
 [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md) and
 [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md).
 
-AutoDisc v1.9.1 adds provider-backed TV metadata lookups to the existing
+AutoDisc v1.9.2 adds provider-backed TV metadata lookups to the existing
 analysis workflow. Results remain suggestions only; episode assignment and TV
 output execution are not enabled. See
 [TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md) for provider, cache, and

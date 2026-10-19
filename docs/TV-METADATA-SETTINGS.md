@@ -1,6 +1,6 @@
 # TV Metadata Lookup
 
-AutoDisc v1.9.1 can retrieve TV series, season, and episode candidates during
+AutoDisc v1.9.2 can retrieve TV series, season, and episode candidates during
 TV analysis. Metadata influences explainable suggestions only: it does not
 automatically assign episodes or publish TV files.
 
