@@ -9,7 +9,7 @@
   </head>
   <body>
     <aside class="sidebar">
-      <a class="brand" href="#dashboard"><span class="brand-icon">A</span><span>AutoDisc</span></a>
+      <a class="brand" href="#dashboard" aria-label="AutoDisc dashboard"><img src="/autodisc-logo.png" alt="AutoDisc — Analyze, Archive, Organize"></a>
       <nav aria-label="Main navigation">
         <button class="nav-link active" data-page="dashboard">Dashboard</button>
         <button class="nav-link" data-page="history">History</button>
@@ -68,6 +68,11 @@
           <div class="card-heading"><div><p class="eyebrow">VERSION 2</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-analysis">View reports →</button></div>
           <div id="tv-dashboard-stats" class="tv-stat-grid"></div>
           <div class="card-heading"><h3>TV disc trend · 30 days</h3></div><div id="tv-trend" class="tv-trend"></div>
+        </article>
+        <article class="card tv-intelligence-card">
+          <div class="card-heading"><div><p class="eyebrow">TV METADATA</p><h2>Lookup activity</h2></div><button class="text-button" data-page="settings">Configure providers →</button></div>
+          <div id="tv-metadata-dashboard-stats" class="tv-stat-grid"></div>
+          <p id="tv-metadata-dashboard-status" class="hint" role="status">Loading metadata provider metrics…</p>
         </article>
       </section>
       <section id="page-history" class="page hidden">
@@ -189,6 +194,30 @@
               <p>Episode match minimum confidence: 0.72 · Ambiguity margin: 0.12.</p>
               <p>Low-confidence and ambiguous/multipart matches remain review-gated. User overrides are enabled and audited.</p>
               <p>Threshold editing is intentionally locked until calibration against a representative real-disc dataset; displayed scores are evidence rankings, not probabilities.</p>
+            </div>
+          </article>
+          <article class="card settings-card tv-metadata-settings">
+            <p class="eyebrow">VERSION 2 · PROVIDERS</p><h2>TV Metadata</h2>
+            <p class="hint">These preferences and provider credentials are saved for future TV lookup integration. Metadata lookup and caching are not yet connected to TV processing.</p>
+            <label class="check"><input name="tvMetadataLookupEnabled" type="checkbox"> Enable TV metadata lookup (configuration only)</label>
+            <div id="tv-metadata-providers" class="tv-metadata-providers" aria-live="polite">Loading registered metadata providers…</div>
+            <div class="form-row">
+              <label>Preferred provider<select name="tvMetadataPreferredProviderId"></select></label>
+              <label>Fallback provider<select name="tvMetadataFallbackProviderId"></select></label>
+            </div>
+            <div class="form-row">
+              <label class="check"><input name="tvMetadataCacheEnabled" type="checkbox"> Enable metadata caching</label>
+              <label>Cache duration (hours)<input name="tvMetadataCacheDurationHours" type="number" min="1" max="8760" step="1"></label>
+            </div>
+            <label class="check"><input name="tvMetadataAutomaticRefresh" type="checkbox"> Automatically refresh metadata</label>
+            <label class="check"><input name="tvMetadataIncludeSpecials" type="checkbox"> Include specials</label>
+            <label class="check"><input name="tvMetadataIncludeBonusContent" type="checkbox"> Include bonus content</label>
+            <label class="check"><input name="tvMetadataIncludeMultipartEpisodes" type="checkbox"> Include multi-part episodes</label>
+            <button id="refresh-tv-metadata-cache" class="button secondary" type="button">Refresh metadata cache</button>
+            <p id="tv-metadata-cache-status" class="inline-info" role="status"></p>
+            <div class="policy-panel">
+              <b>Current TV matching policy (read-only)</b>
+              <div id="tv-metadata-matching-policy">Loading the current policy…</div>
             </div>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>

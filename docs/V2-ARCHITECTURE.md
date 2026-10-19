@@ -1,9 +1,11 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** Current as of AutoDisc v1.9.0 on `main`. The v2 provider foundation,
+**Status:** Current as of AutoDisc v1.9.1 on `main`. The v2 provider foundation,
 TV analysis/matching/workflow integration, TV dashboard and validation
 evidence, universal Review Centre, and audio-CD destination recovery are
-implemented. Real-disc validation and TV output execution remain outstanding.
+implemented. TV metadata settings and credential checks are exposed, but
+metadata lookup remains disconnected. Real-disc validation and TV output
+execution remain outstanding.
 
 **Implementation progress:** The source-provider seam now uses open media
 domain models, and source candidates dispatch through a registered
@@ -29,6 +31,12 @@ Migration 9 adds the persistent universal Review Centre. Authenticated
 dashboard/API review actions expose filtering, details, and supported recovery;
 audio-CD publishing creates and verifies `Music/Artist/Album` destinations
 before atomic publication.
+AutoDisc 1.9.1 adds a separate `TvMetadataProviderRegistry` for TVDB and TMDB
+TV provider settings, health, and credential validation. This catalog is not
+registered with the production `MetadataResolver`; TV metadata search and
+caching remain unimplemented, so these controls do not change analysis,
+matching, or processing behavior. See
+[`TV-METADATA-SETTINGS.md`](./TV-METADATA-SETTINGS.md).
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for the current diagram, gate status, extension points, and feature blockers.
 See [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md) for its input, scoring,

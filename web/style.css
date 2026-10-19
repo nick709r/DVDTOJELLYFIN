@@ -18,6 +18,7 @@ dialog{background:#151c27;border:1px solid #343e4c;border-radius:12px;color:#edf
 :root[data-theme="light"]{color-scheme:light;color:#202938;background:#f3f5f8;--muted:#687386;--line:#d8dee8;--surface:#fff;--surface2:#f5f7fa;--accent:#4d7d19;--red:#bd3440;--blue:#2865b8}
 :root[data-theme="light"] .sidebar{background:#e9edf3}
 :root[data-theme="light"] .brand{color:#202938}
+.brand img{display:block;width:100%;height:auto;max-width:202px;border-radius:5px}
 :root[data-theme="light"] .nav-link:hover,:root[data-theme="light"] .nav-link.active{background:#dce3ec;color:#202938}
 :root[data-theme="light"] .range.active{background:#dce3ec;color:#202938}
 :root[data-theme="light"] .sidebar-footer{color:#687386}
@@ -51,4 +52,6 @@ dialog{background:#151c27;border:1px solid #343e4c;border-radius:12px;color:#edf
 :root[data-theme="light"] .tv-plan-card,:root[data-theme="light"] .policy-panel,:root[data-theme="light"] .tv-detail pre{background:#f5f7fa}
 :root[data-theme="light"] .review-item pre{background:#eef1f5;color:#455166}
 @media(max-width:900px){.tv-stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.tv-detail-columns{grid-template-columns:1fr 1fr}.review-filters{grid-template-columns:repeat(3,minmax(120px,1fr))}}
+.tv-metadata-providers{display:grid;gap:12px;margin:14px 0}.tv-metadata-provider{min-width:0;padding:13px;border:1px solid var(--line);border-radius:8px;background:var(--surface2)}.tv-metadata-provider h3{margin:0 0 6px;font-size:14px}.provider-health{display:inline-block;padding:4px 7px;border-radius:12px;background:#27303d;color:#c1cad9;font-size:10px;text-transform:capitalize}.provider-health.healthy{background:#233522;color:#a8ee62}.provider-health.validation_failed{background:#3b252b;color:#ff9ca4}.provider-health.lookup_unavailable{background:#3c3522;color:#f3cf72}.tv-metadata-validation{overflow-wrap:anywhere}.tv-metadata-settings .policy-panel{margin-top:15px}.tv-metadata-settings>.hint{line-height:1.55}
+:root[data-theme="light"] .tv-metadata-provider{background:#f5f7fa}
 @media(max-width:680px){.tv-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.tv-plan-heading,.tv-plan-foot{align-items:flex-start;flex-direction:column}.tv-assignment>div:first-child{align-items:flex-start;flex-direction:column}.tv-detail-columns{grid-template-columns:1fr}.tv-case-row{grid-template-columns:minmax(130px,1fr) 60px auto}.tv-case-row>*:nth-child(3){display:none}.form-row.compact{display:grid;grid-template-columns:1fr 1fr}.card-heading:has(.compact){align-items:flex-start;flex-direction:column}.review-filters{grid-template-columns:1fr 1fr}.review-heading{align-items:flex-start}.review-heading h3{overflow-wrap:anywhere}}

@@ -7,6 +7,15 @@ AutoDisc is an easy-to-use DVD and music CD ingestion appliance for Linux and Je
 
 AutoDisc watches a configured optical drive, uses MakeMKV and FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to your Movies library and lossless FLAC albums to Music.
 
+## Dashboard preview
+
+![AutoDisc dashboard](./docs/screenshots/dashboard.png)
+
+![TV metadata settings](./docs/screenshots/tv-metadata-settings.png)
+
+Screenshots are from the Windows development preview; the dashboard warning
+reflects Linux runtime tools that are unavailable in that preview environment.
+
 ## Quick start
 
 Get AutoDisc up and running in a few minutes:
@@ -47,6 +56,17 @@ sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
 That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
 
 ## Release history
+
+### Version 1.9.1
+
+- Add TV metadata provider settings for registered providers, lookup preferences,
+  cache preferences, provider enablement, and securely persisted API keys.
+- Add TVDB and TMDB TV credential connection tests, provider health reporting,
+  read-only matching policy details, and an honest metadata activity card.
+- Keep TV metadata lookup and cache refresh configuration-only; neither feature
+  is connected to TV analysis, matching, or processing workflows yet.
+- Add the supplied AutoDisc logo to the dashboard and document the current UI
+  with screenshots.
 
 ### Version 1.9.0
 

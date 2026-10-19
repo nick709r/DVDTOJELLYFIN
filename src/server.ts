@@ -20,6 +20,9 @@ import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manua
 import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
+import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js";
+import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
+import { tvWorkflowPolicy } from "./application/tv-workflow-service.js";
 import { repositories } from "./db.js";
 import { TvReviewService } from "./application/tv-review-service.js";
 import { TvValidationService } from "./application/tv-validation-service.js";
@@ -75,16 +78,29 @@ app.addHook("preHandler", async (request, reply) => {
 
 app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
 
-function publicSettings(settings: AppSettings): Omit<AppSettings, "metadataApiKey" | "lidarrApiKey" | "adminPasswordSalt" | "adminPasswordHash"> & {
+function publicSettings(settings: AppSettings): Omit<AppSettings,
+  "metadataApiKey" | "lidarrApiKey" | "adminPasswordSalt" | "adminPasswordHash" | "tvMetadataProviderApiKeys"> & {
   metadataApiKeyConfigured: boolean;
   lidarrApiKeyConfigured: boolean;
+  tvMetadataProviderApiKeysConfigured: Record<string, boolean>;
   adminPasswordConfigured: boolean;
 } {
-  const { metadataApiKey, lidarrApiKey, adminPasswordSalt, adminPasswordHash, ...safe } = settings;
+  const {
+    metadataApiKey,
+    lidarrApiKey,
+    adminPasswordSalt,
+    adminPasswordHash,
+    tvMetadataProviderApiKeys,
+    ...safe
+  } = settings;
   return {
     ...safe,
     metadataApiKeyConfigured: Boolean(metadataApiKey),
     lidarrApiKeyConfigured: Boolean(lidarrApiKey),
+    tvMetadataProviderApiKeysConfigured: Object.fromEntries(
+      tvMetadataProviderRegistry.list(settings).map((provider) =>
+        [provider.id, Boolean(tvMetadataProviderApiKeys[provider.id])])
+    ),
     adminPasswordConfigured: Boolean(adminPasswordHash)
   };
 }
@@ -699,6 +715,102 @@ function pathsOverlap(first: string, second: string): boolean {
 
 app.get("/api/v1/settings", async () => ({ settings: publicSettings(getSettings()) }));
 
+app.get("/api/v1/tv/metadata", async () => {
+  const settings = getSettings();
+  const providers = tvMetadataProviderRegistry.list(settings);
+  return {
+    providers,
+    settings: {
+      lookupEnabled: settings.tvMetadataLookupEnabled,
+      preferredProviderId: settings.tvMetadataPreferredProviderId,
+      fallbackProviderId: settings.tvMetadataFallbackProviderId,
+      cacheEnabled: settings.tvMetadataCacheEnabled,
+      cacheDurationHours: settings.tvMetadataCacheDurationHours,
+      automaticRefresh: settings.tvMetadataAutomaticRefresh,
+      includeSpecials: settings.tvMetadataIncludeSpecials,
+      includeBonusContent: settings.tvMetadataIncludeBonusContent,
+      includeMultipartEpisodes: settings.tvMetadataIncludeMultipartEpisodes
+    },
+    matchingPolicy: {
+      confidenceThresholds: {
+        high: tvWorkflowPolicy.highConfidence,
+        medium: tvWorkflowPolicy.mediumConfidence
+      },
+      matchingThresholds: {
+        minimumConfidence: tvEpisodeMatchingPolicy.minimumConfidence,
+        minimumMargin: tvEpisodeMatchingPolicy.minimumMargin
+      },
+      reviewPolicy: "High confidence is at least 0.90; medium is at least 0.72; lower confidence requires review. Medium-confidence matches recommend review, and ambiguous or flagged matches require review at any confidence. TV media execution remains disabled.",
+      matchingPolicy: "Conservative evidence ranking; unsupported assignments remain Unknown."
+    }
+  };
+});
+
+app.get("/api/v1/tv/metadata/providers", async () => ({
+  providers: tvMetadataProviderRegistry.list(getSettings())
+}));
+
+app.get("/api/v1/tv/metadata/metrics", async () => {
+  const settings = getSettings();
+  const preferred = tvMetadataProviderRegistry.list(settings)
+    .find((provider) => provider.id === settings.tvMetadataPreferredProviderId);
+  return {
+    available: false,
+    activeProvider: null,
+    configuredPreferredProvider: preferred ? { id: preferred.id, name: preferred.name } : null,
+    totalSearches: null,
+    cacheHitRate: null,
+    failedLookups: null,
+    successfulLookups: null,
+    message: "TV metadata lookup and caching are not implemented; no lookup metrics are collected."
+  };
+});
+
+app.post<{ Params: { id: string } }>("/api/v1/tv/metadata/providers/:id/test", async (request, reply) => {
+  const { id } = request.params;
+  if (!tvMetadataProviderRegistry.has(id)) {
+    return reply.code(404).send({ error: "TV metadata provider is not registered" });
+  }
+  const current = getSettings();
+  const apiKey = current.tvMetadataProviderApiKeys[id] ?? "";
+  if (!apiKey) return reply.code(400).send({ error: "Save an API key before testing this provider" });
+
+  const validatedAt = new Date().toISOString();
+  try {
+    await tvMetadataProviderRegistry.validateConnection(id, apiKey);
+    const result = {
+      status: "success" as const,
+      message: "Provider credentials and connection validated. TV metadata lookup is not implemented.",
+      validatedAt
+    };
+    saveSettings({
+      tvMetadataProviderValidation: { ...current.tvMetadataProviderValidation, [id]: result }
+    });
+    return { ok: true, providerId: id, validation: result };
+  } catch (error) {
+    const providerMessage = error instanceof TypeError
+      ? "Connection failed. Check network access and the saved API key."
+      : error instanceof Error
+        ? error.message
+        : "Connection failed. Check network access and the saved API key.";
+    const result = {
+      status: "failure" as const,
+      message: providerMessage,
+      validatedAt
+    };
+    saveSettings({
+      tvMetadataProviderValidation: { ...current.tvMetadataProviderValidation, [id]: result }
+    });
+    return reply.code(502).send({ ok: false, providerId: id, validation: result, error: providerMessage });
+  }
+});
+
+app.post("/api/v1/tv/metadata/cache/refresh", async (_request, reply) =>
+  reply.code(501).send({
+    error: "TV metadata caching is configuration-only; no cache backend or TV lookup provider is implemented, so no metadata was refreshed."
+  })
+);
+
 app.get("/api/v1/updates/status", async () => ({
   currentVersion: await getInstalledVersion(),
   state: await getUpdateStatus()
@@ -840,6 +952,85 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if ("tvValidationLoggingEnabled" in body) {
     if (typeof body.tvValidationLoggingEnabled !== "boolean") return reply.code(400).send({ error: "tvValidationLoggingEnabled must be a boolean" });
     patch.tvValidationLoggingEnabled = body.tvValidationLoggingEnabled;
+  }
+  const currentSettings = getSettings();
+  if ("tvMetadataLookupEnabled" in body) {
+    if (typeof body.tvMetadataLookupEnabled !== "boolean") return reply.code(400).send({ error: "tvMetadataLookupEnabled must be a boolean" });
+    patch.tvMetadataLookupEnabled = body.tvMetadataLookupEnabled;
+  }
+  if ("tvMetadataCacheEnabled" in body) {
+    if (typeof body.tvMetadataCacheEnabled !== "boolean") return reply.code(400).send({ error: "tvMetadataCacheEnabled must be a boolean" });
+    patch.tvMetadataCacheEnabled = body.tvMetadataCacheEnabled;
+  }
+  if ("tvMetadataAutomaticRefresh" in body) {
+    if (typeof body.tvMetadataAutomaticRefresh !== "boolean") return reply.code(400).send({ error: "tvMetadataAutomaticRefresh must be a boolean" });
+    patch.tvMetadataAutomaticRefresh = body.tvMetadataAutomaticRefresh;
+  }
+  if ("tvMetadataIncludeSpecials" in body) {
+    if (typeof body.tvMetadataIncludeSpecials !== "boolean") return reply.code(400).send({ error: "tvMetadataIncludeSpecials must be a boolean" });
+    patch.tvMetadataIncludeSpecials = body.tvMetadataIncludeSpecials;
+  }
+  if ("tvMetadataIncludeBonusContent" in body) {
+    if (typeof body.tvMetadataIncludeBonusContent !== "boolean") return reply.code(400).send({ error: "tvMetadataIncludeBonusContent must be a boolean" });
+    patch.tvMetadataIncludeBonusContent = body.tvMetadataIncludeBonusContent;
+  }
+  if ("tvMetadataIncludeMultipartEpisodes" in body) {
+    if (typeof body.tvMetadataIncludeMultipartEpisodes !== "boolean") return reply.code(400).send({ error: "tvMetadataIncludeMultipartEpisodes must be a boolean" });
+    patch.tvMetadataIncludeMultipartEpisodes = body.tvMetadataIncludeMultipartEpisodes;
+  }
+  if ("tvMetadataCacheDurationHours" in body) {
+    if (!Number.isInteger(body.tvMetadataCacheDurationHours) ||
+      Number(body.tvMetadataCacheDurationHours) < 1 || Number(body.tvMetadataCacheDurationHours) > 8760) {
+      return reply.code(400).send({ error: "TV metadata cache duration must be an integer from 1 to 8760 hours" });
+    }
+    patch.tvMetadataCacheDurationHours = Number(body.tvMetadataCacheDurationHours);
+  }
+  const validateTvProviderId = (value: unknown, allowBlank = false): value is string =>
+    typeof value === "string" && ((allowBlank && value === "") || tvMetadataProviderRegistry.has(value));
+  if ("tvMetadataPreferredProviderId" in body) {
+    if (!validateTvProviderId(body.tvMetadataPreferredProviderId)) {
+      return reply.code(400).send({ error: "Preferred TV metadata provider must be registered" });
+    }
+    patch.tvMetadataPreferredProviderId = body.tvMetadataPreferredProviderId;
+  }
+  if ("tvMetadataFallbackProviderId" in body) {
+    if (!validateTvProviderId(body.tvMetadataFallbackProviderId, true)) {
+      return reply.code(400).send({ error: "Fallback TV metadata provider must be blank or registered" });
+    }
+    patch.tvMetadataFallbackProviderId = body.tvMetadataFallbackProviderId;
+  }
+  const effectivePreferredProvider = patch.tvMetadataPreferredProviderId ?? currentSettings.tvMetadataPreferredProviderId;
+  const effectiveFallbackProvider = patch.tvMetadataFallbackProviderId ?? currentSettings.tvMetadataFallbackProviderId;
+  if (effectiveFallbackProvider && effectiveFallbackProvider === effectivePreferredProvider) {
+    return reply.code(400).send({ error: "Preferred and fallback TV metadata providers must be different" });
+  }
+  if ("tvMetadataProviderEnabled" in body) {
+    const value = body.tvMetadataProviderEnabled;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return reply.code(400).send({ error: "TV metadata provider enablement must be an object" });
+    }
+    const enabled = { ...currentSettings.tvMetadataProviderEnabled };
+    for (const [id, isEnabled] of Object.entries(value)) {
+      if (!tvMetadataProviderRegistry.has(id) || typeof isEnabled !== "boolean") {
+        return reply.code(400).send({ error: "TV metadata provider enablement contains an invalid provider or value" });
+      }
+      enabled[id] = isEnabled;
+    }
+    patch.tvMetadataProviderEnabled = enabled;
+  }
+  if ("tvMetadataProviderApiKeys" in body) {
+    const value = body.tvMetadataProviderApiKeys;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return reply.code(400).send({ error: "TV metadata provider API keys must be an object" });
+    }
+    const apiKeys = { ...currentSettings.tvMetadataProviderApiKeys };
+    for (const [id, apiKey] of Object.entries(value)) {
+      if (!tvMetadataProviderRegistry.has(id) || typeof apiKey !== "string" || apiKey.length > 512) {
+        return reply.code(400).send({ error: "TV metadata provider API key is invalid" });
+      }
+      apiKeys[id] = apiKey.trim();
+    }
+    patch.tvMetadataProviderApiKeys = apiKeys;
   }
   if ("metadataEnabled" in body) {
     if (typeof body.metadataEnabled !== "boolean") return reply.code(400).send({ error: "metadataEnabled must be a boolean" });

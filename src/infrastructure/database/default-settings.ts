@@ -25,5 +25,17 @@ export const defaultSettings: AppSettings = {
   tvValidationLoggingEnabled: true,
   tvStoreAnalysisEvidence: true,
   tvStoreMatchingEvidence: true,
+  tvMetadataLookupEnabled: false,
+  tvMetadataPreferredProviderId: "tvdb",
+  tvMetadataFallbackProviderId: "tmdb-tv",
+  tvMetadataCacheEnabled: false,
+  tvMetadataCacheDurationHours: 168,
+  tvMetadataAutomaticRefresh: false,
+  tvMetadataIncludeSpecials: false,
+  tvMetadataIncludeBonusContent: false,
+  tvMetadataIncludeMultipartEpisodes: true,
+  tvMetadataProviderEnabled: {},
+  tvMetadataProviderApiKeys: {},
+  tvMetadataProviderValidation: {},
   logLevel: "info"
 };

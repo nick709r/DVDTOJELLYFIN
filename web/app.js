@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null };
+const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [] };
 const loginDialog = $("#login-dialog");
 const themeToggle = $("#theme-toggle");
 
@@ -149,7 +149,7 @@ async function refreshDashboard() {
   renderJob(data.active || lastFinished, data.state);
   renderJobList($("#recent-list"), data.recent);
   await refreshChart(state.statsRange);
-  await loadTvSummary();
+  await Promise.all([loadTvSummary(), loadTvMetadataMetrics()]);
 }
 
 async function refreshHistory() {
@@ -209,6 +209,77 @@ async function loadTvSummary() {
     ["Unresolved tracks", summary.validation.unresolvedTracks],
     ["Corrections", summary.correctionsApplied]
   ].map(([label, value]) => tvStat(label, value)).join("");
+}
+
+async function loadTvMetadataMetrics() {
+  const target = $("#tv-metadata-dashboard-stats");
+  const status = $("#tv-metadata-dashboard-status");
+  try {
+    const metrics = await api("/api/v1/tv/metadata/metrics");
+    target.innerHTML = [
+      ["Active provider", metrics.activeProvider?.name || "Not active"],
+      ["Metadata searches", metrics.totalSearches],
+      ["Cache hit rate", metrics.cacheHitRate === null ? null : `${Math.round(metrics.cacheHitRate * 100)}%`],
+      ["Failed lookups", metrics.failedLookups],
+      ["Successful lookups", metrics.successfulLookups]
+    ].map(([label, value]) => tvStat(label, value === null || value === undefined ? "Unavailable" : value)).join("");
+    const preferred = metrics.configuredPreferredProvider?.name;
+    status.textContent = metrics.message + (preferred ? ` Preferred provider: ${preferred}.` : "");
+  } catch (error) {
+    target.innerHTML = ["Active provider", "Metadata searches", "Cache hit rate", "Failed lookups", "Successful lookups"]
+      .map((label) => tvStat(label, "Unavailable")).join("");
+    status.textContent = `Metadata metrics could not be loaded: ${error.message}`;
+  }
+}
+
+function renderTvMetadataProviders(providers) {
+  state.tvMetadataProviders = providers;
+  const providerMarkup = providers.length ? providers.map((provider) => {
+    const validation = provider.lastValidation
+      ? `${provider.lastValidation.status === "success" ? "Success" : "Failure"} · ${provider.lastValidation.message} · ${new Date(provider.lastValidation.validatedAt).toLocaleString()}`
+      : "Not tested";
+    return `<section class="tv-metadata-provider">
+      <div class="card-heading"><div><h3>${escapeHtml(provider.name)}</h3><span class="provider-health ${escapeHtml(provider.health)}">${escapeHtml(provider.health.replaceAll("_", " "))}</span></div><span class="muted">${provider.lookupImplemented ? "Lookup available" : "Planned · lookup not implemented"}</span></div>
+      <p class="hint">${escapeHtml(provider.healthMessage)}</p>
+      <label class="check"><input class="tv-metadata-provider-enabled" type="checkbox" data-provider-id="${escapeHtml(provider.id)}"${provider.enabled ? " checked" : ""}> Enable provider (configuration only)</label>
+      ${provider.apiKeyRequired ? `<label>API key<input class="tv-metadata-provider-key" type="password" autocomplete="off" data-provider-id="${escapeHtml(provider.id)}" placeholder="${provider.apiKeyConfigured ? "Leave blank to keep saved key" : "Enter API key"}"></label>
+      <label class="check"><input class="tv-metadata-provider-clear" type="checkbox" data-provider-id="${escapeHtml(provider.id)}"> Clear saved API key</label>
+      <p class="hint">${provider.apiKeyConfigured ? "API key saved; its value is never displayed." : "No API key saved."}</p>` : ""}
+      <button class="button secondary test-tv-metadata-provider" type="button" data-provider-id="${escapeHtml(provider.id)}">Test ${escapeHtml(provider.name)} connection</button>
+      <p class="inline-info tv-metadata-validation" data-provider-validation="${escapeHtml(provider.id)}" role="status">${escapeHtml(validation)}</p>
+    </section>`;
+  }).join("") : '<div class="empty-state">No TV metadata providers are registered.</div>';
+  $("#tv-metadata-providers").innerHTML = providerMarkup;
+
+  const options = providers.map((provider) =>
+    `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)}${provider.lookupImplemented ? "" : " (planned)"}</option>`
+  ).join("");
+  const preferred = $("#settings-form").elements.namedItem("tvMetadataPreferredProviderId");
+  const fallback = $("#settings-form").elements.namedItem("tvMetadataFallbackProviderId");
+  preferred.innerHTML = options;
+  fallback.innerHTML = `<option value="">None</option>${options}`;
+}
+
+async function loadTvMetadataSettings() {
+  const data = await api("/api/v1/tv/metadata");
+  const settings = data.settings;
+  const form = $("#settings-form");
+  renderTvMetadataProviders(data.providers);
+  form.elements.namedItem("tvMetadataLookupEnabled").checked = settings.lookupEnabled;
+  form.elements.namedItem("tvMetadataPreferredProviderId").value = settings.preferredProviderId;
+  form.elements.namedItem("tvMetadataFallbackProviderId").value = settings.fallbackProviderId;
+  form.elements.namedItem("tvMetadataCacheEnabled").checked = settings.cacheEnabled;
+  form.elements.namedItem("tvMetadataCacheDurationHours").value = settings.cacheDurationHours;
+  form.elements.namedItem("tvMetadataAutomaticRefresh").checked = settings.automaticRefresh;
+  form.elements.namedItem("tvMetadataIncludeSpecials").checked = settings.includeSpecials;
+  form.elements.namedItem("tvMetadataIncludeBonusContent").checked = settings.includeBonusContent;
+  form.elements.namedItem("tvMetadataIncludeMultipartEpisodes").checked = settings.includeMultipartEpisodes;
+  const thresholds = data.matchingPolicy.confidenceThresholds;
+  const matching = data.matchingPolicy.matchingThresholds;
+  $("#tv-metadata-matching-policy").innerHTML = `
+    <p>High confidence: ≥ ${thresholds.high.toFixed(2)} · Medium confidence: ≥ ${thresholds.medium.toFixed(2)} · Below medium: review required.</p>
+    <p>Episode match minimum: ${matching.minimumConfidence.toFixed(2)} · Ambiguity margin: ${matching.minimumMargin.toFixed(2)}.</p>
+    <p>${escapeHtml(data.matchingPolicy.reviewPolicy)}</p><p>${escapeHtml(data.matchingPolicy.matchingPolicy)}</p>`;
 }
 
 function renderTvPlanCard(plan, includeActions = false) {
@@ -478,6 +549,7 @@ async function loadSettings() {
   form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
+  await loadTvMetadataSettings();
   $("#lidarr-key-status").textContent = data.settings.lidarrApiKeyConfigured
     ? "A Lidarr API key is saved. It is never displayed."
     : "No Lidarr API key is saved.";
@@ -940,11 +1012,32 @@ $("#settings-form").addEventListener("submit", async (event) => {
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
+    tvMetadataLookupEnabled: form.elements.namedItem("tvMetadataLookupEnabled").checked,
+    tvMetadataPreferredProviderId: values.get("tvMetadataPreferredProviderId"),
+    tvMetadataFallbackProviderId: values.get("tvMetadataFallbackProviderId"),
+    tvMetadataCacheEnabled: form.elements.namedItem("tvMetadataCacheEnabled").checked,
+    tvMetadataCacheDurationHours: Number(values.get("tvMetadataCacheDurationHours")),
+    tvMetadataAutomaticRefresh: form.elements.namedItem("tvMetadataAutomaticRefresh").checked,
+    tvMetadataIncludeSpecials: form.elements.namedItem("tvMetadataIncludeSpecials").checked,
+    tvMetadataIncludeBonusContent: form.elements.namedItem("tvMetadataIncludeBonusContent").checked,
+    tvMetadataIncludeMultipartEpisodes: form.elements.namedItem("tvMetadataIncludeMultipartEpisodes").checked,
+    tvMetadataProviderEnabled: Object.fromEntries(
+      [...form.querySelectorAll(".tv-metadata-provider-enabled")].map((input) =>
+        [input.dataset.providerId, input.checked])
+    ),
     lidarrUrl: values.get("lidarrUrl"),
     lidarrImportDir: values.get("lidarrImportDir"),
     metadataProvider: "tmdb",
     logLevel: values.get("logLevel")
   };
+  const providerApiKeys = {};
+  for (const input of form.querySelectorAll(".tv-metadata-provider-key")) {
+    const providerId = input.dataset.providerId;
+    const clearKey = form.querySelector(`.tv-metadata-provider-clear[data-provider-id="${CSS.escape(providerId)}"]`);
+    if (clearKey.checked) providerApiKeys[providerId] = "";
+    else if (input.value) providerApiKeys[providerId] = input.value;
+  }
+  patch.tvMetadataProviderApiKeys = providerApiKeys;
   if (values.get("metadataApiKey")) patch.metadataApiKey = values.get("metadataApiKey");
   if (form.elements.namedItem("clearMetadataKey").checked) patch.metadataApiKey = "";
   if (values.get("lidarrApiKey")) patch.lidarrApiKey = values.get("lidarrApiKey");
@@ -957,6 +1050,9 @@ $("#settings-form").addEventListener("submit", async (event) => {
     form.elements.namedItem("clearMetadataKey").checked = false;
     form.elements.namedItem("lidarrApiKey").value = "";
     form.elements.namedItem("clearLidarrApiKey").checked = false;
+    form.querySelectorAll(".tv-metadata-provider-key").forEach((input) => { input.value = ""; });
+    form.querySelectorAll(".tv-metadata-provider-clear").forEach((input) => { input.checked = false; });
+    await loadTvMetadataSettings();
     $("#settings-message").textContent = "Settings saved.";
     notify("Settings saved. Active jobs continue with their original settings.");
     if (patch.adminPassword) {
@@ -1014,6 +1110,41 @@ $("#test-lidarr").addEventListener("click", async () => {
     status.textContent = `Connected to Lidarr${result.version ? ` ${result.version}` : ""}.`;
   } catch (error) {
     status.textContent = error.message;
+  }
+});
+
+$("#tv-metadata-providers").addEventListener("click", async (event) => {
+  const button = event.target.closest(".test-tv-metadata-provider");
+  if (!button) return;
+  const providerId = button.dataset.providerId;
+  const status = $("#tv-metadata-providers").querySelector(
+    `.tv-metadata-validation[data-provider-validation="${CSS.escape(providerId)}"]`
+  );
+  button.disabled = true;
+  status.textContent = "Testing provider connection…";
+  try {
+    const result = await api(`/api/v1/tv/metadata/providers/${encodeURIComponent(providerId)}/test`, { method: "POST" });
+    status.textContent = `Success · ${result.validation.message} · ${new Date(result.validation.validatedAt).toLocaleString()}`;
+    await loadTvMetadataSettings();
+  } catch (error) {
+    status.textContent = `Failure · ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#refresh-tv-metadata-cache").addEventListener("click", async () => {
+  const button = $("#refresh-tv-metadata-cache");
+  const status = $("#tv-metadata-cache-status");
+  button.disabled = true;
+  status.textContent = "Requesting metadata cache refresh…";
+  try {
+    await api("/api/v1/tv/metadata/cache/refresh", { method: "POST" });
+    status.textContent = "Metadata cache refreshed.";
+  } catch (error) {
+    status.textContent = `Refresh unavailable: ${error.message}`;
+  } finally {
+    button.disabled = false;
   }
 });
 

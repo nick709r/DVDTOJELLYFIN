@@ -14,6 +14,12 @@ export type EncoderChoice = "auto" | "nvidia" | "software";
 export type OutputFormat = "mp4" | "mkv";
 export type EncodingPreset = "ultrafast" | "veryfast" | "medium";
 
+export interface TvMetadataValidationResult {
+  status: "success" | "failure";
+  message: string;
+  validatedAt: string;
+}
+
 export interface AppSettings {
   moviesDir: string;
   musicDir: string;
@@ -39,6 +45,18 @@ export interface AppSettings {
   tvValidationLoggingEnabled: boolean;
   tvStoreAnalysisEvidence: boolean;
   tvStoreMatchingEvidence: boolean;
+  tvMetadataLookupEnabled: boolean;
+  tvMetadataPreferredProviderId: string;
+  tvMetadataFallbackProviderId: string;
+  tvMetadataCacheEnabled: boolean;
+  tvMetadataCacheDurationHours: number;
+  tvMetadataAutomaticRefresh: boolean;
+  tvMetadataIncludeSpecials: boolean;
+  tvMetadataIncludeBonusContent: boolean;
+  tvMetadataIncludeMultipartEpisodes: boolean;
+  tvMetadataProviderEnabled: Record<string, boolean>;
+  tvMetadataProviderApiKeys: Record<string, string>;
+  tvMetadataProviderValidation: Record<string, TvMetadataValidationResult>;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
