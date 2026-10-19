@@ -57,6 +57,14 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 
 ## Release history
 
+### Version 1.13.0
+
+- Fix optical-drive monitoring so a media-change event after an earlier
+  inspection failure starts a fresh disc scan instead of remaining latched in
+  the waiting state.
+- Reset inspection retry backoff when media changes, while retaining
+  fingerprint-based protection against processing the same disc twice.
+
 ### Version 1.12.0
 
 - Add a live Disc Diagnostics dashboard page for drive detection, source
@@ -265,6 +273,9 @@ remaining blockers.
   reports media before the disc is ready to read—or its media state is not
   reported reliably—recognition probes retry with a capped backoff. An
   insertion scan requested during another check is queued rather than dropped.
+  A udev media-change event starts a fresh inspection even after a prior disc
+  was completed or failed; the processed-disc fingerprint is retained to
+  prevent reprocessing the same disc.
   Any MakeMKV response with no video titles remains eligible for retry,
   including responses that contain a disc label, so an early probe cannot
   suppress detection of a disc that is still becoming readable.

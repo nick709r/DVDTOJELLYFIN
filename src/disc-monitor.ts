@@ -164,7 +164,8 @@ async function monitor(
           const path = block.match(/^DEVNAME=(.+)$/m)?.[1]?.trim();
           const configuredDevice = jobs.getSettings().opticalDevice;
           if (path === configuredDevice) writeLog("debug", "disc-monitor", "udev event", { action, path });
-          if (path === configuredDevice && action === "remove") {
+          const deviceEvent = classifyOpticalDeviceEvent(action, path, configuredDevice);
+          if (deviceEvent === "removed") {
             seenInsertedDisc = false;
             mediaWasPresent = false;
             retryDelayMs = 2000;
@@ -172,8 +173,13 @@ async function monitor(
             clearDiscDiagnostics();
             discRemoved();
           }
-          if ((path === configuredDevice || path === `${configuredDevice}1`) &&
-            (action === "add" || action === "change")) scheduleInsert(signal, sources, workflows, metadata, jobs);
+          if (deviceEvent === "media-change") {
+            seenInsertedDisc = false;
+            retryDelayMs = 2000;
+            if (!jobs.activeJob()) clearDiscDiagnostics();
+            log("info", "Optical media change detected; starting a fresh disc inspection");
+            scheduleInsert(signal, sources, workflows, metadata, jobs);
+          }
           boundary = eventText.indexOf("\n\n");
         }
       });
@@ -211,6 +217,17 @@ async function monitor(
     }
     if (!stopping && !signal.aborted) await delay(5000);
   }
+}
+
+export function classifyOpticalDeviceEvent(
+  action: string | undefined,
+  path: string | undefined,
+  configuredDevice: string
+): "removed" | "media-change" | null {
+  if (path === configuredDevice && action === "remove") return "removed";
+  if ((path === configuredDevice || path === `${configuredDevice}1`) &&
+    (action === "add" || action === "change")) return "media-change";
+  return null;
 }
 
 export function startDiscMonitor(
