@@ -58,13 +58,15 @@ export class TvReviewService {
     if (action.type === "reject-plan" && !action.reason.trim()) {
       throw new Error("Rejecting a TV processing plan requires a reason");
     }
-    const state = action.type === "approve-plan" ? "approved" : action.type === "reject-plan" ? "rejected" : undefined;
-    if (!state) return plan;
-    const updated = this.plans.setState(
+    const decision = action.type === "approve-plan" ? "approved" :
+      action.type === "reject-plan" ? "rejected" : "deferred";
+    const reason = action.type === "reject-plan" ? action.reason.trim() :
+      action.type === "defer-plan" ? action.reason?.trim() : undefined;
+    const updated = this.plans.recordReview(
       action.planId,
-      state,
+      decision,
       action.reviewer,
-      action.type === "reject-plan" ? action.reason.trim() : undefined
+      reason
     );
     if (!updated) throw new Error(`TV processing plan ${action.planId} could not be updated`);
     return updated;

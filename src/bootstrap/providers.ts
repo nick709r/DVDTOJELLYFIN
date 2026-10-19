@@ -17,6 +17,7 @@ import { AudioCdWorkflow } from "../providers/workflows/audio-cd.js";
 import { DvdWorkflow } from "../providers/workflows/dvd.js";
 import { TvWorkflowService } from "../application/tv-workflow-service.js";
 import { TvReviewService } from "../application/tv-review-service.js";
+import { TvValidationService } from "../application/tv-validation-service.js";
 
 function isMediaSourceProvider(provider: Provider): provider is MediaSourceProvider {
   return provider.describe().kind === "source" &&
@@ -35,6 +36,7 @@ export async function createProviderRuntime(
   metadataProviders: MetadataProviderRegistry;
   metadata: MetadataResolver;
   tvWorkflow: TvWorkflowService;
+  tvValidation: TvValidationService;
   tvReview: TvReviewService;
   jobs: JobCoordinator;
 }> {
@@ -73,10 +75,16 @@ export async function createProviderRuntime(
     }
   }
   const metadata = new MetadataResolver(metadataProviders.list());
+  const tvValidation = new TvValidationService(
+    repositories.tvValidationEvidence,
+    repositories.tvEpisodeFeedback,
+    repositories.tvProcessingPlans
+  );
   const tvWorkflow = new TvWorkflowService(
     metadata,
     repositories.tvEpisodeFeedback,
-    repositories.tvProcessingPlans
+    repositories.tvProcessingPlans,
+    tvValidation
   );
   const tvReview = new TvReviewService(
     repositories.tvEpisodeFeedback,
@@ -93,6 +101,7 @@ export async function createProviderRuntime(
     metadataProviders,
     metadata,
     tvWorkflow,
+    tvValidation,
     tvReview,
     jobs
   };

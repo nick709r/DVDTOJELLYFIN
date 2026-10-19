@@ -118,6 +118,21 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (7, ?)")
     .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tv_validation_evidence (
+      id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      origin TEXT NOT NULL CHECK (origin IN ('captured', 'imported')),
+      evidence_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS tv_validation_evidence_fingerprint
+      ON tv_validation_evidence(fingerprint, captured_at);
+    CREATE INDEX IF NOT EXISTS tv_validation_evidence_captured_at
+      ON tv_validation_evidence(captured_at);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (8, ?)")
+    .run(new Date().toISOString());
   const recoveryTime = new Date().toISOString();
   const markInterrupted = db.transaction(() => {
     const jobs = db.prepare(`

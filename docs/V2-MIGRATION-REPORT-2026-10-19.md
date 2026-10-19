@@ -3,9 +3,9 @@
 **Date:** 2026-10-19
 **Branch:** `roadmap/v2-planning`
 
-This increment establishes architecture foundations only. It does not add
-user-facing media features, TV episode detection, parallel jobs, multi-drive
-processing, or new library integrations.
+This report tracks the Version 2 architecture and TV development gates through
+validation evidence capture. TV output execution, parallel jobs, multi-drive
+processing, and new library integrations remain out of scope.
 
 ## Updated architecture diagram
 
@@ -21,6 +21,7 @@ flowchart TB
   Jobs[JobCoordinator]
   Metadata[MetadataResolver]
   MetadataRegistry[MetadataProviderRegistry]
+  TvValidation[TV evidence capture and reporting]
   TMDB[TMDB movie provider]
   MB[MusicBrainz album provider]
   Repositories[Repository contracts]
@@ -36,6 +37,7 @@ flowchart TB
   DVD --> Jobs
   CD --> Jobs
   DVD --> Metadata
+  DVD --> TvValidation
   CD --> Metadata
   Metadata --> MetadataRegistry
   MetadataRegistry --> TMDB
@@ -43,6 +45,7 @@ flowchart TB
   Jobs --> Repositories
   API --> Repositories
   Repositories --> SQLite
+  TvValidation --> Repositories
 ```
 
 The coordinator handles provider identity, validation, inspection, and
@@ -62,6 +65,7 @@ domain behavior.
 | Persistence/repositories | **SQLite adapter split complete; compatibility paths remain** | Separated connection setup, migrations, and settings/job/history/event/recovery SQLite repositories. Added repository interfaces and test coverage for old-schema upgrades. `db.ts` remains a compatibility façade for legacy API callers and startup settings access; monitor, recovery, and workflows use injected repository services. |
 | Job coordination | **Foundation integrated** | Added job context, steps, results/failures, lifecycle status/event persistence, progress updates, terminal handling, and cancellation-control delegation. DVD/CD workflows consume the injected coordinator. Serial operation is unchanged. |
 | TV-series workflow integration | **Integrated through plan generation; output execution disabled** | Structurally plausible TV DVDs go through `TvWorkflowService`, which calls both engines, consumes persisted feedback, stores a confidence-gated plan, and holds the job for review. Non-TV discs retain existing movie behavior. SQLite migrations 6 and 7 persist feedback and plans. TV ripping/output is not implemented. |
+| TV validation evidence | **Capture, explain, import/export implemented** | Migration 8 stores disc manifests, metadata candidates, analysis/match reports, confidence evidence, plans and feedback snapshots. CLI tooling supports listing, summary, per-case reports, JSON export and atomic dataset import. Broad real-disc corpus validation and calibrated accuracy remain open. |
 | Durable events, queue, platform and drive abstraction | **Not started** | Existing process-local events and Linux monitor remain; one active job and one configured optical device are still enforced. |
 
 ## Provider extension points
@@ -89,6 +93,10 @@ domain behavior.
   Later matching runs read exact-disc/item-signature feedback.
 - **TV plans:** `TvProcessingPlanRepository` persists confidence, assignments,
   review requirements and output execution blocker for future review surfaces.
+- **TV evidence:** `TvValidationService` and
+  `TvValidationEvidenceRepository` capture immutable processing evidence,
+  report decisions, and import/export versioned validation datasets. See
+  [TV-VALIDATION.md](./TV-VALIDATION.md).
 
 ## Created files
 
@@ -99,12 +107,18 @@ domain behavior.
 - `src/application/tv-episode-matching-engine.ts`
 - `src/application/tv-workflow-service.ts`
 - `src/application/tv-review-service.ts`
+- `src/application/tv-validation-service.ts`
+- `src/domain/tv-validation.ts`
 - `src/infrastructure/database/tv-episode-feedback-repository.ts`
 - `src/infrastructure/database/tv-processing-plan-repository.ts`
+- `src/infrastructure/database/tv-validation-evidence-repository.ts`
 - `test/tv-analysis-engine.test.js`
 - `test/tv-episode-matching-engine.test.js`
 - `test/tv-workflow-service.test.js`
+- `test/tv-validation.test.js`
 - `docs/TV-WORKFLOW-INTEGRATION.md`
+- `docs/TV-VALIDATION.md`
+- `scripts/tv-validation.js`
 - `docs/TV-ANALYSIS-ENGINE.md`
 - `src/contracts/metadata-provider.ts`
 - `src/contracts/repositories.ts`
@@ -165,8 +179,9 @@ adapter is now `src/providers/metadata/tmdb-movie.ts`.
    manual MusicBrainz release-ID API remains a direct integration path.
 3. No built-in TV metadata provider currently returns series, season, or
    episode entities; likely TV discs therefore produce unknown/review plans.
-4. Only processing plans and correction feedback are persisted. Full analysis
-   reports, provider evidence snapshots, and series/season metadata are not.
+4. Disc fingerprints still use label and manifest metadata rather than
+   physical-disc identifiers or content hashes; distinct pressings can collide
+   or the same disc can vary across providers.
 5. Review/correction/approval transport contracts exist, but there are no
    review REST endpoints or operator UI.
 6. TV output execution, multi-title segmentation, naming, publication, and
@@ -191,7 +206,9 @@ adapter is now `src/providers/metadata/tmdb-movie.ts`.
 
 ## Validation
 
-The production TypeScript build passes. Focused architecture/API checks passed
-for provider-neutral source routing, metadata candidate ranking and fallback,
-legacy SQLite migration, repository adapters, job coordination, and API
-compatibility. The complete test run is recorded after final verification.
+TV validation tooling and limitations are documented in
+[TV-VALIDATION.md](./TV-VALIDATION.md). Evidence capture stores reports and
+provider inputs, but the current counters are descriptive; confidence
+calibration and correctness metrics require a trusted, manually labeled disc
+corpus. The production TypeScript build and complete test run are recorded
+after final verification.

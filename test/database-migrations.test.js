@@ -46,7 +46,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
   db.close();
 });
 
@@ -158,11 +158,12 @@ test("TV processing-plan repository persists review disposition and episode assi
   assert.equal(plan.state, "ready");
   assert.equal(repositories.tvProcessingPlans.get(plan.id).assignments[0].episodes[0].episodeNumber, 1);
   assert.equal(repositories.tvProcessingPlans.latestForFingerprint("tv-disc").id, plan.id);
-  const approvedPlan = repositories.tvProcessingPlans.setState(plan.id, "approved", "admin");
+  const approvedPlan = repositories.tvProcessingPlans.recordReview(plan.id, "approved", "admin");
   assert.equal(approvedPlan.state, "approved");
   assert.equal(approvedPlan.reviewedBy, "admin");
   assert.ok(approvedPlan.reviewedAt);
-  assert.throws(() => repositories.tvProcessingPlans.setState(plan.id, "rejected", "admin"), /already approved/);
+  assert.equal(approvedPlan.reviewHistory[0].decision, "approved");
+  assert.throws(() => repositories.tvProcessingPlans.recordReview(plan.id, "rejected", "admin", "reason"), /already approved/);
   assert.throws(() => repositories.tvProcessingPlans.save({
     ...plan,
     executionEnabled: true

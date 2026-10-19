@@ -74,6 +74,12 @@ flowchart TD
 - SQLite migration 7 persists JSON processing plans and their review/approval
   state, including reviewer identity, review timestamp, and rejection reason.
   Plans are available through the repository for future API work.
+- SQLite migration 8 captures the manifest, metadata candidates, analysis and
+  match reports, confidence policy, plan, and correction snapshot in the
+  validation evidence repository. Later plan reviews/corrections are included
+  when captured evidence is reported or exported. See
+  [TV-VALIDATION.md](./TV-VALIDATION.md) for import/export, held-out feedback
+  comparison, and known algorithm assumptions.
 
 ## Confidence policy
 
@@ -110,8 +116,11 @@ runtime, and optional multipart fields.
    for metadata payloads. No built-in provider currently returns TV entities.
 2. Validate the prefilter against varied real DVD box sets, anime, specials,
    bonus-heavy releases, region differences, and discs with incomplete labels.
-3. Persist full analysis/match reports and the provider inputs used, not only
-   the resulting processing plan and correction feedback.
+3. Collect representative validation cases, including known prefilter
+   false-positives and false-negatives; see
+   [TV-VALIDATION.md](./TV-VALIDATION.md). Evidence capture is implemented,
+   but broad physical-disc validation and calibrated accuracy measurement are
+   still outstanding.
 4. Add review/approval REST endpoints and a UI; define correction conflict,
    correction audit, retry, and reprocessing policies.
 5. Implement safe TV acquisition/segmentation, multi-episode output policy,

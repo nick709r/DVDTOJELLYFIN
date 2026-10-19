@@ -205,6 +205,14 @@ export interface TvProcessingPlan {
   reviewedBy?: string;
   reviewedAt?: string;
   reviewReason?: string;
+  reviewHistory?: readonly TvPlanReviewRecord[];
+}
+
+export interface TvPlanReviewRecord {
+  decision: "approved" | "rejected" | "deferred";
+  reviewer: string;
+  at: string;
+  reason?: string;
 }
 
 export type TvReviewAction =
@@ -230,7 +238,12 @@ export interface TvProcessingPlanRepository {
   save(plan: TvProcessingPlanInput): TvProcessingPlan;
   get(id: string): TvProcessingPlan | undefined;
   latestForFingerprint(fingerprint: string): TvProcessingPlan | undefined;
-  setState(id: string, state: "approved" | "rejected", reviewer: string, reason?: string): TvProcessingPlan | undefined;
+  recordReview(
+    id: string,
+    decision: "approved" | "rejected" | "deferred",
+    reviewer: string,
+    reason?: string
+  ): TvProcessingPlan | undefined;
 }
 
 export interface EpisodeMatch {

@@ -4,6 +4,7 @@ import { TvEpisodeMatchingEngine } from "./tv-episode-matching-engine.js";
 import { tvItemSignature } from "./tv-analysis-engine.js";
 import type { MetadataCandidate } from "../domain/metadata.js";
 import type { MediaManifestItem } from "../domain/media.js";
+import type { TvValidationService } from "./tv-validation-service.js";
 import type {
   TvAnalysisRecommendation,
   TvDiscAnalysisReport,
@@ -19,12 +20,21 @@ import type {
   TvSeriesMetadataCandidate
 } from "../domain/television.js";
 
-const highConfidence = 0.9;
-const mediumConfidence = 0.72;
-const episodeMinimumSeconds = 10 * 60;
-const episodeMaximumSeconds = 100 * 60;
 const seriesLabelPattern = /\b(?:season|series|episodes?)\b|\bs\d{1,2}(?:[\s._-]*d\d{1,2})?\b/i;
 const nonEpisodeTitlePattern = /\b(?:bonus|extra|featurette|behind the scenes|trailer|deleted scene|interview|making of|gallery|commentary)\b/i;
+
+export const tvWorkflowPolicy = {
+  highConfidence: 0.9,
+  mediumConfidence: 0.72,
+  episodeMinimumSeconds: 10 * 60,
+  episodeMaximumSeconds: 100 * 60,
+  structuralTitleCount: 3,
+  runtimeRatioMaximum: 1.6,
+  explicitLabelPattern: seriesLabelPattern.source,
+  explicitLabelFlags: seriesLabelPattern.flags,
+  excludedTrackTitlePattern: nonEpisodeTitlePattern.source,
+  excludedTrackTitleFlags: nonEpisodeTitlePattern.flags
+} as const;
 
 function cleanSeriesQuery(label: string): string {
   return label.replace(/\b(?:season|series|disc|disk|volume|vol|episodes?|television|tv)\b/gi, " ")
@@ -146,28 +156,29 @@ function parseDiscStructure(label: string): { seasonNumber?: number; discNumber?
 function tvShapeIsPlausible(source: TvWorkflowSource): boolean {
   const titleItems = source.manifest.items.filter((item) =>
     item.kind === "title" && item.durationSeconds !== undefined &&
-    item.durationSeconds >= episodeMinimumSeconds && item.durationSeconds <= episodeMaximumSeconds &&
+    item.durationSeconds >= tvWorkflowPolicy.episodeMinimumSeconds &&
+    item.durationSeconds <= tvWorkflowPolicy.episodeMaximumSeconds &&
     !nonEpisodeTitlePattern.test(item.title ?? "")
   ).sort((left, right) => (left.durationSeconds ?? 0) - (right.durationSeconds ?? 0));
   const hasSeasonOrSeriesLabel = seriesLabelPattern.test(source.label);
   const shortestEpisodeRuntime = titleItems[0]?.durationSeconds ?? 0;
   const longestEpisodeRuntime = titleItems.at(-1)?.durationSeconds ?? 0;
-  const hasEpisodeStructure = titleItems.length >= 3 &&
-    longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) <= 1.6 &&
+  const hasEpisodeStructure = titleItems.length >= tvWorkflowPolicy.structuralTitleCount &&
+    longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) <= tvWorkflowPolicy.runtimeRatioMaximum &&
     !source.manifest.items.some((item) => item.kind === "title" &&
-      item.durationSeconds !== undefined && item.durationSeconds > episodeMaximumSeconds);
+      item.durationSeconds !== undefined && item.durationSeconds > tvWorkflowPolicy.episodeMaximumSeconds);
   return hasSeasonOrSeriesLabel || hasEpisodeStructure;
 }
 
 function bandFor(confidence: number): TvConfidenceBand {
-  if (confidence >= highConfidence) return "high";
-  if (confidence >= mediumConfidence) return "medium";
+  if (confidence >= tvWorkflowPolicy.highConfidence) return "high";
+  if (confidence >= tvWorkflowPolicy.mediumConfidence) return "medium";
   return "low";
 }
 
 function reviewFor(confidence: number, required: boolean): TvReviewRequirement {
-  if (required || confidence < mediumConfidence) return "required";
-  if (confidence < highConfidence) return "recommended";
+  if (required || confidence < tvWorkflowPolicy.mediumConfidence) return "required";
+  if (confidence < tvWorkflowPolicy.highConfidence) return "recommended";
   return "none";
 }
 
@@ -205,11 +216,11 @@ function planInput(analysis: TvDiscAnalysisReport, matches: TvEpisodeMatchReport
   const confidence = relevantConfidence.length ? Math.min(...relevantConfidence) : 0;
   const confidenceBand = bandFor(confidence);
   const reviewReasons = [
-    ...(!series ? ["Series identity is unknown"] : series.confidence < highConfidence
+    ...(!series ? ["Series identity is unknown"] : series.confidence < tvWorkflowPolicy.highConfidence
       ? ["Series identity is below high confidence"] : []),
-    ...(!season ? ["Season identity is unknown"] : season.confidence < highConfidence
+    ...(!season ? ["Season identity is unknown"] : season.confidence < tvWorkflowPolicy.highConfidence
       ? ["Season identity is below high confidence"] : []),
-    ...(!discPosition ? ["Disc position is unknown"] : discPosition.confidence < highConfidence
+    ...(!discPosition ? ["Disc position is unknown"] : discPosition.confidence < tvWorkflowPolicy.highConfidence
       ? ["Disc position is below high confidence"] : []),
     ...matches.items.filter((item) => item.manualReviewRequired)
       .map((item) => `Track ${item.itemId} requires manual review`),
@@ -263,6 +274,7 @@ export class TvWorkflowService {
     private readonly metadata: MetadataResolver,
     private readonly feedbackRepository: TvEpisodeFeedbackRepository,
     private readonly planRepository: TvProcessingPlanRepository,
+    private readonly validationService?: TvValidationService,
     private readonly analysisEngine = new TvAnalysisEngine(),
     private readonly matchingEngine = new TvEpisodeMatchingEngine()
   ) {}
@@ -326,7 +338,29 @@ export class TvWorkflowService {
       feedback
     });
     const plan = this.planRepository.save(planInput(analysis, matches));
-    return { analysis, matches, plan };
+    const result = { analysis, matches, plan };
+    this.validationService?.capture({
+      sourceId: source.sourceId,
+      providerId: source.providerId,
+      mediaKind: source.mediaKind,
+      label: source.label,
+      manifest: source.manifest
+    }, fingerprint, {
+      rawCandidates: [
+        ...seriesResult.candidates,
+        ...(seasonResult?.candidates ?? []),
+        ...episodeResult.candidates
+      ],
+      providersWithFailures: [
+        ...seriesResult.providerFailures,
+        ...(seasonResult?.providerFailures ?? []),
+        ...episodeResult.providerFailures
+      ].map((failure) => failure.providerId),
+      seriesCandidates,
+      seasonCandidates,
+      episodeCandidates
+    }, result);
+    return result;
   }
 }
 

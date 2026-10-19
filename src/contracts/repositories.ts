@@ -3,6 +3,7 @@ import type {
   TvEpisodeFeedbackRepository,
   TvProcessingPlanRepository
 } from "../domain/television.js";
+import type { TvValidationEvidenceRepository } from "../domain/tv-validation.js";
 
 export interface SettingsRepository {
   get(): AppSettings;
@@ -47,5 +48,6 @@ export interface AutoDiscRepositories {
   recovery: RecoveryRepository;
   tvEpisodeFeedback: TvEpisodeFeedbackRepository;
   tvProcessingPlans: TvProcessingPlanRepository;
+  tvValidationEvidence: TvValidationEvidenceRepository;
   close(): void;
 }

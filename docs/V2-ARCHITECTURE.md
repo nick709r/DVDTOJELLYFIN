@@ -1,7 +1,8 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** v2 foundation in progress; initial TV analysis engine implemented.
-The target design and remaining migration gates are summarized below.
+**Status:** v2 foundation, TV analysis/matching/workflow integration, and
+validation evidence capture are implemented. Real-disc validation remains in
+progress; the target design and remaining migration gates are summarized below.
 
 **Implementation progress:** The source-provider seam now uses open media
 domain models, and source candidates dispatch through a registered
@@ -18,7 +19,12 @@ episode suggestions, returning unknown when confidence or separation is
 insufficient. The DVD workflow now calls `TvWorkflowService` for strongly
 identified TV discs; it stores a confidence-gated plan and holds the disc for
 review instead of sending it through movie output. SQLite migrations 6 and 7
-add feedback and processing-plan repositories. TV output remains disabled.
+add feedback and processing-plan repositories. TV output remains disabled. Migration 8 also stores end-to-end TV evidence and
+supports local dataset exchange and reports.
+Migration 8 adds immutable TV validation evidence capture, local JSON
+import/export, and explainability reports. See
+[TV-VALIDATION.md](./TV-VALIDATION.md) for the evidence format, tooling, and
+known assumptions.
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for the current diagram, gate status, extension points, and feature blockers.
 See [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md) for its input, scoring,
@@ -62,6 +68,9 @@ flowchart LR
   TvWorkflow --> TvAnalysis
   TvWorkflow --> Plan[Persisted TV Processing Plan]
   Plan --> Review[Review state; execution disabled]
+  TvWorkflow --> Evidence[TV validation evidence capture]
+  Evidence --> ValidationStore[(SQLite evidence repository)]
+  ValidationStore --> Dataset[Local JSON import/export + reports]
 ```
 
 The media source coordinator does not inspect media-kind-specific fields.

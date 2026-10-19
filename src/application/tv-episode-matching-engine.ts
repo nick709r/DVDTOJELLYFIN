@@ -13,8 +13,12 @@ import type {
   TvEpisodeMetadataCandidate
 } from "../domain/television.js";
 
-const defaultMinimumConfidence = 0.72;
-const defaultMinimumMargin = 0.12;
+export const tvEpisodeMatchingPolicy = {
+  minimumConfidence: 0.72,
+  minimumMargin: 0.12,
+  multipartMetadataWeight: 0.7,
+  multipartRuntimeWeight: 0.3
+} as const;
 
 function episodeKey(episode: Episode): string {
   return `${episode.seriesId}:${episode.seasonNumber}:${episode.episodeNumber}`;
@@ -160,7 +164,8 @@ function multipartOptions(
     };
     const confidence = components.runtimeSimilarity === undefined
       ? baseConfidence
-      : baseConfidence * 0.7 + components.runtimeSimilarity * 0.3;
+      : baseConfidence * tvEpisodeMatchingPolicy.multipartMetadataWeight +
+        components.runtimeSimilarity * tvEpisodeMatchingPolicy.multipartRuntimeWeight;
     options.push({
       episodes,
       confidence,
@@ -529,8 +534,8 @@ export class TvEpisodeMatchingEngine {
       (input.minimumMargin < 0 || input.minimumMargin > 1)) {
       throw new Error("Minimum margin must be between 0 and 1");
     }
-    const minimumConfidence = finiteConfidence(input.minimumConfidence ?? defaultMinimumConfidence, "Minimum");
-    const minimumMargin = finiteConfidence(input.minimumMargin ?? defaultMinimumMargin, "Minimum margin");
+    const minimumConfidence = finiteConfidence(input.minimumConfidence ?? tvEpisodeMatchingPolicy.minimumConfidence, "Minimum");
+    const minimumMargin = finiteConfidence(input.minimumMargin ?? tvEpisodeMatchingPolicy.minimumMargin, "Minimum margin");
     const items = input.analysis.items.map((item) =>
       episodeItemResult(item, input.analysis, input, minimumConfidence, minimumMargin)
     );

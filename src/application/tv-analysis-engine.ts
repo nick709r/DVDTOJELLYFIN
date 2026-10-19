@@ -20,6 +20,13 @@ const bonusTerms = /\b(bonus|extra|featurette|behind the scenes|trailer|deleted 
 const commentaryTerms = /\b(commentary|audio commentary|director.?s? track|cast track)\b/i;
 const alternateTerms = /\b(alternate|alternative|extended|uncut|director.?s? cut|version)\b/i;
 
+export const tvAnalysisWeights = {
+  series: { metadata: 0.6, historicalMatch: 0.3, titleSimilarity: 0.1 },
+  season: { metadata: 0.55, historicalMatch: 0.3, discStructure: 0.15 },
+  discPosition: { discStructure: 0.6, historicalMatch: 0.4 },
+  episode: { metadata: 0.5, runtimeSimilarity: 0.2, titleSimilarity: 0.1, historicalMatch: 0.2 }
+} as const;
+
 function normalizedText(value: string): string {
   return value.normalize("NFKD").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
@@ -159,7 +166,9 @@ function rankSeries(
     }
     return {
       series,
-      confidence: weightedScore(components, { metadata: 0.6, historicalMatch: 0.3, titleSimilarity: 0.1, runtimeSimilarity: 0, userCorrection: 0, discStructure: 0 }),
+      confidence: weightedScore(components, {
+        ...tvAnalysisWeights.series, runtimeSimilarity: 0, userCorrection: 0, discStructure: 0
+      }),
       evidence: [...evidence].sort(),
       scoreComponents: components
     };
@@ -217,7 +226,9 @@ function rankSeasons(
     return {
       seriesId: entry.season.seriesId || (selectedSeries ? seriesKey(selectedSeries.series) : ""),
       season: entry.season,
-      confidence: weightedScore(components, { metadata: 0.55, historicalMatch: 0.3, discStructure: 0.15, titleSimilarity: 0, runtimeSimilarity: 0, userCorrection: 0 }),
+      confidence: weightedScore(components, {
+        ...tvAnalysisWeights.season, titleSimilarity: 0, runtimeSimilarity: 0, userCorrection: 0
+      }),
       evidence: [...entry.evidence].sort(),
       scoreComponents: components
     };
@@ -268,7 +279,7 @@ function rankDiscPositions(
       discNumber,
       ...(entry.discCount === undefined ? {} : { discCount: entry.discCount }),
       confidence: weightedScore(components, {
-        discStructure: 0.6, historicalMatch: 0.4, metadata: 0,
+        ...tvAnalysisWeights.discPosition, metadata: 0,
         titleSimilarity: 0, runtimeSimilarity: 0, userCorrection: 0
       }),
       evidence: [...entry.evidence].sort(),
@@ -389,8 +400,7 @@ function rankEpisodes(
       ...(entry.corrected ? { userCorrection: 1 } : {})
     };
     const confidence = entry.corrected ? 1 : weightedScore(components, {
-      metadata: 0.5, runtimeSimilarity: 0.2, titleSimilarity: 0.1,
-      historicalMatch: 0.2, userCorrection: 0, discStructure: 0
+      ...tvAnalysisWeights.episode, userCorrection: 0, discStructure: 0
     });
     return {
       episode: entry.episode,
