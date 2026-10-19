@@ -9,16 +9,22 @@ no application code. It describes the repository at the reviewed commit; the
 target diagram is an architectural destination, not a statement of implemented
 functionality.
 
+**Historical snapshot:** This review predates subsequent TV workflow, validation,
+dashboard, and universal Review Centre work merged to `main`. Its findings are
+specific to the reviewed commit and are not a current inventory. See
+[V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md) for the
+v1.9.0 implementation state.
+
 ## Executive assessment
 
-AutoDisc is a single-process, single-node Linux application. It currently
-combines the HTTP API, disc monitor, job orchestration, SQLite persistence,
+At the reviewed commit, AutoDisc was a single-process, single-node Linux
+application combining the HTTP API, disc monitor, job orchestration, SQLite persistence,
 media extraction, FFmpeg conversion, metadata lookup, publication, recovery,
 and resource sampling in one Node.js process. SQLite is the durable source of
 job history and settings; process-local event emitters and maps coordinate live
 status and cancellation.
 
-The v2 branch has established useful initial seams:
+At that point, the v2 branch had established useful initial seams:
 
 - A provider contract and lifecycle registry.
 - Two registered source adapters: MakeMKV DVD and cdparanoia audio CD.
@@ -26,7 +32,7 @@ The v2 branch has established useful initial seams:
   source inspection and acquisition.
 - Contract and coordinator tests.
 
-This is a **partial ports-and-adapters migration**, not yet a provider platform.
+At that point, this was a **partial ports-and-adapters migration**, not yet a provider platform.
 The registry is populated manually in bootstrap; its health results are not
 used for orchestration or surfaced through the API. The source contract and
 pipeline still encode DVD/audio-CD variants. Metadata, transformation,

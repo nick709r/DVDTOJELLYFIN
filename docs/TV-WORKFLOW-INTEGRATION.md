@@ -68,9 +68,10 @@ flowchart TD
   feedback deterministically. A reviewer can approve a manually-reviewed
   low-confidence plan, but this does not change its automatic-safety rating or
   enable TV execution. No machine learning is performed.
-- Review, correction and approval action types define the transport-neutral
-  contract for future review screens. No UI or review REST endpoints are
-  included.
+- Authenticated REST endpoints and the dashboard expose TV analysis, episode
+  matching, corrections, and plan review. The universal Review Centre also
+  presents TV plan holds beside CD, metadata, processing, and system reviews.
+  TV file execution remains disabled regardless of plan approval.
 - SQLite migration 7 persists JSON processing plans and their review/approval
   state, including reviewer identity, review timestamp, and rejection reason.
   Plans are available through the repository for future API work.
@@ -80,6 +81,10 @@ flowchart TD
   when captured evidence is reported or exported. See
   [TV-VALIDATION.md](./TV-VALIDATION.md) for import/export, held-out feedback
   comparison, and known algorithm assumptions.
+- SQLite migration 9 adds persistent universal review items. See
+  [V2-ARCHITECTURE.md](./V2-ARCHITECTURE.md) for Review Centre fields,
+  filters, endpoints, retry behavior, and the audio-CD destination recovery
+  workflow.
 
 ## Confidence policy
 
@@ -121,8 +126,8 @@ runtime, and optional multipart fields.
    [TV-VALIDATION.md](./TV-VALIDATION.md). Evidence capture is implemented,
    but broad physical-disc validation and calibrated accuracy measurement are
    still outstanding.
-4. Add review/approval REST endpoints and a UI; define correction conflict,
-   correction audit, retry, and reprocessing policies.
+4. Complete correction conflict, correction audit, retry, and reprocessing
+   policies for end-to-end TV workflow use.
 5. Implement safe TV acquisition/segmentation, multi-episode output policy,
    naming templates, atomic publication, cleanup/recovery, and library target
    handling. Execution intentionally remains disabled until these exist.

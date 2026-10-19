@@ -1,7 +1,24 @@
 AutoDisc Roadmap
 
-This roadmap outlines planned features and improvements for upcoming releases. Priorities may change based on community feedback and development progress.
-Version 2
+This roadmap separates the capabilities already shipped in v1.9.0 from
+remaining Version 2 development. Priorities may change based on community
+feedback and validation results.
+
+## Current status in v1.9.0
+
+| Area | Status |
+|---|---|
+| Provider/workflow foundation | Implemented for the existing DVD and audio-CD sources, TMDB/MusicBrainz metadata providers, SQLite repositories, and shared job coordination. Provider-owned configuration and durable queue/event infrastructure remain future work. |
+| TV analysis and matching | Implemented as explainable, confidence-scored suggestions with correction history. Built-in TV metadata providers and broad real-disc validation remain outstanding. |
+| TV workflow and review | TV plans are persisted and held for review; the dashboard exposes analysis, matching, plan approval/correction, and validation evidence. TV output execution remains disabled. |
+| Universal Review Centre | Implemented for TV/CD reviews, metadata issues, processing failures, folder failures, disc-read errors, validation warnings, configuration issues, and system warnings. |
+| Audio-CD publishing | Missing Music/artist directories are created; albums are atomically published under `Artist/Album`, with collision-safe naming and Review Centre recovery on destination failures. |
+| Drives and platforms | One configured Linux optical drive and one active job remain supported. Multi-drive scheduling and non-Linux platforms are not implemented. |
+
+See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
+for implementation details and acceptance blockers.
+
+## Version 2
 
 Version 2 focuses on transforming AutoDisc from a Jellyfin-focused ripping workflow into a more complete media archiving platform.
 
@@ -10,16 +27,16 @@ must establish provider contracts, dependency-injected composition, durable
 events, capability-based workflow planning, and migration gates before adding
 large feature families. See [V2-ARCHITECTURE.md](./V2-ARCHITECTURE.md) for the
 target boundaries, example contracts, safety model, and acceptance gates.
-The first implementation increment adds a contract-tested provider API and
-registry. DVD and audio-CD discovery/acquisition now use open media contracts
-and registered workflows. TMDB and MusicBrainz are behind metadata contracts,
-SQLite is split into repository adapters, and both existing workflows use a
-shared job coordinator. TV-specific behavior, provider-owned configuration,
-provider-owned configuration, drive/platform adapters, and durable
-queue/event infrastructure remain future gates. The TV analysis and episode
-matching engines are integrated into a confidence-gated DVD TV-detection
-branch that persists a plan and holds likely TV discs for review; TV output
-execution remains disabled. See
+The v1.9.0 implementation adds a contract-tested provider API and registry.
+DVD and audio-CD discovery/acquisition use open media contracts and registered
+workflows. TMDB and MusicBrainz are behind metadata contracts, SQLite is split
+into repository adapters, and both workflows use a shared job coordinator.
+The TV analysis and episode matching engines feed a confidence-gated
+DVD workflow that persists plans and holds likely TV discs for review.
+Validation evidence and the universal Review Centre are exposed through the
+dashboard and authenticated APIs; TV output execution remains disabled.
+Provider-owned configuration, drive/platform adapters, and durable
+queue/event infrastructure remain future gates. See
 [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md) and
 [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md).
 
@@ -50,32 +67,26 @@ Reliability & Diagnostics
 
 User Interface
 
-    Light theme support
-    Theme selector
-    Mobile usability improvements
-    General UI polish and consistency updates
+    [Implemented] Light/dark theme and TV/review dashboard views
+    [Remaining] Further mobile usability and interface polish
 
 Advanced TV Series Support
+
 Smart Episode Detection
 
-    Automatic identification of episode-length titles
-    Improved handling of multi-episode discs
-    Better filtering of duplicates and alternate tracks
-    Bonus feature detection
+    [Implemented] Explainable analysis and episode-match suggestions
+    [Implemented] Confidence, alternatives, duplicate/alternate and bonus analysis
+    [Remaining] Real-disc validation and built-in TV metadata providers
 
 TV Library Organization
 
-    Automatic season folder creation
-    Episode organization workflows
-    Reduced manual file renaming
-    Structured output for media servers
+    [Remaining] TV episode acquisition, naming, folders, and publication
+    [Remaining] Safe cleanup/recovery and media-library output policies
 
 Metadata Improvements
 
-    Series recognition
-    Episode matching assistance
-    Improved naming accuracy
-    Better handling of specials and bonus content
+    [Implemented] TV workflow plan, correction history, and validation evidence
+    [Remaining] TV-specific provider integration and real-world calibration
 
 Media Library Support
 Library Profiles
@@ -108,13 +119,12 @@ Queue Management
     Large collection workflows
 
 Statistics & Monitoring
+
 Processing Statistics
 
-    Total discs processed
-    Movies archived
-    TV episodes archived
-    Success and failure tracking
-    Processing time metrics
+    [Implemented] Disc/job history and movie/CD processing statistics
+    [Implemented] TV analysis, confidence, review, correction, and validation summaries
+    [Remaining] TV episodes archived (TV output execution is not implemented)
 
 Storage Analytics
 
@@ -144,9 +154,11 @@ Notifications
     Job completion alerts
     Failure notifications
 
-Version 2.5
+Cross-platform exploration (later Version 2 work; not started)
 
-Version 2.5 focuses on expanding AutoDisc beyond Linux.
+Cross-platform support is not part of the v1.9.0 release or current Linux
+workflow gates; keep it on the Version 2 roadmap until the Linux workflow
+acceptance criteria are met.
 Windows Support
 Native Installer
 

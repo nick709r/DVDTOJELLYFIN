@@ -48,6 +48,21 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 
 ## Release history
 
+### Version 1.9.0
+
+- Add the Version 2 provider/workflow foundation, including registered DVD and
+  audio-CD workflows, metadata providers, repository adapters, and shared job
+  coordination.
+- Add TV intelligence: explainable disc analysis, conservative episode-match
+  suggestions, confidence-gated processing plans, correction history, and
+  validation evidence tools. TV output automation is not enabled.
+- Add the universal Review Centre for TV, CD, metadata, processing, and
+  destination-folder issues, with authenticated filters, job details, and
+  recovery actions.
+- Automatically create Music and artist directories before publishing audio
+  albums, publish albums under `Music/Artist/Album`, and preserve existing
+  albums with collision-safe destinations.
+
 ### Version 1.6.5
 
 - Fix the remaining disc-detection latch for DVDs and audio CDs: a MakeMKV
@@ -145,62 +160,35 @@ password in Settings when you first log in.
 - Provide a web dashboard, settings, conversion history, and systemd service
   installation for Linux.
 
-## Coming in Version 2
+## Version 2 development status
 
-Version 2 will focus on making TV series DVD archiving as automated and reliable as movie archiving. It will also broaden AutoDisc's scope: rather than being Jellyfin-first, AutoDisc v2 aims to be a general automated ripping and media-organization tool that supports Jellyfin, Sonarr, Radarr, Lidarr, and other tooling as optional integrations.
+AutoDisc 1.9.0 includes the first integrated Version 2 platform and TV
+intelligence capabilities. The platform uses provider contracts for media
+sources, workflows, and metadata, with SQLite repositories and a shared job
+coordinator. The dashboard exposes TV analysis, episode-match explanations,
+validation evidence, corrections, and the universal Review Centre.
 
-Version 2 is also the long-term extensible platform foundation. Media sources,
-drive/platform adapters, metadata lookups, transforms, library destinations,
-and notification channels are planned as registered providers with versioned
-contracts, capability declarations, and injected dependencies. The core job
-and workflow services should remain provider-neutral as these integrations
-grow. See the [v2 architecture](./docs/V2-ARCHITECTURE.md) and
-[v2 roadmap](./docs/ROADMAP.md) for the proposed boundaries and staged
-acceptance gates. These extension contracts are a v2 design target and are not
-all implemented in the current release. The current v2 branch has provider
-contracts, open source manifests/artifacts, registered DVD/audio-CD workflows,
-TMDB/MusicBrainz metadata adapters, SQLite repository interfaces/adapters, and
-a shared job coordinator. These are foundation seams, not TV or multi-drive
-features; provider-owned configuration, durable events, drive/platform
-adapters, transforms, and library providers remain future gates. See the
-[v2 migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md) for current
-progress and blockers.
+TV analysis and episode matching produce explainable suggestions and
+confidence-gated plans; they do **not** rip, rename, or publish TV episodes.
+Built-in TV-series metadata lookup and safe TV output execution remain future
+work. Review the [Version 2 architecture](./docs/V2-ARCHITECTURE.md),
+[migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md),
+[TV workflow integration](./docs/TV-WORKFLOW-INTEGRATION.md), and
+[Version 2 roadmap](./docs/ROADMAP.md) for current implementation details and
+remaining blockers.
 
-### Expanded scope (coming in v2)
-- General automated ripping and organization: use AutoDisc to rip and organize DVDs and CDs into folders, whether or not you run Jellyfin.
-- Optional integrations: Jellyfin, Sonarr, Radarr, Lidarr, and similar tools will be supported as optional post-processing/import targets.
-- Flexible output: produce files organized for media servers or simple folder-based archives for personal collections.
-- Metadata-first but optional: external metadata lookups and automatic matching will be available but can be disabled for offline or manual workflows.
-- Open to everyone: v2 will emphasize being useful to non-Jellyfin users who want a reliable, automated ripping and organization appliance.
+### Remaining Version 2 roadmap
 
-### TV Series DVD Handling
-- Automatic episode detection
-- Improved handling of multi-episode discs
-- Season and episode organization
-- Jellyfin-ready TV library structure
-- Reduced manual renaming and sorting
-
-### Multi-Drive Support
-- Multiple optical drives
-- Drive monitoring
-- Queue management for large collections
-
-### Statistics & Monitoring
-- Processing statistics
-- Success and failure tracking
-- Storage usage metrics
-- Optical drive health information
-
-### Quality of Life Improvements
-- Light theme
-- First-run setup wizard
-- Discord, email, and Home Assistant notifications
-- Improved diagnostics and error reporting
-
-### Ongoing Improvements
-- Code cleanup and refactoring
-- Performance optimizations
-- Better logging and maintainability
+- Validate TV detection and matching against a broad, manually reviewed
+  collection of real discs; add TV metadata providers and calibrated
+  confidence behavior.
+- Implement safe TV title acquisition, episode output naming, atomic
+  publication, cleanup, and recovery before enabling TV processing.
+- Add multi-drive scheduling only after per-drive identity, job state,
+  cancellation, recovery, and resource ownership are designed.
+- Consider additional media-library providers, platform support, notifications,
+  and setup automation as separate future capabilities; these are not promises
+  of the 1.9.0 release.
 
 ## Design and behavior
 
@@ -218,8 +206,12 @@ progress and blockers.
   suppress detection of a disc that is still becoming readable.
 - Audio CDs are extracted and named/tagged as lossless FLAC tracks. They can be
   published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
-  library import and organization after naming. MusicBrainz lookup is disabled
-  by default; enable it to supply metadata for Lidarr matching.
+  library import and organization after naming. Direct output uses an
+  `Artist/Album` folder hierarchy under the configured Music directory;
+  missing destination directories are created automatically. MusicBrainz lookup
+  is disabled by default; enable it to supply metadata for Lidarr matching.
+- The Review Centre records actionable TV, CD, metadata, processing, and
+  destination-folder issues; folder and disc retries are available where safe.
 - When MusicBrainz lookup is enabled and an automatic CD match fails, the job
   pauses with the disc in the drive and opens a manual metadata form in the
   dashboard. Enter a MusicBrainz release ID to load its matching album/tracks,

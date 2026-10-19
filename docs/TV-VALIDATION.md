@@ -58,8 +58,10 @@ Duplicate case IDs reject the import instead of overwriting evidence.
 ## Web dashboard and review
 
 The authenticated dashboard exposes TV Intelligence summary metrics, recent
-analysis plans, per-track episode suggestions and alternatives, a review queue,
-validation case reports, and a downloadable validation dataset. The Settings
+analysis plans, per-track episode suggestions and alternatives, TV plan
+approval/correction, validation case reports, and a downloadable validation
+dataset. The universal Review Centre surfaces TV holds alongside other
+operational reviews. The Settings
 page can disable TV detection (returning DVD discs to the existing movie path)
 or disable validation evidence capture without disabling TV plan generation.
 Existing policy thresholds are displayed read-only; editing them would change

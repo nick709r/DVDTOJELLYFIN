@@ -1,8 +1,9 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** v2 foundation, TV analysis/matching/workflow integration, and
-validation evidence capture are implemented. Real-disc validation remains in
-progress; the target design and remaining migration gates are summarized below.
+**Status:** Current as of AutoDisc v1.9.0 on `main`. The v2 provider foundation,
+TV analysis/matching/workflow integration, TV dashboard and validation
+evidence, universal Review Centre, and audio-CD destination recovery are
+implemented. Real-disc validation and TV output execution remain outstanding.
 
 **Implementation progress:** The source-provider seam now uses open media
 domain models, and source candidates dispatch through a registered
@@ -19,15 +20,15 @@ episode suggestions, returning unknown when confidence or separation is
 insufficient. The DVD workflow now calls `TvWorkflowService` for strongly
 identified TV discs; it stores a confidence-gated plan and holds the disc for
 review instead of sending it through movie output. SQLite migrations 6 and 7
-add feedback and processing-plan repositories. TV output remains disabled. Migration 8 also stores end-to-end TV evidence and
-supports local dataset exchange and reports.
-Migration 8 adds immutable TV validation evidence capture, local JSON
-import/export, and explainability reports. See
+add feedback and processing-plan repositories. TV output remains disabled.
+Migration 8 stores end-to-end TV evidence and supports local dataset exchange
+and reports. See
 [TV-VALIDATION.md](./TV-VALIDATION.md) for the evidence format, tooling, and
 known assumptions.
-Migration 9 adds the persistent universal Review Centre. Dashboard review
-actions expose review filtering and recovery, and the audio-CD publisher
-creates `Music/Artist/Album` destinations before atomic album publication.
+Migration 9 adds the persistent universal Review Centre. Authenticated
+dashboard/API review actions expose filtering, details, and supported recovery;
+audio-CD publishing creates and verifies `Music/Artist/Album` destinations
+before atomic publication.
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for the current diagram, gate status, extension points, and feature blockers.
 See [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md) for its input, scoring,

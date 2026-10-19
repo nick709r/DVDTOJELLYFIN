@@ -1,11 +1,12 @@
 # AutoDisc v2 Migration Progress
 
 **Date:** 2026-10-19
-**Branch:** `roadmap/v2-planning`
+**Release:** `v1.9.0` on `main`
 
-This report tracks the Version 2 architecture and TV development gates through
-validation evidence capture. TV output execution, parallel jobs, multi-drive
-processing, and new library integrations remain out of scope.
+This report tracks the Version 2 architecture, TV intelligence, validation
+evidence, and universal Review Centre delivered in v1.9.0. TV output execution,
+parallel jobs, multi-drive processing, built-in TV metadata providers, and new
+library integrations remain out of scope.
 
 ## Updated architecture diagram
 
@@ -27,6 +28,9 @@ flowchart TB
   Repositories[Repository contracts]
   SQLite[(SQLite adapters)]
   API[Fastify API and history]
+  ReviewItems[Universal review repository]
+  ReviewCentre[Authenticated Review Centre]
+  MusicOutput[Artist / Album folders and atomic publish]
 
   Monitor --> Sources
   Sources --> SourceProviders
@@ -46,6 +50,11 @@ flowchart TB
   API --> Repositories
   Repositories --> SQLite
   TvValidation --> Repositories
+  Repositories --> ReviewItems
+  ReviewItems --> ReviewCentre
+  ReviewCentre --> API
+  CD --> MusicOutput
+  MusicOutput -. destination failure .-> ReviewItems
 ```
 
 The coordinator handles provider identity, validation, inspection, and
@@ -66,6 +75,8 @@ domain behavior.
 | Job coordination | **Foundation integrated** | Added job context, steps, results/failures, lifecycle status/event persistence, progress updates, terminal handling, and cancellation-control delegation. DVD/CD workflows consume the injected coordinator. Serial operation is unchanged. |
 | TV-series workflow integration | **Integrated through plan generation; output execution disabled** | Structurally plausible TV DVDs go through `TvWorkflowService`, which calls both engines, consumes persisted feedback, stores a confidence-gated plan, and holds the job for review. Non-TV discs retain existing movie behavior. SQLite migrations 6 and 7 persist feedback and plans. TV ripping/output is not implemented. |
 | TV validation evidence | **Capture, explain, import/export implemented** | Migration 8 stores disc manifests, metadata candidates, analysis/match reports, confidence evidence, plans and feedback snapshots. CLI tooling supports listing, summary, per-case reports, JSON export and atomic dataset import. Broad real-disc corpus validation and calibrated accuracy remain open. |
+| Universal Review Centre | **Implemented** | Migration 9 persists cross-workflow review items. Authenticated APIs and the dashboard provide category/severity/status/date filters, summary counts, job details, resolve/dismiss, and supported retry actions. TV plan review remains available alongside general review items. |
+| Audio CD destination publishing | **Implemented** | Music and sanitized artist directories are created and permission-checked before publication. Completed albums are atomically published under `Artist/Album`; collisions use a unique destination. Directory and publish failures create detailed, retryable review items. |
 | Durable events, queue, platform and drive abstraction | **Not started** | Existing process-local events and Linux monitor remain; one active job and one configured optical device are still enforced. |
 
 ## Provider extension points
@@ -81,8 +92,9 @@ domain behavior.
   provider failures, and returns no selection when all providers abstain or
   fail.
 - **Persistence:** depend on `AutoDiscRepositories` and its settings, jobs,
-  history, events, and recovery ports. The provided SQLite adapters preserve
-  existing tables/data and can be replaced behind these interfaces.
+  history, events, recovery, TV evidence/feedback/plans, and review-item ports.
+  The provided SQLite adapters preserve existing tables/data and can be
+  replaced behind these interfaces.
 - **Job execution:** use `JobCoordinator` with an injected `JobContext`, typed
   steps/results/failures, and shared repository/event services.
 - **TV workflow:** `TvWorkflowService` composes the existing analysis and
@@ -97,6 +109,10 @@ domain behavior.
   `TvValidationEvidenceRepository` capture immutable processing evidence,
   report decisions, and import/export versioned validation datasets. See
   [TV-VALIDATION.md](./TV-VALIDATION.md).
+- **Universal reviews:** `ReviewItemRepository` persists operational review
+  items. The Review Centre API and dashboard expose the lifecycle and recovery
+  operations; audio destination failures retain requested paths and permission
+  evidence.
 
 ## Created files
 
@@ -112,6 +128,8 @@ domain behavior.
 - `src/infrastructure/database/tv-episode-feedback-repository.ts`
 - `src/infrastructure/database/tv-processing-plan-repository.ts`
 - `src/infrastructure/database/tv-validation-evidence-repository.ts`
+- `src/domain/reviews.ts`
+- `src/infrastructure/database/review-item-repository.ts`
 - `test/tv-analysis-engine.test.js`
 - `test/tv-episode-matching-engine.test.js`
 - `test/tv-workflow-service.test.js`
@@ -140,7 +158,10 @@ domain behavior.
 - `src/providers/metadata/musicbrainz.ts`
 - `src/providers/workflows/audio-cd.ts`
 - `src/providers/workflows/dvd.ts`
-- `test/database-migrations.test.js`
+- `src/application/job-coordinator.ts`
+- `src/contracts/repositories.ts`
+- `src/infrastructure/database/review-item-repository.ts`
+- `src/domain/reviews.ts`
 - `test/job-coordinator.test.js`
 - `test/media-workflow-registry.test.js`
 - `test/metadata-architecture.test.js`
@@ -160,12 +181,25 @@ domain behavior.
 - `src/db.ts`
 - `src/job-control.ts`
 - `src/server.ts`
+- `web/index.html`
+- `web/app.js`
+- `web/style.css`
+- `test/api.test.js`
+- `test/audio-cd.test.js`
+- `test/database-migrations.test.js`
+- `test/updater.test.js`
 - `src/recovery.ts`
 - `README.md`
+- `package.json`
+- `package-lock.json`
 - `test/media-source-coordinator.test.js`
 - `test/provider-runtime.test.js`
 - `docs/V2-ARCHITECTURE.md`
 - `docs/ROADMAP.md`
+- `docs/TV-ANALYSIS-ENGINE.md`
+- `docs/TV-WORKFLOW-INTEGRATION.md`
+- `docs/TV-VALIDATION.md`
+- `docs/V2-MIGRATION-REPORT-2026-10-19.md`
 
 Removed unused direct TMDB implementation `src/title.ts`; the production TMDB
 adapter is now `src/providers/metadata/tmdb-movie.ts`.
@@ -182,10 +216,13 @@ adapter is now `src/providers/metadata/tmdb-movie.ts`.
 4. Disc fingerprints still use label and manifest metadata rather than
    physical-disc identifiers or content hashes; distinct pressings can collide
    or the same disc can vary across providers.
-5. Review/correction/approval transport contracts exist, but there are no
-   review REST endpoints or operator UI.
+5. Review and correction APIs/UI exist, but correction conflict, audit,
+   retry, and reprocessing policies need to be completed for end-to-end TV
+   workflow use.
 6. TV output execution, multi-title segmentation, naming, publication, and
    cleanup policies remain unimplemented.
+7. Confidence thresholds and duplicate/alternate heuristics require validation
+   against representative physical discs before unattended processing.
 
 ## Remaining blockers before Multi-Drive Support
 

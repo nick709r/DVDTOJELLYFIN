@@ -2,11 +2,14 @@
 
 ## Scope
 
-The first Advanced TV Series increment adds a deterministic analysis engine
-and report model. It analyzes a supplied media manifest alongside normalized
-metadata candidates, prior disc analyses, and user corrections. It performs no
-disc ripping, database writes, episode assignment, renaming, or UI/API work.
-The DVD workflow is intentionally unchanged and does not invoke this engine.
+The first Advanced TV Series increment added a deterministic, independently
+testable analysis engine and report model. The engine analyzes a supplied
+media manifest alongside normalized metadata candidates, prior disc analyses,
+and user corrections. It remains a pure analysis component: it does no disc
+ripping, persistence, episode assignment, renaming, or UI/API work itself.
+Subsequent Version 2 work integrated it into the DVD workflow and exposed
+reports, corrections, and review through authenticated APIs and the dashboard.
+TV output execution remains disabled.
 
 ```mermaid
 flowchart LR
@@ -139,13 +142,16 @@ changing the scoring engine. History and correction sources are passed as
 interfaces-by-data: the engine is pure and owns no database, network, clock,
 global state, or provider lifecycle.
 
-`TvWorkflowService` now calls both engines for structurally plausible TV DVDs,
+`TvWorkflowService` calls both engines for structurally plausible TV DVDs,
 persists confidence-gated plans, and consumes exact-disc corrections. The DVD
 workflow holds these discs for review instead of treating them as movies.
-However, there are still no built-in TV metadata providers, review endpoints or
-screens, full report persistence, or TV file execution. See
-[TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md) for the workflow,
-integration details, and blockers before a complete TV workflow.
+The operator dashboard includes analysis/matching views, plan review, and the
+universal Review Centre; validation evidence is persisted and exportable.
+Remaining blockers include built-in TV metadata providers, broad physical-disc
+validation, and safe TV file execution. See
+[TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md) and
+[V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
+for current integration details and blockers.
 
 ## Test coverage
 

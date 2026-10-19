@@ -1,6 +1,9 @@
 # AutoDisc Architecture and Implementation Plan
 
-**Status:** Version 1.5 implementation scope; target-hardware acceptance required
+**Status:** Historical Version 1.5 architecture and implementation plan; not
+the current as-built design. For the current Version 2 implementation and
+remaining gates, see [V2-ARCHITECTURE.md](./docs/V2-ARCHITECTURE.md) and
+[V2-MIGRATION-REPORT-2026-10-19.md](./docs/V2-MIGRATION-REPORT-2026-10-19.md).
 **Deployment:** Native Lubuntu/Linux service managed by systemd (no Docker)
 
 ## 1. Product boundary and operating assumptions
