@@ -30,6 +30,17 @@ export class SqliteHistoryRepository implements HistoryRepository {
     `).get() as { total: number; successful: number; failures: number; averageSeconds: number | null };
   }
 
+  statsByMediaType(): Array<{ mediaType: string; total: number; successful: number; failures: number; averageSeconds: number | null }> {
+    return this.db.prepare(`
+      SELECT media_type AS mediaType, COUNT(*) AS total,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS successful,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failures,
+        AVG(CASE WHEN status = 'completed' THEN conversion_seconds END) AS averageSeconds
+      FROM jobs WHERE status IN ('completed', 'failed')
+      GROUP BY media_type ORDER BY media_type
+    `).all() as Array<{ mediaType: string; total: number; successful: number; failures: number; averageSeconds: number | null }>;
+  }
+
   get(id: string): Job | undefined {
     return this.db.prepare(`
       SELECT id, status, media_type AS mediaType, disc_label AS discLabel, title, output_path AS outputPath,

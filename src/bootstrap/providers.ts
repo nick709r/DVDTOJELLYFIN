@@ -78,7 +78,8 @@ export async function createProviderRuntime(
   const tvValidation = new TvValidationService(
     repositories.tvValidationEvidence,
     repositories.tvEpisodeFeedback,
-    repositories.tvProcessingPlans
+    repositories.tvProcessingPlans,
+    () => getSettings().tvValidationLoggingEnabled
   );
   const tvWorkflow = new TvWorkflowService(
     metadata,

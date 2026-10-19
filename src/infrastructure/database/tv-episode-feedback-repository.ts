@@ -57,12 +57,25 @@ function validateFeedback(feedback: TvEpisodeFeedbackInput): void {
 export class SqliteTvEpisodeFeedbackRepository implements TvEpisodeFeedbackRepository {
   constructor(private readonly db: Database.Database) {}
 
+  count(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS count FROM tv_episode_feedback").get() as { count: number }).count;
+  }
+
   record(feedback: TvEpisodeFeedbackInput): TvEpisodeFeedback {
     validateFeedback(feedback);
+    const now = new Date().toISOString();
+    const latestCapturedEvidence = this.db.prepare(`
+      SELECT MAX(captured_at) AS captured_at
+      FROM tv_validation_evidence WHERE fingerprint = ? AND origin = 'captured'
+    `).get(feedback.fingerprint) as { captured_at: string | null };
+    const afterEvidence = latestCapturedEvidence.captured_at &&
+      now <= latestCapturedEvidence.captured_at
+      ? new Date(Date.parse(latestCapturedEvidence.captured_at) + 1).toISOString()
+      : now;
     const result: TvEpisodeFeedback = {
       ...feedback,
       id: randomUUID(),
-      createdAt: new Date().toISOString()
+      createdAt: afterEvidence
     };
     this.db.prepare(`
       INSERT INTO tv_episode_feedback

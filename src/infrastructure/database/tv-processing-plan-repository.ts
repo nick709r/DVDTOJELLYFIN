@@ -69,6 +69,27 @@ export class SqliteTvProcessingPlanRepository implements TvProcessingPlanReposit
     `).get(fingerprint) as TvProcessingPlanRow | undefined);
   }
 
+  list(limit = 100, state?: TvProcessingPlan["state"], offset = 0): TvProcessingPlan[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000 ||
+      !Number.isInteger(offset) || offset < 0 || offset > 1000000) {
+      throw new Error("TV processing plan list requires a limit from 1 to 1000 and a non-negative offset");
+    }
+    const rows = state === undefined
+      ? this.db.prepare(`
+          SELECT id, plan_json FROM tv_processing_plans
+          ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
+        `).all(limit, offset) as TvProcessingPlanRow[]
+      : this.db.prepare(`
+          SELECT id, plan_json FROM tv_processing_plans
+          WHERE state = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
+        `).all(state, limit, offset) as TvProcessingPlanRow[];
+    return rows.map((row) => {
+      const plan = parsePlan(row);
+      if (!plan) throw new Error(`Persisted TV processing plan ${row.id} could not be loaded`);
+      return plan;
+    });
+  }
+
   recordReview(
     id: string,
     decision: "approved" | "rejected" | "deferred",
@@ -103,6 +124,55 @@ export class SqliteTvProcessingPlanRepository implements TvProcessingPlanReposit
       reviewedAt,
       reviewReason: reason?.trim() ?? "",
       reviewHistory: [...(plan.reviewHistory ?? []), reviewRecord]
+    };
+    const result = this.db.prepare(`
+      UPDATE tv_processing_plans SET state = ?, plan_json = ? WHERE id = ?
+    `).run(updated.state, JSON.stringify(updated), id);
+    if (result.changes !== 1) throw new Error(`TV processing plan ${id} could not be updated`);
+    return updated;
+  }
+
+  markAssignmentUnknown(id: string, itemId: string, reviewer: string, reason: string): TvProcessingPlan | undefined {
+    if (!id.trim() || !itemId.trim() || !reviewer.trim()) {
+      throw new Error("Marking a TV assignment unknown requires plan, track, and reviewer identifiers");
+    }
+    if (!reason.trim() || reason.length > 2000) {
+      throw new Error("Marking a TV assignment unknown requires a reason up to 2000 characters");
+    }
+    const plan = this.get(id);
+    if (!plan) return undefined;
+    if (plan.state === "approved" || plan.state === "rejected") {
+      throw new Error(`TV processing plan ${id} is already ${plan.state}`);
+    }
+    if (!plan.assignments.some((assignment) => assignment.itemId === itemId)) {
+      throw new Error(`TV processing plan ${id} has no track ${itemId}`);
+    }
+    const reviewedAt = new Date().toISOString();
+    const updated = {
+      ...plan,
+      state: "awaiting-review" as const,
+      assignments: plan.assignments.map((assignment) => assignment.itemId !== itemId ? assignment : {
+        ...assignment,
+        decision: "unknown" as const,
+        episodes: [],
+        confidenceBand: "low" as const,
+        explanation: [...assignment.explanation, `Marked unknown by ${reviewer.trim()}: ${reason.trim()}`],
+        reviewRequirement: "required" as const
+      }),
+      automaticProcessingSafe: false,
+      approvalRequired: true,
+      reviewRequirement: "required" as const,
+      reviewReasons: [...plan.reviewReasons, `Track ${itemId} was explicitly marked unknown by a reviewer`],
+      reviewedBy: reviewer.trim(),
+      reviewedAt,
+      reviewReason: reason.trim(),
+      reviewHistory: [...(plan.reviewHistory ?? []), {
+        decision: "mark-unknown" as const,
+        reviewer: reviewer.trim(),
+        at: reviewedAt,
+        reason: reason.trim(),
+        itemId
+      }]
     };
     const result = this.db.prepare(`
       UPDATE tv_processing_plans SET state = ?, plan_json = ? WHERE id = ?

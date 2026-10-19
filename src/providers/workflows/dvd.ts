@@ -55,7 +55,7 @@ export class DvdWorkflow implements MediaWorkflow {
 
     const id = randomUUID();
     const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal);
-    if (this.tvWorkflow) {
+    if (this.tvWorkflow && settings.tvDetectionEnabled !== false) {
       try {
         const tvResult = await this.tvWorkflow.prepare({
           sourceId: info.sourceId,

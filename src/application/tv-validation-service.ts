@@ -398,7 +398,8 @@ export class TvValidationService {
   constructor(
     private readonly evidenceRepository: TvValidationEvidenceRepository,
     private readonly feedbackRepository: TvEpisodeFeedbackRepository,
-    private readonly planRepository: TvProcessingPlanRepository
+    private readonly planRepository: TvProcessingPlanRepository,
+    private readonly enabled: () => boolean = () => true
   ) {}
 
   capture(
@@ -406,7 +407,8 @@ export class TvValidationService {
     fingerprint: string,
     lookups: TvMetadataLookupSnapshot,
     result: TvWorkflowResult
-  ): TvValidationEvidence {
+  ): TvValidationEvidence | undefined {
+    if (!this.enabled()) return undefined;
     const evidence: TvValidationEvidence = {
       format: tvValidationFormat,
       schemaVersion: tvValidationSchemaVersion,

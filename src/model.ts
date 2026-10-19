@@ -35,6 +35,10 @@ export interface AppSettings {
   lidarrImportDir: string;
   adminPasswordSalt: string;
   adminPasswordHash: string;
+  tvDetectionEnabled: boolean;
+  tvValidationLoggingEnabled: boolean;
+  tvStoreAnalysisEvidence: boolean;
+  tvStoreMatchingEvidence: boolean;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 

@@ -21,5 +21,9 @@ export const defaultSettings: AppSettings = {
   lidarrImportDir: process.env.LIDARR_IMPORT_DIR ?? "/var/cache/autodisc/lidarr-import",
   adminPasswordSalt: "",
   adminPasswordHash: "",
+  tvDetectionEnabled: true,
+  tvValidationLoggingEnabled: true,
+  tvStoreAnalysisEvidence: true,
+  tvStoreMatchingEvidence: true,
   logLevel: "info"
 };

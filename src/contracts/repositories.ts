@@ -23,6 +23,7 @@ export interface HistoryRepository {
   list(limit?: number): Job[];
   delete(id: string): boolean;
   stats(): { total: number; successful: number; failures: number; averageSeconds: number | null };
+  statsByMediaType(): Array<{ mediaType: string; total: number; successful: number; failures: number; averageSeconds: number | null }>;
   get(id: string): Job | undefined;
   timeline(id: string): Array<{ at: string; stage: string; level: string; message: string }>;
   dailyStats(days: number): unknown[];

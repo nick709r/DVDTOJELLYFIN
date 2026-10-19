@@ -2,8 +2,8 @@
 
 ## Purpose and safety
 
-TV workflow runs that pass the DVD workflow's TV prefilter now automatically
-capture a validation case. Capturing evidence does not rip, convert, rename,
+TV workflow runs that pass the DVD workflow's TV prefilter capture a
+validation case by default. Capturing evidence does not rip, convert, rename,
 move, or publish TV media. The feature collects observations so the analysis,
 episode matcher, confidence thresholds, and human corrections can be tested
 against real collections before any automation is considered.
@@ -54,6 +54,31 @@ Exports default to the first 1,000 cases; optional offset and limit arguments
 allow large corpora to be exchanged in chunks. Both import and export enforce
 a 50 MiB file limit.
 Duplicate case IDs reject the import instead of overwriting evidence.
+
+## Web dashboard and review
+
+The authenticated dashboard exposes TV Intelligence summary metrics, recent
+analysis plans, per-track episode suggestions and alternatives, a review queue,
+validation case reports, and a downloadable validation dataset. The Settings
+page can disable TV detection (returning DVD discs to the existing movie path)
+or disable validation evidence capture without disabling TV plan generation.
+Existing policy thresholds are displayed read-only; editing them would change
+matching behavior and is deferred until calibration against a representative
+disc corpus.
+
+Review and correction APIs are authenticated like the rest of the administrator
+API. Approving a plan records the reviewer and timestamp only: all TV plans
+remain analysis-only, and approval never enables file execution. Accepted,
+rejected, and manually assigned episode corrections are stored in the existing
+correction repository. A track explicitly marked unknown is recorded in the
+plan's append-only review history, but does not become matcher feedback.
+
+The web API provides `GET /api/v1/tv/summary`,
+`GET /api/v1/tv/analysis`, `GET /api/v1/tv/analysis/:id`,
+`GET /api/v1/tv/reviews`, authenticated plan review/correction endpoints, and
+validation case/report/export routes under `/api/v1/tv/validation`. Exported
+JSON may include disc labels, title names, provider metadata, reviewer names,
+and correction reasons. Treat it as private and inspect/redact before sharing.
 
 Dataset envelope:
 

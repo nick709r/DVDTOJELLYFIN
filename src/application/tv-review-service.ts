@@ -72,6 +72,16 @@ export class TvReviewService {
     return updated;
   }
 
+  markUnknown(planId: string, itemId: string, reviewer: string, reason: string): TvProcessingPlan {
+    const plan = this.requireOpenPlan(planId);
+    if (!plan.assignments.some((assignment) => assignment.itemId === itemId)) {
+      throw new Error(`TV processing plan has no track ${itemId}`);
+    }
+    const updated = this.plans.markAssignmentUnknown(planId, itemId, reviewer, reason);
+    if (!updated) throw new Error(`TV processing plan ${planId} could not be updated`);
+    return updated;
+  }
+
   private requireOpenPlan(planId: string): TvProcessingPlan {
     const plan = this.plans.get(planId);
     if (!plan) throw new Error(`TV processing plan ${planId} was not found`);

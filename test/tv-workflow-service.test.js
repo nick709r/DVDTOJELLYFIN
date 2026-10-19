@@ -290,3 +290,33 @@ test("reviewer can approve a low-confidence plan without enabling automatic exec
     repositories.close();
   }
 });
+
+test("reviewer can mark a track unknown and persist the decision without affecting matching", async () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  try {
+    const service = new TvWorkflowService(
+      new MetadataResolver([metadataProvider(async (input) =>
+        metadataCandidates().filter((candidate) => candidate.entityType === input.entityType)
+      )]),
+      repositories.tvEpisodeFeedback,
+      repositories.tvProcessingPlans
+    );
+    const result = await service.prepare(tvSource(), "fingerprint-unknown");
+    assert.ok(result);
+    const review = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
+    const updated = review.markUnknown(result.plan.id, "1", "admin", "Disc label is ambiguous");
+    assert.equal(updated.state, "awaiting-review");
+    assert.equal(updated.executionEnabled, false);
+    assert.equal(updated.assignments.find((assignment) => assignment.itemId === "1").decision, "unknown");
+    assert.deepEqual(
+      repositories.tvProcessingPlans.list(10, "awaiting-review").map((plan) => plan.id),
+      [result.plan.id]
+    );
+    assert.equal(updated.reviewHistory.at(-1).decision, "mark-unknown");
+    assert.equal(repositories.tvEpisodeFeedback.listForFingerprint("fingerprint-unknown").length, 0);
+  } finally {
+    repositories.close();
+  }
+});

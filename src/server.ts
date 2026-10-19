@@ -20,8 +20,19 @@ import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manua
 import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
+import { repositories } from "./db.js";
+import { TvReviewService } from "./application/tv-review-service.js";
+import { TvValidationService } from "./application/tv-validation-service.js";
+import type { Episode, TvProcessingPlan } from "./domain/television.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
+const tvValidation = new TvValidationService(
+  repositories.tvValidationEvidence,
+  repositories.tvEpisodeFeedback,
+  repositories.tvProcessingPlans,
+  () => getSettings().tvValidationLoggingEnabled
+);
+const tvReview = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
 const sessions = new Map<string, number>();
 const staticRoot = join(dirname(fileURLToPath(import.meta.url)), "../web");
 
@@ -150,6 +161,7 @@ app.get("/api/v1/dashboard", async () => {
   const active = activeJob();
   return {
     stats: jobStats(),
+    mediaStats: repositories.history.statsByMediaType(),
     recent: listJobs(10),
     active,
     manualMusicMetadata: active ? getManualMusicMetadataPrompt(active.id) : null,
@@ -275,6 +287,178 @@ app.get<{ Querystring: { range?: string } }>("/api/v1/stats", async (request) =>
   const days = request.query.range === "30d" ? 30 : 7;
   const series = dailyJobStats(days);
   return { range: `${days}d`, series };
+});
+
+app.get<{ Querystring: { confidence?: string; state?: string; limit?: string; offset?: string } }>(
+  "/api/v1/tv/analysis", async (request, reply) => {
+    const { confidence, state: planState, limit: limitValue, offset: offsetValue } = request.query;
+    const allowedStates = ["ready", "awaiting-review", "approved", "rejected"];
+    if (planState && !allowedStates.includes(planState)) {
+      return reply.code(400).send({ error: "Invalid TV plan state filter" });
+    }
+    if (confidence && !["high", "medium", "low"].includes(confidence)) {
+      return reply.code(400).send({ error: "Confidence must be high, medium, or low" });
+    }
+    const limit = limitValue === undefined ? 100 : Number(limitValue);
+    const offset = offsetValue === undefined ? 0 : Number(offsetValue);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 ||
+      !Number.isInteger(offset) || offset < 0 || offset > 1000000) {
+      return reply.code(400).send({ error: "TV analysis pagination is invalid" });
+    }
+    const matchingPlans = repositories.tvProcessingPlans.list(1000, planState as TvProcessingPlan["state"] | undefined)
+      .filter((plan) => !confidence || plan.confidenceBand === confidence);
+    return { plans: matchingPlans.slice(offset, offset + limit), total: matchingPlans.length, offset, limit };
+  }
+);
+
+app.get<{ Params: { id: string } }>("/api/v1/tv/analysis/:id", async (request, reply) => {
+  const plan = repositories.tvProcessingPlans.get(request.params.id);
+  if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
+  const evidence = tvValidation.list(10000).find((item) => item.plan.id === plan.id);
+  return { plan, evidence };
+});
+
+app.get("/api/v1/tv/summary", async () => {
+  const plans = repositories.tvProcessingPlans.list(1000);
+  const summary = tvValidation.summary();
+  const daily = new Map<string, number>();
+  for (const plan of plans) {
+    const day = plan.createdAt.slice(0, 10);
+    daily.set(day, (daily.get(day) ?? 0) + 1);
+  }
+  const episodeMatchesSuggested = plans.reduce((count, plan) =>
+    count + plan.assignments.filter((item) => item.episodes.length > 0).length, 0);
+  const totalEpisodesIdentified = plans.reduce((count, plan) =>
+    count + plan.assignments.reduce((assignmentCount, assignment) => assignmentCount + assignment.episodes.length, 0), 0);
+  const manualReviewsCompleted = plans.filter((plan) =>
+    (plan.reviewHistory ?? []).some((review) => ["approved", "rejected"].includes(review.decision))).length;
+  const approvedPlans = plans.filter((plan) => plan.state === "approved").length;
+  return {
+    totalDiscsAnalyzed: plans.length,
+    totalEpisodesIdentified,
+    totalEpisodeMatchesSuggested: episodeMatchesSuggested,
+    highConfidenceMatches: plans.reduce((count, plan) =>
+      count + plan.assignments.filter((item) => item.confidenceBand === "high" && item.episodes.length > 0).length, 0),
+    mediumConfidenceMatches: plans.reduce((count, plan) =>
+      count + plan.assignments.filter((item) => item.confidenceBand === "medium" && item.episodes.length > 0).length, 0),
+    lowConfidenceMatches: plans.reduce((count, plan) =>
+      count + plan.assignments.filter((item) => item.confidenceBand === "low").length, 0),
+    manualReviewsRequired: plans.filter((plan) => plan.state === "awaiting-review").length,
+    manualReviewsCompleted,
+    correctionsApplied: repositories.tvEpisodeFeedback.count(),
+    duplicateTracksIdentified: plans.reduce((count, plan) => count + plan.duplicateTracks.length, 0),
+    bonusFeaturesIdentified: plans.reduce((count, plan) => count + plan.bonusFeatures.length, 0),
+    commentaryTracksIdentified: plans.reduce((count, plan) => count + plan.commentaryTracks.length, 0),
+    totalSeasonsProcessed: new Set(plans.flatMap((plan) => plan.season
+      ? [`${plan.series?.id ?? "unknown"}:${plan.season.number}`] : [])).size,
+    totalSeriesProcessed: new Set(plans.flatMap((plan) => plan.series ? [plan.series.id] : [])).size,
+    heldOutAccuracy: summary.heldOutLabeledTracks
+      ? summary.exactMatches / summary.heldOutLabeledTracks : null,
+    meanConfidence: summary.meanPlanConfidence,
+    reviewApprovalRate: manualReviewsCompleted ? approvedPlans / manualReviewsCompleted : null,
+    daily: [...daily].sort(([left], [right]) => left.localeCompare(right)).slice(-30)
+      .map(([day, count]) => ({ day, count })),
+    validation: summary
+  };
+});
+
+app.get<{ Querystring: { state?: string; limit?: string } }>("/api/v1/tv/reviews", async (request, reply) => {
+  const allowedStates = ["ready", "awaiting-review", "approved", "rejected"];
+  if (request.query.state && !allowedStates.includes(request.query.state)) {
+    return reply.code(400).send({ error: "Invalid TV review state filter" });
+  }
+  const limit = request.query.limit === undefined ? 100 : Number(request.query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return reply.code(400).send({ error: "TV review limit must be between 1 and 100" });
+  }
+  const plans = repositories.tvProcessingPlans.list(1000, request.query.state as TvProcessingPlan["state"] | undefined);
+  return { plans: plans.slice(0, limit), total: plans.length };
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/review", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "TV review request must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  if (!["approve", "reject", "defer"].includes(String(body.action)) ||
+    typeof body.reviewer !== "string" || !body.reviewer.trim() || body.reviewer.length > 120 ||
+    (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 2000))) {
+    return reply.code(400).send({ error: "TV review requires a valid action, reviewer, and optional reason" });
+  }
+  if (body.action === "reject" && (typeof body.reason !== "string" || !body.reason.trim())) {
+    return reply.code(400).send({ error: "Rejecting a TV plan requires a reason" });
+  }
+  try {
+    const action = body.action === "approve"
+      ? { type: "approve-plan" as const, planId: request.params.id, reviewer: body.reviewer }
+      : body.action === "reject"
+        ? { type: "reject-plan" as const, planId: request.params.id, reviewer: body.reviewer, reason: body.reason as string }
+        : { type: "defer-plan" as const, planId: request.params.id, reviewer: body.reviewer, ...(typeof body.reason === "string" ? { reason: body.reason } : {}) };
+    return { plan: tvReview.applyApproval(action) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "TV review action failed";
+    return reply.code(message.includes("not found") ? 404 : 409).send({ error: message });
+  }
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/corrections", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "TV correction request must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  const validEpisode = (value: unknown): value is Episode => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const episode = value as Record<string, unknown>;
+    return typeof episode.seriesId === "string" && episode.seriesId.trim().length > 0 &&
+      episode.seriesId.length <= 200 &&
+      Number.isInteger(episode.seasonNumber) && Number(episode.seasonNumber) >= 0 && Number(episode.seasonNumber) <= 100 &&
+      Number.isInteger(episode.episodeNumber) && Number(episode.episodeNumber) >= 0 && Number(episode.episodeNumber) <= 1000 &&
+      (episode.title === undefined || (typeof episode.title === "string" && episode.title.length <= 500));
+  };
+  if (typeof body.itemId !== "string" || !body.itemId.trim() ||
+    typeof body.reviewer !== "string" || !body.reviewer.trim() || body.reviewer.length > 120 ||
+    typeof body.reason !== "string" || !body.reason.trim() || body.reason.length > 2000) {
+    return reply.code(400).send({ error: "TV correction requires a track, reviewer, and reason" });
+  }
+  try {
+    if (body.action === "mark-unknown") {
+      return { plan: tvReview.markUnknown(request.params.id, body.itemId, body.reviewer, body.reason) };
+    }
+    if (!["accept-match", "reject-match", "assign-episodes"].includes(String(body.action)) ||
+      !Array.isArray(body.episodes) || body.episodes.length < 1 || body.episodes.length > 3 ||
+      !body.episodes.every(validEpisode)) {
+      return reply.code(400).send({ error: "TV correction action or episode list is invalid" });
+    }
+    const correction = tvReview.applyCorrection({
+      type: body.action as "accept-match" | "reject-match" | "assign-episodes",
+      planId: request.params.id,
+      itemId: body.itemId,
+      episodes: body.episodes,
+      reason: body.reason
+    });
+    return { correction };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "TV correction failed";
+    return reply.code(message.includes("not found") ? 404 : 409).send({ error: message });
+  }
+});
+
+app.get("/api/v1/tv/validation", async () => ({
+  summary: tvValidation.summary(),
+  correctionCount: repositories.tvEpisodeFeedback.count(),
+  cases: tvValidation.list(1000).reverse()
+}));
+
+app.get<{ Params: { id: string } }>("/api/v1/tv/validation/:id", async (request, reply) => {
+  const evidence = tvValidation.get(request.params.id);
+  if (!evidence) return reply.code(404).send({ error: "TV validation case not found" });
+  return { evidence, report: tvValidation.report(request.params.id) };
+});
+
+app.get("/api/v1/tv/validation/export", async (_request, reply) => {
+  const dataset = tvValidation.exportDataset(0, 10000);
+  reply.header("Content-Disposition", 'attachment; filename="autodisc-tv-validation.json"');
+  return dataset;
 });
 
 function validAbsolutePath(value: unknown): value is string {
@@ -536,6 +720,14 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if ("autoEject" in body) {
     if (typeof body.autoEject !== "boolean") return reply.code(400).send({ error: "autoEject must be a boolean" });
     patch.autoEject = body.autoEject;
+  }
+  if ("tvDetectionEnabled" in body) {
+    if (typeof body.tvDetectionEnabled !== "boolean") return reply.code(400).send({ error: "tvDetectionEnabled must be a boolean" });
+    patch.tvDetectionEnabled = body.tvDetectionEnabled;
+  }
+  if ("tvValidationLoggingEnabled" in body) {
+    if (typeof body.tvValidationLoggingEnabled !== "boolean") return reply.code(400).send({ error: "tvValidationLoggingEnabled must be a boolean" });
+    patch.tvValidationLoggingEnabled = body.tvValidationLoggingEnabled;
   }
   if ("metadataEnabled" in body) {
     if (typeof body.metadataEnabled !== "boolean") return reply.code(400).send({ error: "metadataEnabled must be a boolean" });

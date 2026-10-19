@@ -156,6 +156,7 @@ export type TvEpisodeFeedbackInput = Omit<TvEpisodeFeedback, "id" | "createdAt">
 
 export interface TvEpisodeFeedbackRepository {
   record(feedback: TvEpisodeFeedbackInput): TvEpisodeFeedback;
+  count(): number;
   findForItemSignature(itemSignature: string, limit?: number): TvEpisodeFeedback[];
   listForFingerprint(fingerprint: string): TvEpisodeFeedback[];
 }
@@ -209,10 +210,11 @@ export interface TvProcessingPlan {
 }
 
 export interface TvPlanReviewRecord {
-  decision: "approved" | "rejected" | "deferred";
+  decision: "approved" | "rejected" | "deferred" | "mark-unknown";
   reviewer: string;
   at: string;
   reason?: string;
+  itemId?: string;
 }
 
 export type TvReviewAction =
@@ -238,12 +240,14 @@ export interface TvProcessingPlanRepository {
   save(plan: TvProcessingPlanInput): TvProcessingPlan;
   get(id: string): TvProcessingPlan | undefined;
   latestForFingerprint(fingerprint: string): TvProcessingPlan | undefined;
+  list(limit?: number, state?: TvProcessingPlan["state"], offset?: number): TvProcessingPlan[];
   recordReview(
     id: string,
     decision: "approved" | "rejected" | "deferred",
     reviewer: string,
     reason?: string
   ): TvProcessingPlan | undefined;
+  markAssignmentUnknown(id: string, itemId: string, reviewer: string, reason: string): TvProcessingPlan | undefined;
 }
 
 export interface EpisodeMatch {
