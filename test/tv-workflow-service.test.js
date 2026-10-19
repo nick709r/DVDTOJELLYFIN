@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import test from "node:test";
 import { MetadataResolver } from "../dist/application/metadata-resolver.js";
 import {
+  assessTvDisc,
   TvWorkflowService,
   isPotentialTvDisc,
   tvPrefilterRejectionReasons
@@ -177,10 +178,67 @@ test("generic TV wording alone does not divert a movie disc from the movie workf
   };
   assert.equal(isPotentialTvDisc(source), false);
   assert.deepEqual(tvPrefilterRejectionReasons(source), [
-    'disc label "TV Edition" has no explicit season or series marker',
-    "only 0 episode-length titles were found; at least 3 are required",
-    "a title longer than the maximum episode runtime was found"
+    'Disc label "TV Edition" contains no season, series, or episode marker',
+    "0 titles fall within the configured episode runtime range",
+    "Fewer than 3 episode-length titles were found",
+    "Not enough episode-length titles to compare runtimes",
+    "At least one title exceeds the configured maximum episode runtime"
   ]);
+});
+
+test("two consistent episode-length titles classify as uncertain TV with an explainable scorecard", () => {
+  const source = {
+    ...tvSource("DISC_01"),
+    manifest: {
+      mediaKind: "dvd",
+      items: [
+        { id: "1", kind: "title", title: "Title 1", durationSeconds: 1320 },
+        { id: "2", kind: "title", title: "Title 2", durationSeconds: 1350 }
+      ]
+    }
+  };
+  const assessment = assessTvDisc(source);
+
+  assert.equal(assessment.classification, "review");
+  assert.equal(assessment.confidence, 0.35);
+  assert.deepEqual(assessment.criteria.map(({ id, passed }) => [id, passed]), [
+    ["explicit-series-label", false],
+    ["two-episode-length-titles", true],
+    ["three-episode-length-titles", false],
+    ["consistent-episode-runtimes", true],
+    ["no-feature-length-title", true]
+  ]);
+  assert.equal(isPotentialTvDisc(source), true);
+  const inconsistentSource = {
+    ...source,
+    manifest: {
+      ...source.manifest,
+      items: [
+        source.manifest.items[0],
+        { id: "2", kind: "title", title: "Title 2", durationSeconds: 3300 }
+      ]
+    }
+  };
+  assert.equal(assessTvDisc(inconsistentSource).classification, "review");
+  assert.ok(assessTvDisc(inconsistentSource).reasons.includes(
+    "Episode-length title runtime ratio exceeds 1.6"
+  ));
+  const sourceWithLongTitle = {
+    ...source,
+    manifest: {
+      ...source.manifest,
+      items: [...source.manifest.items, {
+        id: "3",
+        kind: "title",
+        title: "Long program",
+        durationSeconds: 7200
+      }]
+    }
+  };
+  assert.equal(assessTvDisc(sourceWithLongTitle).classification, "review");
+  assert.ok(assessTvDisc(sourceWithLongTitle).reasons.includes(
+    "At least one title exceeds the configured maximum episode runtime"
+  ));
 });
 
 test("DVD with no usable titles logs why no job was created", async () => {
@@ -256,6 +314,56 @@ test("DVD workflow holds potential TV discs for review and never invokes movie a
   assert.equal(acquireCalls, 0);
   assert.ok(calls.some(([name]) => name === "review"));
   assert.ok(calls.some(([name, contextArg]) => name === "record" && contextArg === context));
+});
+
+test("DVD workflow routes an unlabeled two-episode disc to review instead of movie processing", async () => {
+  const service = createTvService();
+  const workflow = new DvdWorkflow(service);
+  const calls = [];
+  const context = { id: "job-uncertain-tv" };
+  const jobs = {
+    getSettings: () => ({ tvDetectionEnabled: true }),
+    lastDiscFingerprint: () => null,
+    begin: (...args) => { calls.push(["begin", ...args]); return context; },
+    update: (...args) => calls.push(["update", ...args]),
+    record: (...args) => calls.push(["record", ...args]),
+    holdForReview: (...args) => calls.push(["review", ...args]),
+    wasJobCancelled: () => false
+  };
+  let acquireCalls = 0;
+  const source = {
+    provider: {},
+    candidate: {
+      providerId: "source.video-dvd.makemkv",
+      sourceId: "drive-1",
+      mediaKind: "dvd",
+      label: "DISC_01",
+      manifest: {
+        mediaKind: "dvd",
+        items: [
+          { id: "1", kind: "title", title: "Title 1", durationSeconds: 1320 },
+          { id: "2", kind: "title", title: "Title 2", durationSeconds: 1350 }
+        ]
+      }
+    }
+  };
+
+  assert.equal(await workflow.process({
+    source,
+    sources: { acquire: async () => { acquireCalls += 1; throw new Error("Movie ripping must not run"); } },
+    jobs,
+    metadata: {},
+    signal: new AbortController().signal,
+    devicePath: "/dev/sr0"
+  }), true);
+  assert.equal(acquireCalls, 0);
+  assert.ok(calls.some(([name, contextArg, stage]) =>
+    name === "record" && contextArg === context && stage === "tv-classification"
+  ));
+  const review = calls.find(([name]) => name === "review");
+  assert.ok(review);
+  assert.match(review[2], /TV review candidate/);
+  assert.match(review[2], /0\.35/);
 });
 
 test("TV review corrections persist and are consumed by a later matching run", async () => {

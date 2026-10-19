@@ -2,12 +2,20 @@
 
 ## Scope and safety boundary
 
-The DVD workflow now invokes TV analysis only for discs with strong television
-signals: an explicit season/series/episode label, or at least three
-episode-length titles with reasonably consistent runtimes and no longer
-feature title. Bonus/commentary-named titles are excluded from the structural
-signal. Other discs continue through the existing movie path without TV
-metadata lookups.
+The DVD workflow builds a TV-prefilter scorecard for every inspected disc.
+The scorecard records the final classification, heuristic confidence, and
+each passed or failed criterion in the service log and job history. An explicit
+season/series/episode label or at least three episode-length titles with
+consistent runtimes and no longer feature title is classified as TV. Two or
+more episode-length titles that do not meet the confirmed-TV rule are
+considered uncertain and held for review rather than routed to movie
+publishing, including when runtimes are inconsistent or a longer title is
+present. Bonus/commentary-named titles are excluded from the structural
+signal. Discs without these signals follow the movie path, with the failed
+criteria and score explaining that decision.
+
+The confidence is a weighted heuristic score, not a probability or a learned
+model. It communicates which available signals supported the routing decision.
 
 For a potential series disc, the DVD workflow generates a TV analysis report,
 runs the episode matching engine, builds a confidence-gated processing plan,
@@ -26,8 +34,9 @@ or integration; it is not ejected by the TV branch.
 ```mermaid
 flowchart TD
   Disc[DVD source inspection and manifest]
-  Prefilter{Strong TV label or<br/>consistent episode-title structure?}
+  Prefilter{Explainable TV scorecard}
   Movie[Existing movie title selection,<br/>rip, convert, publish]
+  Uncertain[Hold for review;<br/>do not publish as movie]
   TvMetadata[Resolve normalized series,<br/>season, episode candidates]
   Analysis[TvAnalysisEngine]
   Feedback[(Stored exact-disc feedback)]
@@ -39,14 +48,16 @@ flowchart TD
   Output[TV output execution disabled]
 
   Disc --> Prefilter
-  Prefilter -- no --> Movie
-  Prefilter -- yes --> TvMetadata
+  Prefilter -- no TV signals --> Movie
+  Prefilter -- uncertain two-episode shape --> Uncertain
+  Prefilter -- confirmed TV --> TvMetadata
   TvMetadata --> Analysis
   Analysis --> Matcher
   Feedback --> Matcher
   Matcher --> Plan
   Plan --> Store
   Store --> Hold
+  Uncertain --> Hold
   Hold -. future integration .-> FutureReview
   FutureReview --> Output
 ```

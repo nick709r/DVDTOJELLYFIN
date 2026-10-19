@@ -11,9 +11,9 @@ import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
 import { createMovieOutput } from "../../movie-output.js";
 import {
+  assessTvDisc,
   summarizeTvPlan,
-  TvWorkflowService,
-  tvPrefilterRejectionReasons
+  TvWorkflowService
 } from "../../application/tv-workflow-service.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
@@ -63,7 +63,44 @@ export class DvdWorkflow implements MediaWorkflow {
 
     const id = randomUUID();
     const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal, devicePath);
-    if (this.tvWorkflow && settings.tvDetectionEnabled !== false) {
+    const tvAssessment = assessTvDisc({
+      sourceId: info.sourceId,
+      providerId: info.providerId,
+      mediaKind: info.mediaKind,
+      label: info.label,
+      manifest: info.manifest
+    });
+    const tvEnabled = settings.tvDetectionEnabled !== false;
+    log("info", "disc", `Disc classified as ${tvAssessment.classification === "movie" ? "Movie" : tvAssessment.classification === "tv" ? "TV" : "TV review required"}`, {
+      jobId: id,
+      sourceId: info.sourceId,
+      providerId: info.providerId,
+      discLabel: info.label || undefined,
+      classification: tvAssessment.classification,
+      tvConfidence: tvAssessment.confidence,
+      criteria: tvAssessment.criteria,
+      reasons: tvAssessment.reasons,
+      tvDetectionEnabled: tvEnabled
+    });
+
+    if (tvAssessment.classification !== "movie" && (!tvEnabled || !this.tvWorkflow)) {
+      const message = !tvEnabled
+        ? `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV detection is disabled; held for review instead of movie processing.`
+        : `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV analysis is unavailable; held for review instead of movie processing.`;
+      jobs.record(context, "tv-classification", "warn", JSON.stringify({
+        classification: tvAssessment.classification,
+        confidence: tvAssessment.confidence,
+        criteria: tvAssessment.criteria,
+        reasons: tvAssessment.reasons,
+        tvDetectionEnabled: tvEnabled
+      }));
+      jobs.holdForReview(context, message);
+      setRuntimeStatus("idle");
+      notifyStatus();
+      return true;
+    }
+
+    if (tvAssessment.classification !== "movie" && this.tvWorkflow && tvEnabled) {
       try {
         const tvResult = await this.tvWorkflow.prepare({
           sourceId: info.sourceId,
@@ -73,28 +110,27 @@ export class DvdWorkflow implements MediaWorkflow {
           manifest: info.manifest
         }, fingerprint, signal);
         if (tvResult) {
-          const message = summarizeTvPlan(tvResult.plan);
+          const message = `TV ${tvAssessment.classification} candidate (heuristic confidence ${tvAssessment.confidence.toFixed(2)}). ${summarizeTvPlan(tvResult.plan)}`;
           jobs.update(context, { title: tvResult.plan.series?.title ?? info.label ?? null });
           jobs.record(context, "tv-processing-plan", "info", message);
           jobs.record(context, "tv-review", "warn", tvResult.plan.executionBlocker);
+          jobs.record(context, "tv-classification", "info", JSON.stringify({
+            classification: tvAssessment.classification,
+            confidence: tvAssessment.confidence,
+            criteria: tvAssessment.criteria,
+            reasons: tvAssessment.reasons
+          }));
           jobs.holdForReview(context, message);
           setRuntimeStatus("idle");
           notifyStatus();
           return true;
         }
-        const reasons = tvPrefilterRejectionReasons({
-          sourceId: info.sourceId,
-          providerId: info.providerId,
-          mediaKind: info.mediaKind,
-          label: info.label,
-          manifest: info.manifest
-        });
-        log("info", "disc", "TV analysis prefilter did not match; disc will continue through the movie workflow", {
-          jobId: id,
-          sourceId: info.sourceId,
-          discLabel: info.label || undefined,
-          reasons
-        });
+        jobs.record(context, "tv-classification", "warn",
+          `TV ${tvAssessment.classification} classification (heuristic confidence ${tvAssessment.confidence.toFixed(2)}) was not analyzed; reasons: ${tvAssessment.reasons.join("; ") || "none"}.`);
+        jobs.holdForReview(context, "Disc matched TV-series criteria, but TV analysis did not create a report. Held for review instead of movie processing.");
+        setRuntimeStatus("idle");
+        notifyStatus();
+        return true;
       } catch (error) {
         const cancelled = jobs.wasJobCancelled(context);
         const interrupted = Boolean(signal.aborted && !cancelled);

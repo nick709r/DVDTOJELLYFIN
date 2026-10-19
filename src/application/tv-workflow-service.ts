@@ -153,7 +153,20 @@ function parseDiscStructure(label: string): { seasonNumber?: number; discNumber?
   };
 }
 
-export function tvPrefilterRejectionReasons(source: TvWorkflowSource): string[] {
+export interface TvPrefilterCriterion {
+  id: string;
+  passed: boolean;
+  explanation: string;
+}
+
+export interface TvPrefilterAssessment {
+  classification: "tv" | "review" | "movie";
+  confidence: number;
+  criteria: readonly TvPrefilterCriterion[];
+  reasons: readonly string[];
+}
+
+export function assessTvDisc(source: TvWorkflowSource): TvPrefilterAssessment {
   const titleItems = source.manifest.items.filter((item) =>
     item.kind === "title" && item.durationSeconds !== undefined &&
     item.durationSeconds >= tvWorkflowPolicy.episodeMinimumSeconds &&
@@ -163,26 +176,66 @@ export function tvPrefilterRejectionReasons(source: TvWorkflowSource): string[] 
   const hasSeasonOrSeriesLabel = seriesLabelPattern.test(source.label);
   const shortestEpisodeRuntime = titleItems[0]?.durationSeconds ?? 0;
   const longestEpisodeRuntime = titleItems.at(-1)?.durationSeconds ?? 0;
-  const hasEpisodeStructure = titleItems.length >= tvWorkflowPolicy.structuralTitleCount &&
-    longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) <= tvWorkflowPolicy.runtimeRatioMaximum &&
-    !source.manifest.items.some((item) => item.kind === "title" &&
-      item.durationSeconds !== undefined && item.durationSeconds > tvWorkflowPolicy.episodeMaximumSeconds);
-  if (hasSeasonOrSeriesLabel || hasEpisodeStructure) return [];
+  const hasTwoEpisodeTitles = titleItems.length >= 2;
+  const hasThreeEpisodeTitles = titleItems.length >= tvWorkflowPolicy.structuralTitleCount;
+  const runtimesAreConsistent = hasTwoEpisodeTitles &&
+    longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) <= tvWorkflowPolicy.runtimeRatioMaximum;
+  const hasFeatureLengthTitle = source.manifest.items.some((item) => item.kind === "title" &&
+    item.durationSeconds !== undefined && item.durationSeconds > tvWorkflowPolicy.episodeMaximumSeconds);
+  const noFeatureLengthTitle = !hasFeatureLengthTitle;
+  const criteria: TvPrefilterCriterion[] = [
+    {
+      id: "explicit-series-label",
+      passed: hasSeasonOrSeriesLabel,
+      explanation: hasSeasonOrSeriesLabel
+        ? "Disc label contains a season, series, or episode marker"
+        : `Disc label "${source.label || "(empty)"}" contains no season, series, or episode marker`
+    },
+    {
+      id: "two-episode-length-titles",
+      passed: hasTwoEpisodeTitles,
+      explanation: `${titleItems.length} title${titleItems.length === 1 ? "" : "s"} fall within the configured episode runtime range`
+    },
+    {
+      id: "three-episode-length-titles",
+      passed: hasThreeEpisodeTitles,
+      explanation: hasThreeEpisodeTitles
+        ? `At least ${tvWorkflowPolicy.structuralTitleCount} episode-length titles were found`
+        : `Fewer than ${tvWorkflowPolicy.structuralTitleCount} episode-length titles were found`
+    },
+    {
+      id: "consistent-episode-runtimes",
+      passed: runtimesAreConsistent,
+      explanation: runtimesAreConsistent
+        ? `Episode-length title runtime ratio is within ${tvWorkflowPolicy.runtimeRatioMaximum}`
+        : hasTwoEpisodeTitles
+          ? `Episode-length title runtime ratio exceeds ${tvWorkflowPolicy.runtimeRatioMaximum}`
+          : "Not enough episode-length titles to compare runtimes"
+    },
+    {
+      id: "no-feature-length-title",
+      passed: noFeatureLengthTitle,
+      explanation: noFeatureLengthTitle
+        ? "No title exceeds the configured maximum episode runtime"
+        : "At least one title exceeds the configured maximum episode runtime"
+    }
+  ];
 
-  const reasons: string[] = [];
-  reasons.push(`disc label "${source.label || "(empty)"}" has no explicit season or series marker`);
-  if (titleItems.length < tvWorkflowPolicy.structuralTitleCount) {
-    reasons.push(
-      `only ${titleItems.length} episode-length titles were found; at least ${tvWorkflowPolicy.structuralTitleCount} are required`
-    );
-  } else if (longestEpisodeRuntime / Math.max(1, shortestEpisodeRuntime) > tvWorkflowPolicy.runtimeRatioMaximum) {
-    reasons.push("episode-length title runtimes vary too widely to establish episode structure");
-  }
-  if (source.manifest.items.some((item) => item.kind === "title" &&
-    item.durationSeconds !== undefined && item.durationSeconds > tvWorkflowPolicy.episodeMaximumSeconds)) {
-    reasons.push("a title longer than the maximum episode runtime was found");
-  }
-  return reasons;
+  const weights = [0.55, 0.2, 0.1, 0.1, 0.05];
+  const confidence = Number(criteria.reduce(
+    (score, criterion, index) => score + (criterion.passed ? weights[index] ?? 0 : 0),
+    0
+  ).toFixed(2));
+  const confirmedTv = hasSeasonOrSeriesLabel ||
+    (hasThreeEpisodeTitles && runtimesAreConsistent && noFeatureLengthTitle);
+  const uncertainTv = !confirmedTv && hasTwoEpisodeTitles;
+  const classification = confirmedTv ? "tv" : uncertainTv ? "review" : "movie";
+  const reasons = criteria.filter((criterion) => !criterion.passed).map((criterion) => criterion.explanation);
+  return { classification, confidence, criteria, reasons };
+}
+
+export function tvPrefilterRejectionReasons(source: TvWorkflowSource): string[] {
+  return assessTvDisc(source).reasons.slice();
 }
 
 function bandFor(confidence: number): TvConfidenceBand {
@@ -299,7 +352,7 @@ export class TvWorkflowService {
     fingerprint: string,
     signal?: AbortSignal
   ): Promise<TvWorkflowResult | undefined> {
-    if (tvPrefilterRejectionReasons(source).length > 0) return undefined;
+    if (assessTvDisc(source).classification === "movie") return undefined;
 
     const seasonStructure = parseDiscStructure(source.label);
     const [seriesResult, seasonResult, episodeResult] = await Promise.all([
@@ -380,7 +433,7 @@ export class TvWorkflowService {
 }
 
 export function isPotentialTvDisc(source: TvWorkflowSource): boolean {
-  return tvPrefilterRejectionReasons(source).length === 0;
+  return assessTvDisc(source).classification !== "movie";
 }
 
 export function summarizeTvPlan(plan: TvProcessingPlan): string {
