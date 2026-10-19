@@ -1,4 +1,8 @@
 import type { AppSettings, Job, JobStatus } from "../model.js";
+import type {
+  TvEpisodeFeedbackRepository,
+  TvProcessingPlanRepository
+} from "../domain/television.js";
 
 export interface SettingsRepository {
   get(): AppSettings;
@@ -9,7 +13,7 @@ export interface JobRepository {
   add(id: string, label: string | null, fingerprint?: string | null, mediaKind?: string): void;
   setStatus(id: string, status: JobStatus, message: string): void;
   update(id: string, patch: Partial<Pick<Job, "title" | "outputPath" | "encoder" | "outputBytes" | "progress" | "conversionSeconds">>): void;
-  finish(id: string, status: "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void;
+  finish(id: string, status: "review" | "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void;
   active(): Job | null;
   addWarning(id: string, message: string): void;
 }
@@ -41,5 +45,7 @@ export interface AutoDiscRepositories {
   history: HistoryRepository;
   events: EventRepository;
   recovery: RecoveryRepository;
+  tvEpisodeFeedback: TvEpisodeFeedbackRepository;
+  tvProcessingPlans: TvProcessingPlanRepository;
   close(): void;
 }

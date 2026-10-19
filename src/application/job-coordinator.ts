@@ -16,7 +16,7 @@ export interface JobFailure {
 
 export interface JobResult {
   jobId: string;
-  status: "completed" | "failed" | "cancelled" | "interrupted";
+  status: "review" | "completed" | "failed" | "cancelled" | "interrupted";
   error?: JobFailure;
 }
 
@@ -111,6 +111,16 @@ export class JobCoordinator {
     this.repositories.jobs.finish(context.id, "completed", null, fingerprint);
     this.publisher.publish(context.id, "completed");
     return { jobId: context.id, status: "completed" };
+  }
+
+  holdForReview(context: JobContext, message: string): JobResult {
+    this.repositories.jobs.finish(context.id, "review", message);
+    this.publisher.publish(context.id, "review");
+    return {
+      jobId: context.id,
+      status: "review",
+      error: { code: "review_required", message, recoverable: false }
+    };
   }
 
   fail(context: JobContext, status: "failed" | "cancelled" | "interrupted", failure: JobFailure): JobResult {

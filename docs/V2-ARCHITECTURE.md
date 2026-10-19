@@ -11,14 +11,20 @@ health checks, candidate ranking, and fallback results. SQLite connection,
 migrations, and settings/job/history/event/recovery repositories are separated
 behind repository contracts; `db.ts` remains a compatibility facade for
 non-workflow callers. DVD and audio-CD workflows use the injected job
-coordinator for lifecycle state and cancellation context. The analysis-only
-`TvAnalysisEngine` ranks series, seasons, and episode candidates from metadata,
-runtime, disc structure, history, and corrections; it produces explainable
-reports and makes no assignments. It is not yet wired into DVD processing.
+coordinator for lifecycle state and cancellation context. The standalone
+`TvAnalysisEngine` produces explainable disc reports, and
+`TvEpisodeMatchingEngine` ranks single and explicitly grouped multi-part
+episode suggestions, returning unknown when confidence or separation is
+insufficient. The DVD workflow now calls `TvWorkflowService` for strongly
+identified TV discs; it stores a confidence-gated plan and holds the disc for
+review instead of sending it through movie output. SQLite migrations 6 and 7
+add feedback and processing-plan repositories. TV output remains disabled.
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for the current diagram, gate status, extension points, and feature blockers.
 See [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md) for its input, scoring,
 report, and remaining integration work.
+See [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md) for the
+workflow integration, confidence gates, and Archivist Mode/multi-drive blockers.
 
 ## Current implementation shape
 
@@ -41,11 +47,21 @@ flowchart LR
   Metadata[Normalized TV metadata candidates]
   History[Historical disc evidence]
   Corrections[Prior user corrections]
+  DVD[DVD workflow]
   Manifest --> TvAnalysis[TvAnalysisEngine - analysis only]
   Metadata --> TvAnalysis
   History --> TvAnalysis
   Corrections --> TvAnalysis
   TvAnalysis --> TvReport[Explainable TV Disc Analysis Report]
+  TvReport --> EpisodeMatcher[TvEpisodeMatchingEngine]
+  EpisodeMatcher --> MatchReport[Conservative Episode Match Report]
+  EpisodeMatcher -. correction feedback .-> FeedbackStore[TV episode feedback repository]
+  DVD --> TvPrefilter{Potential TV disc?}
+  TvPrefilter -- no --> MovieWorkflow[Existing movie workflow]
+  TvPrefilter -- yes --> TvWorkflow[TvWorkflowService]
+  TvWorkflow --> TvAnalysis
+  TvWorkflow --> Plan[Persisted TV Processing Plan]
+  Plan --> Review[Review state; execution disabled]
 ```
 
 The media source coordinator does not inspect media-kind-specific fields.

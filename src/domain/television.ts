@@ -72,6 +72,9 @@ export interface TvEpisodeMetadataCandidate {
   runtimeSeconds?: number;
   releaseId?: string;
   evidence?: readonly string[];
+  multiPartGroupId?: string;
+  partNumber?: number;
+  partCount?: number;
 }
 
 export interface TvMetadataEvidence {
@@ -132,6 +135,102 @@ export interface EpisodeCandidate {
   matchedItemId?: string;
   duplicateOf?: string;
   matchKind?: "standard" | "special" | "bonus" | "commentary" | "alternative-release" | "duplicate";
+  multiPartGroupId?: string;
+  partNumber?: number;
+  partCount?: number;
+}
+
+export type TvEpisodeFeedbackOutcome = "accepted" | "rejected" | "manual-assignment";
+
+export interface TvEpisodeFeedback {
+  id: string;
+  fingerprint: string;
+  itemSignature: string;
+  outcome: TvEpisodeFeedbackOutcome;
+  episodes: readonly Episode[];
+  reason?: string;
+  createdAt: string;
+}
+
+export type TvEpisodeFeedbackInput = Omit<TvEpisodeFeedback, "id" | "createdAt">;
+
+export interface TvEpisodeFeedbackRepository {
+  record(feedback: TvEpisodeFeedbackInput): TvEpisodeFeedback;
+  findForItemSignature(itemSignature: string, limit?: number): TvEpisodeFeedback[];
+  listForFingerprint(fingerprint: string): TvEpisodeFeedback[];
+}
+
+export type TvConfidenceBand = "high" | "medium" | "low";
+export type TvReviewRequirement = "none" | "recommended" | "required";
+
+export interface TvPlannedEpisodeAssignment {
+  itemId: string;
+  itemSignature: string;
+  itemTitle?: string;
+  decision: TvEpisodeMatchDecision;
+  episodes: readonly Episode[];
+  confidence: ConfidenceScore;
+  confidenceBand: TvConfidenceBand;
+  explanation: readonly string[];
+  alternatives: readonly TvEpisodeMatchOption[];
+  reviewRequirement: TvReviewRequirement;
+}
+
+export interface TvProcessingPlan {
+  id: string;
+  sourceId: string;
+  manifestId: string;
+  fingerprint: string;
+  createdAt: string;
+  state: "ready" | "awaiting-review" | "approved" | "rejected";
+  series?: Series;
+  seriesConfidence: ConfidenceScore;
+  season?: Season;
+  seasonConfidence: ConfidenceScore;
+  discPosition?: TvDiscPositionCandidate;
+  assignments: readonly TvPlannedEpisodeAssignment[];
+  confidence: ConfidenceScore;
+  confidenceBand: TvConfidenceBand;
+  automaticProcessingSafe: boolean;
+  reviewRequirement: TvReviewRequirement;
+  reviewReasons: readonly string[];
+  duplicateTracks: readonly TvDiscRelationship[];
+  alternateTracks: readonly TvDiscRelationship[];
+  commentaryTracks: readonly TvDiscItemResult[];
+  bonusFeatures: readonly TvDiscItemResult[];
+  specialFeatures: readonly TvDiscItemResult[];
+  approvalRequired: boolean;
+  executionEnabled: false;
+  executionBlocker: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewReason?: string;
+}
+
+export type TvReviewAction =
+  | { type: "view-analysis"; planId: string }
+  | { type: "inspect-track"; planId: string; itemId: string }
+  | { type: "compare-candidates"; planId: string; itemId: string };
+
+export type TvCorrectionAction =
+  | { type: "accept-match"; planId: string; itemId: string; episodes: readonly Episode[]; reason?: string }
+  | { type: "reject-match"; planId: string; itemId: string; episodes: readonly Episode[]; reason: string }
+  | { type: "assign-episodes"; planId: string; itemId: string; episodes: readonly Episode[]; reason?: string };
+
+export type TvApprovalAction =
+  | { type: "approve-plan"; planId: string; reviewer: string }
+  | { type: "reject-plan"; planId: string; reviewer: string; reason: string }
+  | { type: "defer-plan"; planId: string; reviewer: string; reason?: string };
+
+export type TvReviewCommand = TvReviewAction | TvCorrectionAction | TvApprovalAction;
+
+export type TvProcessingPlanInput = Omit<TvProcessingPlan, "id" | "createdAt" | "state">;
+
+export interface TvProcessingPlanRepository {
+  save(plan: TvProcessingPlanInput): TvProcessingPlan;
+  get(id: string): TvProcessingPlan | undefined;
+  latestForFingerprint(fingerprint: string): TvProcessingPlan | undefined;
+  setState(id: string, state: "approved" | "rejected", reviewer: string, reason?: string): TvProcessingPlan | undefined;
 }
 
 export interface EpisodeMatch {
@@ -178,6 +277,8 @@ export type TvDiscItemKind =
 
 export interface TvDiscItemResult {
   itemId: string;
+  itemSignature: string;
+  durationSeconds?: number;
   title?: string;
   kind: TvDiscItemKind;
   confidence: ConfidenceScore;
@@ -227,4 +328,52 @@ export interface TvDiscAnalysisReport {
   commentaryTracks: readonly TvDiscItemResult[];
   specialFeatures: readonly TvDiscItemResult[];
   recommendations: readonly TvAnalysisRecommendation[];
+}
+
+export type TvEpisodeMatchDecision =
+  | "suggested"
+  | "unknown"
+  | "manual-assignment"
+  | "accepted"
+  | "duplicate"
+  | "commentary"
+  | "bonus"
+  | "special-feature"
+  | "alternate-review";
+
+export interface TvEpisodeMatchOption {
+  episodes: readonly Episode[];
+  confidence: ConfidenceScore;
+  evidence: readonly string[];
+  scoreComponents: ConfidenceComponents;
+  kind: "single" | "multi-part";
+  multiPartGroupId?: string;
+}
+
+export interface TvEpisodeMatchItemReport {
+  itemId: string;
+  itemTitle?: string;
+  decision: TvEpisodeMatchDecision;
+  suggestedEpisodes: readonly Episode[];
+  confidence: ConfidenceScore;
+  alternatives: readonly TvEpisodeMatchOption[];
+  evidence: readonly string[];
+  relatedItemId?: string;
+  manualReviewRequired: boolean;
+}
+
+export interface TvEpisodeMatchReport {
+  sourceId: string;
+  manifestId: string;
+  fingerprint?: string;
+  items: readonly TvEpisodeMatchItemReport[];
+  recommendations: readonly TvAnalysisRecommendation[];
+}
+
+export interface TvEpisodeMatchingInput {
+  analysis: TvDiscAnalysisReport;
+  episodeMetadata?: readonly TvEpisodeMetadataCandidate[];
+  feedback?: readonly TvEpisodeFeedback[];
+  minimumConfidence?: ConfidenceScore;
+  minimumMargin?: ConfidenceScore;
 }

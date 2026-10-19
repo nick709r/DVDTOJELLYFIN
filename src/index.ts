@@ -16,7 +16,7 @@ async function main(): Promise<void> {
       events.emit("status");
     }
   }, jobControl);
-  providerRuntime = await createProviderRuntime(getSettings, jobs);
+  providerRuntime = await createProviderRuntime(getSettings, jobs, repositories);
   configureLogLevel(getSettings().logLevel);
   await recoverTemporaryFiles(repositories);
   await startServer();

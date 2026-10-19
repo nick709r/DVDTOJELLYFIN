@@ -1,4 +1,4 @@
-# AutoDisc TV Analysis Engine
+# AutoDisc TV Analysis and Episode Matching Engines
 
 ## Scope
 
@@ -45,6 +45,47 @@ candidates, a ranked candidate list for each item, probable episode candidates,
 duplicate and alternate relationships, bonus/commentary/special-feature
 classifications, confidence evidence, and recommended review actions. The
 report deliberately has no selected episode or assignment operation.
+
+## Episode matching engine
+
+`TvEpisodeMatchingEngine.match` consumes the analysis report, optionally
+supplemental normalized episode metadata, exact-disc feedback records, and
+confidence/margin policy values. It returns a `TvEpisodeMatchReport` with a
+per-track decision, candidate episode groupings, confidence, evidence, and
+manual-review status.
+
+- Single episode suggestions use analysis candidate confidence and retain
+  provider, title, runtime, and history evidence.
+- A multi-part title is suggested only when metadata explicitly supplies a
+  complete group with consistent part numbers, part count, series/season, and
+  consecutive episode numbers. The engine compares disc-title runtime to the
+  sum of expected episode runtimes. Missing or inconsistent groups remain
+  unknown; component episodes are not silently downgraded to single matches.
+- Candidates must meet default confidence `0.72` and exceed the next
+  candidate by at least `0.12`. Callers may tighten these thresholds. Otherwise
+  the result is **Unknown** and includes evidence explaining why no match was
+  selected.
+- Probable duplicates, alternate versions, commentary, bonus material, and
+  special features are distinct decisions and are not assigned as episodes.
+  Duplicate episode claims across tracks become unknown.
+- Output is a suggestion/report, not a workflow assignment: the engine does
+  not write files, mutate analysis data, persist a decision, or invoke providers.
+
+## Correction history persistence
+
+`TvEpisodeFeedbackRepository` and SQLite migration 6 persist explicit human
+feedback outcomes: `accepted`, `rejected`, and `manual-assignment`. Each record
+is scoped to a disc fingerprint and stable item signature, stores one episode
+for accept/reject or an ordered episode list for manual multi-episode
+assignment, and may include an operator reason. Feedback is deterministic
+historical evidence; there is no machine-learning behavior.
+
+The matching engine applies feedback only when both report fingerprint and
+item signature match. Accepted matches are surfaced as accepted, rejected
+candidates are excluded with their reason retained, and manual assignments
+are surfaced explicitly as user corrections. Future orchestration can load
+these records through the repository contract and pass them to the engine
+without modifying ripping providers.
 
 ## Scoring and evidence
 
@@ -98,13 +139,13 @@ changing the scoring engine. History and correction sources are passed as
 interfaces-by-data: the engine is pure and owns no database, network, clock,
 global state, or provider lifecycle.
 
-Before this engine can drive a production TV workflow, AutoDisc still needs
-TV metadata adapters and mapping/validation, persistence for analysis history
-and corrections, disc-title segmentation and multi-episode modeling, an
-orchestration integration point, confidence/review policy validation against
-real discs, and an operator correction experience. Automatic assignment,
-episode naming, publishing, multi-drive support, and UI work are explicitly
-outside this increment.
+`TvWorkflowService` now calls both engines for structurally plausible TV DVDs,
+persists confidence-gated plans, and consumes exact-disc corrections. The DVD
+workflow holds these discs for review instead of treating them as movies.
+However, there are still no built-in TV metadata providers, review endpoints or
+screens, full report persistence, or TV file execution. See
+[TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md) for the workflow,
+integration details, and blockers before a complete TV workflow.
 
 ## Test coverage
 
@@ -112,3 +153,8 @@ outside this increment.
 explainability, history and correction influence, duplicate/alternate
 relationships, bonus/commentary/special classification, conservative
 recommendations, lack of auto-assignment, and invalid-input errors.
+`test/tv-episode-matching-engine.test.js` verifies confidence and ambiguity
+gates, explicit multi-part groupings, unknown outcomes for incomplete or
+conflicting candidates, duplicate/commentary/bonus handling, and human
+feedback behavior. `test/database-migrations.test.js` verifies migration 6
+and feedback repository persistence.

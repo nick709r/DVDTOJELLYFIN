@@ -40,7 +40,7 @@ export class SqliteJobRepository implements JobRepository {
     this.db.prepare(`UPDATE jobs SET ${columns.join(", ")} WHERE id = ?`).run(...values);
   }
 
-  finish(id: string, status: "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void {
+  finish(id: string, status: "review" | "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void {
     const now = new Date().toISOString();
     const finish = this.db.transaction(() => {
       this.db.prepare(`
@@ -53,7 +53,8 @@ export class SqliteJobRepository implements JobRepository {
         this.db.prepare("UPDATE drive_state SET last_fingerprint = ?, processed_at = ? WHERE id = 1")
           .run(fingerprint, now);
       }
-      this.events.add(id, status, status === "failed" ? "error" : "info", error ?? "Completed successfully");
+      this.events.add(id, status, status === "failed" ? "error" : status === "review" ? "warn" : "info",
+        error ?? "Completed successfully");
     });
     finish();
   }

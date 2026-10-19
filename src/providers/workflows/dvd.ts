@@ -10,6 +10,7 @@ import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
 import { createMovieOutput } from "../../movie-output.js";
+import { summarizeTvPlan, TvWorkflowService } from "../../application/tv-workflow-service.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -26,6 +27,8 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
 
 export class DvdWorkflow implements MediaWorkflow {
   readonly mediaKind = "dvd";
+
+  constructor(private readonly tvWorkflow?: TvWorkflowService) {}
 
   async process({ source, sources, jobs, metadata, signal, devicePath }: MediaWorkflowContext): Promise<boolean> {
     const info = source.candidate;
@@ -52,6 +55,38 @@ export class DvdWorkflow implements MediaWorkflow {
 
     const id = randomUUID();
     const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal);
+    if (this.tvWorkflow) {
+      try {
+        const tvResult = await this.tvWorkflow.prepare({
+          sourceId: info.sourceId,
+          providerId: info.providerId,
+          mediaKind: info.mediaKind,
+          label: info.label,
+          manifest: info.manifest
+        }, fingerprint, signal);
+        if (tvResult) {
+          const message = summarizeTvPlan(tvResult.plan);
+          jobs.update(context, { title: tvResult.plan.series?.title ?? info.label ?? null });
+          jobs.record(context, "tv-processing-plan", "info", message);
+          jobs.record(context, "tv-review", "warn", tvResult.plan.executionBlocker);
+          jobs.holdForReview(context, message);
+          setRuntimeStatus("idle");
+          notifyStatus();
+          return true;
+        }
+      } catch (error) {
+        const cancelled = jobs.wasJobCancelled(context);
+        const interrupted = Boolean(signal.aborted && !cancelled);
+        jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
+          code: cancelled ? "cancelled" : interrupted ? "interrupted" : "tv_analysis_failed",
+          message: error instanceof Error ? error.message : "TV analysis failed",
+          recoverable: interrupted
+        });
+        setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
+        notifyStatus();
+        return true;
+      }
+    }
     const workDir = join(settings.workDir, id);
     let finalPath: string | null = null;
     let movieDirectory: string | null = null;

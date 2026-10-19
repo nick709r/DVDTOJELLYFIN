@@ -7,6 +7,7 @@ import type { MediaSourceProvider } from "../contracts/media-source.js";
 import type { Provider } from "../contracts/provider.js";
 import type { AppSettings } from "../model.js";
 import type { JobCoordinator } from "../application/job-coordinator.js";
+import type { AutoDiscRepositories } from "../contracts/repositories.js";
 import { log } from "../logger.js";
 import { CdParanoiaSourceProvider } from "../providers/sources/audio-cd.js";
 import { MakeMkvDvdSourceProvider } from "../providers/sources/dvd.js";
@@ -14,6 +15,8 @@ import { TmdbMovieMetadataProvider } from "../providers/metadata/tmdb-movie.js";
 import { MusicBrainzMetadataProvider } from "../providers/metadata/musicbrainz.js";
 import { AudioCdWorkflow } from "../providers/workflows/audio-cd.js";
 import { DvdWorkflow } from "../providers/workflows/dvd.js";
+import { TvWorkflowService } from "../application/tv-workflow-service.js";
+import { TvReviewService } from "../application/tv-review-service.js";
 
 function isMediaSourceProvider(provider: Provider): provider is MediaSourceProvider {
   return provider.describe().kind === "source" &&
@@ -23,13 +26,16 @@ function isMediaSourceProvider(provider: Provider): provider is MediaSourceProvi
 
 export async function createProviderRuntime(
   getSettings: () => AppSettings,
-  jobs: JobCoordinator
+  jobs: JobCoordinator,
+  repositories: AutoDiscRepositories
 ): Promise<{
   registry: ProviderRegistry<Provider>;
   sources: MediaSourceCoordinator;
   workflows: MediaWorkflowRegistry;
   metadataProviders: MetadataProviderRegistry;
   metadata: MetadataResolver;
+  tvWorkflow: TvWorkflowService;
+  tvReview: TvReviewService;
   jobs: JobCoordinator;
 }> {
   const registry = new ProviderRegistry<Provider>({
@@ -66,16 +72,28 @@ export async function createProviderRuntime(
         { providerId: result.providerId, status: result.health.status });
     }
   }
+  const metadata = new MetadataResolver(metadataProviders.list());
+  const tvWorkflow = new TvWorkflowService(
+    metadata,
+    repositories.tvEpisodeFeedback,
+    repositories.tvProcessingPlans
+  );
+  const tvReview = new TvReviewService(
+    repositories.tvEpisodeFeedback,
+    repositories.tvProcessingPlans
+  );
   const workflows = new MediaWorkflowRegistry();
   workflows.register(new AudioCdWorkflow());
-  workflows.register(new DvdWorkflow());
+  workflows.register(new DvdWorkflow(tvWorkflow));
 
   return {
     registry,
     sources: new MediaSourceCoordinator(validSources),
     workflows,
     metadataProviders,
-    metadata: new MetadataResolver(metadataProviders.list()),
+    metadata,
+    tvWorkflow,
+    tvReview,
     jobs
   };
 }

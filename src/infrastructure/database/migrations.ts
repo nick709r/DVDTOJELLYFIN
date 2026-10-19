@@ -86,7 +86,38 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     .run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?)")
     .run(new Date().toISOString());
-
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tv_episode_feedback (
+      id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      item_signature TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected', 'manual-assignment')),
+      episodes_json TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS tv_episode_feedback_item_signature
+      ON tv_episode_feedback(item_signature, created_at DESC);
+    CREATE INDEX IF NOT EXISTS tv_episode_feedback_fingerprint
+      ON tv_episode_feedback(fingerprint, created_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (6, ?)")
+    .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tv_processing_plans (
+      id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('ready', 'awaiting-review', 'approved', 'rejected')),
+      plan_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS tv_processing_plans_fingerprint
+      ON tv_processing_plans(fingerprint, created_at DESC);
+    CREATE INDEX IF NOT EXISTS tv_processing_plans_state
+      ON tv_processing_plans(state, created_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (7, ?)")
+    .run(new Date().toISOString());
   const recoveryTime = new Date().toISOString();
   const markInterrupted = db.transaction(() => {
     const jobs = db.prepare(`

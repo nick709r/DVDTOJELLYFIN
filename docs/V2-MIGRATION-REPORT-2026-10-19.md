@@ -61,7 +61,7 @@ domain behavior.
 | Metadata providers | **Foundation complete; configuration partial** | Added provider contract, health type, registry, resolver, title-similarity/popularity confidence scoring, ranking, fallback and per-provider failure reporting. TMDB movie and MusicBrainz album adapters are registered and injected into workflows. |
 | Persistence/repositories | **SQLite adapter split complete; compatibility paths remain** | Separated connection setup, migrations, and settings/job/history/event/recovery SQLite repositories. Added repository interfaces and test coverage for old-schema upgrades. `db.ts` remains a compatibility façade for legacy API callers and startup settings access; monitor, recovery, and workflows use injected repository services. |
 | Job coordination | **Foundation integrated** | Added job context, steps, results/failures, lifecycle status/event persistence, progress updates, terminal handling, and cancellation-control delegation. DVD/CD workflows consume the injected coordinator. Serial operation is unchanged. |
-| TV-series analysis | **Analysis engine implemented; not integrated** | Added a deterministic `TvAnalysisEngine` and report model combining normalized metadata, runtimes, disc structure, matching history, and prior corrections. Reports rank candidates, classify likely extras/commentary/specials, explain evidence, and recommend review; they do not assign episodes. |
+| TV-series workflow integration | **Integrated through plan generation; output execution disabled** | Structurally plausible TV DVDs go through `TvWorkflowService`, which calls both engines, consumes persisted feedback, stores a confidence-gated plan, and holds the job for review. Non-TV discs retain existing movie behavior. SQLite migrations 6 and 7 persist feedback and plans. TV ripping/output is not implemented. |
 | Durable events, queue, platform and drive abstraction | **Not started** | Existing process-local events and Linux monitor remain; one active job and one configured optical device are still enforced. |
 
 ## Provider extension points
@@ -81,8 +81,14 @@ domain behavior.
   existing tables/data and can be replaced behind these interfaces.
 - **Job execution:** use `JobCoordinator` with an injected `JobContext`, typed
   steps/results/failures, and shared repository/event services.
-- **TV analysis:** `TvAnalysisEngine` and its explainable report are available
-  as an analysis-only application service. The DVD workflow does not invoke it.
+- **TV workflow:** `TvWorkflowService` composes the existing analysis and
+  matching engines; `DvdWorkflow` branches to it for strong TV signals and
+  persists/holds the plan without ripping as a movie.
+- **TV review/correction:** `TvReviewService` records accepted, rejected, and
+  manual one-or-more episode assignments in `TvEpisodeFeedbackRepository`.
+  Later matching runs read exact-disc/item-signature feedback.
+- **TV plans:** `TvProcessingPlanRepository` persists confidence, assignments,
+  review requirements and output execution blocker for future review surfaces.
 
 ## Created files
 
@@ -90,7 +96,15 @@ domain behavior.
 - `src/domain/metadata.ts`
 - `src/domain/television.ts`
 - `src/application/tv-analysis-engine.ts`
+- `src/application/tv-episode-matching-engine.ts`
+- `src/application/tv-workflow-service.ts`
+- `src/application/tv-review-service.ts`
+- `src/infrastructure/database/tv-episode-feedback-repository.ts`
+- `src/infrastructure/database/tv-processing-plan-repository.ts`
 - `test/tv-analysis-engine.test.js`
+- `test/tv-episode-matching-engine.test.js`
+- `test/tv-workflow-service.test.js`
+- `docs/TV-WORKFLOW-INTEGRATION.md`
 - `docs/TV-ANALYSIS-ENGINE.md`
 - `src/contracts/metadata-provider.ts`
 - `src/contracts/repositories.ts`
@@ -149,18 +163,14 @@ adapter is now `src/providers/metadata/tmdb-movie.ts`.
 2. The metadata candidate payload is intentionally generic and not yet
    normalized into validated movie/series/season/episode schemas. The existing
    manual MusicBrainz release-ID API remains a direct integration path.
-3. The analysis engine is not invoked by DVD processing. Production integration
-   still needs disc-title segmentation, multi-episode title handling, and
-   confidence/review thresholds validated against real disc structures.
-4. There are no repositories or migrations for analysis history, series,
-   seasons, episodes, alternatives, duplicate relationships, or correction
-   history; the engine accepts these as input and persists nothing.
-5. Transform and library publication behavior remains in concrete workflow
-   implementations. TV folder templates and library-provider contracts are
-   not yet in place.
-6. Provider-owned configuration schemas and generic provider configuration
-   UI/API remain unimplemented; current settings still contain existing
-   TMDB/MusicBrainz-specific fields.
+3. No built-in TV metadata provider currently returns series, season, or
+   episode entities; likely TV discs therefore produce unknown/review plans.
+4. Only processing plans and correction feedback are persisted. Full analysis
+   reports, provider evidence snapshots, and series/season metadata are not.
+5. Review/correction/approval transport contracts exist, but there are no
+   review REST endpoints or operator UI.
+6. TV output execution, multi-title segmentation, naming, publication, and
+   cleanup policies remain unimplemented.
 
 ## Remaining blockers before Multi-Drive Support
 

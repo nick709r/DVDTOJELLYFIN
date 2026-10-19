@@ -46,7 +46,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
   db.close();
 });
 
@@ -64,5 +64,108 @@ test("SQLite repository adapters preserve settings, job, history, event and reco
   assert.equal(repositories.history.timeline("repo-job").at(-1).message, "Completed successfully");
   assert.equal(repositories.recovery.lastDiscFingerprint(), "fingerprint");
   assert.equal(repositories.history.stats().successful, 1);
+  repositories.close();
+});
+
+test("TV episode feedback repository persists accepted, rejected, and manual group corrections", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  const episode = { seriesId: "series-1", seasonNumber: 1, episodeNumber: 1, title: "Pilot" };
+  const accepted = repositories.tvEpisodeFeedback.record({
+    fingerprint: "disc-a",
+    itemSignature: "item-a",
+    outcome: "accepted",
+    episodes: [episode],
+    reason: "Confirmed from original release"
+  });
+  repositories.tvEpisodeFeedback.record({
+    fingerprint: "disc-a",
+    itemSignature: "item-b",
+    outcome: "rejected",
+    episodes: [episode],
+    reason: "Wrong episode"
+  });
+  const manual = repositories.tvEpisodeFeedback.record({
+    fingerprint: "disc-a",
+    itemSignature: "item-c",
+    outcome: "manual-assignment",
+    episodes: [
+      episode,
+      { seriesId: "series-1", seasonNumber: 1, episodeNumber: 2, title: "Part Two" }
+    ]
+  });
+
+  assert.equal(accepted.id.length > 0, true);
+  assert.equal(repositories.tvEpisodeFeedback.findForItemSignature("item-a")[0].outcome, "accepted");
+  assert.equal(repositories.tvEpisodeFeedback.findForItemSignature("item-b")[0].reason, "Wrong episode");
+  assert.deepEqual(repositories.tvEpisodeFeedback.listForFingerprint("disc-a").map((record) => record.outcome), [
+    "accepted", "rejected", "manual-assignment"
+  ]);
+  assert.equal(manual.episodes.length, 2);
+  assert.throws(() => repositories.tvEpisodeFeedback.record({
+    fingerprint: "disc-a",
+    itemSignature: "invalid",
+    outcome: "manual-assignment",
+    episodes: []
+  }), /at least one episode/);
+  repositories.close();
+});
+
+test("TV processing-plan repository persists review disposition and episode assignments", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  const plan = repositories.tvProcessingPlans.save({
+    sourceId: "drive-1",
+    manifestId: "manifest-1",
+    fingerprint: "tv-disc",
+    series: { id: "series-1", title: "Example Show" },
+    seriesConfidence: 0.95,
+    season: { seriesId: "series-1", number: 1 },
+    seasonConfidence: 0.93,
+    discPosition: {
+      discNumber: 1,
+      discCount: 2,
+      confidence: 1,
+      evidence: ["Disc label"],
+      scoreComponents: { discStructure: 1 }
+    },
+    assignments: [{
+      itemId: "title-1",
+      decision: "suggested",
+      episodes: [{ seriesId: "series-1", seasonNumber: 1, episodeNumber: 1 }],
+      confidence: 0.94,
+      confidenceBand: "high",
+      explanation: ["Metadata and runtime matched"],
+      reviewRequirement: "none"
+    }],
+    confidence: 0.93,
+    confidenceBand: "high",
+    automaticProcessingSafe: true,
+    reviewRequirement: "none",
+    reviewReasons: [],
+    duplicateTracks: [],
+    alternateTracks: [],
+    commentaryTracks: [],
+    bonusFeatures: [],
+    specialFeatures: [],
+    approvalRequired: false,
+    executionEnabled: false,
+    executionBlocker: "TV output processing is not implemented"
+  });
+
+  assert.equal(plan.state, "ready");
+  assert.equal(repositories.tvProcessingPlans.get(plan.id).assignments[0].episodes[0].episodeNumber, 1);
+  assert.equal(repositories.tvProcessingPlans.latestForFingerprint("tv-disc").id, plan.id);
+  const approvedPlan = repositories.tvProcessingPlans.setState(plan.id, "approved", "admin");
+  assert.equal(approvedPlan.state, "approved");
+  assert.equal(approvedPlan.reviewedBy, "admin");
+  assert.ok(approvedPlan.reviewedAt);
+  assert.throws(() => repositories.tvProcessingPlans.setState(plan.id, "rejected", "admin"), /already approved/);
+  assert.throws(() => repositories.tvProcessingPlans.save({
+    ...plan,
+    executionEnabled: true
+  }), /analysis-only/);
   repositories.close();
 });

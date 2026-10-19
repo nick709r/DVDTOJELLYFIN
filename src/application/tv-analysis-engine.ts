@@ -36,6 +36,14 @@ function titleSimilarity(left: string, right: string): number {
   return overlap / new Set([...leftWords, ...rightWords]).size;
 }
 
+function cleanSeriesLabel(value: string): string {
+  return value.replace(/\b(?:season|series|disc|disk|volume|vol|episodes?|television|tv)\b/gi, " ")
+    .replace(/\bs\d{1,2}(?:[\s._-]*d\d{1,2})?\b/gi, " ")
+    .replace(/\bd\d{1,2}\b/gi, " ")
+    .replace(/\b\d+\b/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
 function checkedConfidence(value: number, label: string): number {
   if (!Number.isFinite(value)) throw new Error(`${label} confidence must be a finite number`);
   return Math.max(0, Math.min(1, value));
@@ -128,9 +136,9 @@ function rankSeries(
     byKey.set(key, entry);
   }
   const labels = [
-    ...(input.discLabel ? [{ source: "Disc label", text: input.discLabel }] : []),
+    ...(input.discLabel ? [{ source: "Disc label", text: cleanSeriesLabel(input.discLabel) }] : []),
     ...input.manifest.items.flatMap((item) =>
-      item.title ? [{ source: `Track ${item.id} title`, text: item.title }] : []
+      item.title ? [{ source: `Track ${item.id} title`, text: cleanSeriesLabel(item.title) }] : []
     )
   ];
   const results = [...byKey.values()].map(({ series, metadata, historical, evidence }) => {
@@ -312,6 +320,9 @@ function rankEpisodes(
     corrected: boolean;
     evidence: Set<string>;
     releaseId?: string;
+    multiPartGroupId?: string;
+    partNumber?: number;
+    partCount?: number;
   }>();
   const metadataCandidates = input.metadata.episodeCandidates.filter((candidate) => candidate.itemId === item.id);
   for (const candidate of metadataCandidates) {
@@ -342,6 +353,9 @@ function rankEpisodes(
     entry.evidence.add(`Episode candidate from ${candidate.providerId}`);
     for (const evidence of candidate.evidence ?? []) entry.evidence.add(evidence);
     if (candidate.releaseId !== undefined) entry.releaseId = candidate.releaseId;
+    if (candidate.multiPartGroupId !== undefined) entry.multiPartGroupId = candidate.multiPartGroupId;
+    if (candidate.partNumber !== undefined) entry.partNumber = candidate.partNumber;
+    if (candidate.partCount !== undefined) entry.partCount = candidate.partCount;
     byEpisode.set(key, entry);
   }
   for (const match of historicalMatches) {
@@ -385,6 +399,9 @@ function rankEpisodes(
       scoreComponents: components,
       matchedItemId: item.id,
       ...(entry.releaseId === undefined ? {} : { releaseId: entry.releaseId }),
+      ...(entry.multiPartGroupId === undefined ? {} : { multiPartGroupId: entry.multiPartGroupId }),
+      ...(entry.partNumber === undefined ? {} : { partNumber: entry.partNumber }),
+      ...(entry.partCount === undefined ? {} : { partCount: entry.partCount }),
       ...(entry.corrected ? { matchKind: "standard" as const } :
         entry.episode.seasonNumber === 0 ? { matchKind: "special" as const } : {})
     };
@@ -405,10 +422,12 @@ function detectRelationships(items: readonly TvDiscItemResult[], manifestItems: 
     const left = items[leftIndex];
     const leftManifest = manifestItems[leftIndex];
     if (!left || !leftManifest) continue;
+    if (["bonus", "commentary", "special-feature"].includes(left.kind)) continue;
     for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
       const right = items[rightIndex];
       const rightManifest = manifestItems[rightIndex];
       if (!right || !rightManifest) continue;
+      if (["bonus", "commentary", "special-feature"].includes(right.kind)) continue;
       const leftTop = left.candidates[0];
       const rightTop = right.candidates[0];
       const sameEpisode = leftTop && rightTop &&
@@ -566,6 +585,8 @@ export class TvAnalysisEngine {
       const classification = classifyItem(item, candidates.length);
       return {
         itemId: item.id,
+        itemSignature: tvItemSignature(item),
+        ...(item.durationSeconds === undefined ? {} : { durationSeconds: item.durationSeconds }),
         ...(item.title === undefined ? {} : { title: item.title }),
         kind: classification.kind,
         confidence: candidates[0]?.confidence ?? (classification.kind === "bonus" || classification.kind === "commentary" ? 0.8 : 0.45),

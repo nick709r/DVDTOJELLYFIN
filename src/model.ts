@@ -3,6 +3,7 @@ export type JobStatus =
   | "ripping"
   | "converting"
   | "publishing"
+  | "review"
   | "completed"
   | "failed"
   | "cancelled"

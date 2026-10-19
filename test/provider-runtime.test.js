@@ -3,7 +3,10 @@ import test from "node:test";
 import { createProviderRuntime } from "../dist/bootstrap/providers.js";
 
 test("production provider runtime registers source and metadata providers", async () => {
-  const runtime = await createProviderRuntime(() => ({}), {});
+  const runtime = await createProviderRuntime(() => ({}), {}, {
+    tvEpisodeFeedback: { findForItemSignature: () => [] },
+    tvProcessingPlans: { save: (plan) => plan, get: () => undefined, setState: () => undefined }
+  });
   try {
     assert.equal(runtime.registry.state, "initialized");
     assert.deepEqual(runtime.registry.list().map((provider) => provider.id), [
