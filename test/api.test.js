@@ -25,6 +25,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.adminPasswordConfigured, false);
     assert.equal(initial.json().settings.musicMetadataEnabled, false);
     assert.equal(initial.json().settings.lidarrEnabled, false);
+    assert.equal(initial.json().settings.tvDetectionEnabled, true);
+    assert.equal(initial.json().settings.tvValidationLoggingEnabled, true);
     assert.equal(initial.json().settings.musicBrainzContactEmail, "");
     assert.equal("adminPasswordHash" in initial.json().settings, false);
     assert.equal("lidarrApiKey" in initial.json().settings, false);
@@ -129,13 +131,17 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: {
         musicMetadataEnabled: true,
         musicBrainzContactEmail: "music-admin@example.com",
-        lidarrApiKey: "lidarr-test-secret"
+        lidarrApiKey: "lidarr-test-secret",
+        tvDetectionEnabled: false,
+        tvValidationLoggingEnabled: false
       }
     });
     assert.equal(setMusicSettings.statusCode, 200);
     assert.equal(setMusicSettings.json().settings.musicDir, "/srv/jellyfin/Music");
     assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
     assert.equal(setMusicSettings.json().settings.musicBrainzContactEmail, "music-admin@example.com");
+    assert.equal(setMusicSettings.json().settings.tvDetectionEnabled, false);
+    assert.equal(setMusicSettings.json().settings.tvValidationLoggingEnabled, false);
     assert.equal(setMusicSettings.json().settings.lidarrApiKeyConfigured, true);
     assert.equal("lidarrApiKey" in setMusicSettings.json().settings, false);
 
@@ -149,6 +155,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
 
     const unauthorized = await app.inject({ method: "GET", url: "/api/v1/settings" });
     assert.equal(unauthorized.statusCode, 401);
+    const unauthorizedReviews = await app.inject({ method: "GET", url: "/api/v1/reviews" });
+    assert.equal(unauthorizedReviews.statusCode, 401);
 
     const login = await app.inject({
       method: "POST",
@@ -160,6 +168,56 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(typeof setCookie, "string");
     const cookie = setCookie.split(";")[0];
 
+    const reviewRetryPath = path.join(root, "review-retry", "Music", "Artist", "Album");
+    const reviewItem = jobs.repositories.reviewItems.create({
+      category: "folder_creation_failure",
+      severity: "high",
+      title: "Could not create the Music destination folder",
+      description: "Permission denied while creating the album folder",
+      relatedDisc: "Audio CD test",
+      discFingerprint: "review-api-disc",
+      relatedDrive: jobs.getSettings().opticalDevice,
+      requestedPath: reviewRetryPath,
+      errorDetails: { code: "EACCES", stage: "publish" },
+      suggestedActions: [{ type: "retry", label: "Retry folder and processing" }]
+    });
+    const filteredReviews = await app.inject({
+      method: "GET",
+      url: "/api/v1/reviews?category=folder_creation_failure&severity=high&status=active",
+      headers: { cookie }
+    });
+    assert.equal(filteredReviews.statusCode, 200);
+    assert.equal(filteredReviews.json().items.length, 1);
+    assert.equal(filteredReviews.json().summary.active, 1);
+    const reviewDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/reviews/${reviewItem.id}`,
+      headers: { cookie }
+    });
+    assert.equal(reviewDetail.json().item.requestedPath, reviewRetryPath);
+    const reviewRetry = await app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${reviewItem.id}/retry`,
+      headers: { cookie }
+    });
+    assert.equal(reviewRetry.statusCode, 200);
+    assert.equal(reviewRetry.json().item.status, "retrying");
+    assert.equal(reviewRetry.json().item.retryCount, 1);
+    await assert.rejects(access(reviewRetryPath), { code: "ENOENT" });
+    const reviewResolved = await app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${reviewItem.id}/resolve`,
+      headers: { cookie }
+    });
+    assert.equal(reviewResolved.statusCode, 200);
+    assert.equal(reviewResolved.json().item.status, "resolved");
+    const reviewDateFilter = await app.inject({
+      method: "GET",
+      url: "/api/v1/reviews?from=invalid-date",
+      headers: { cookie }
+    });
+    assert.equal(reviewDateFilter.statusCode, 400);
+
     const authenticated = await app.inject({
       method: "GET",
       url: "/api/v1/settings",
@@ -169,6 +227,97 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(authenticated.json().settings.adminPasswordConfigured, true);
     assert.equal("metadataApiKey" in authenticated.json().settings, false);
     assert.equal("adminPasswordHash" in authenticated.json().settings, false);
+    assert.equal(authenticated.json().settings.tvDetectionEnabled, false);
+    assert.equal(authenticated.json().settings.tvValidationLoggingEnabled, false);
+
+    const episode = { seriesId: "series-api", seasonNumber: 1, episodeNumber: 1, title: "Pilot" };
+    const makePlan = (fingerprint) => jobs.repositories.tvProcessingPlans.save({
+      sourceId: "dvd-source",
+      manifestId: `manifest-${fingerprint}`,
+      fingerprint,
+      series: { id: "series-api", title: "Example Series" },
+      seriesConfidence: 0.9,
+      season: { seriesId: "series-api", number: 1 },
+      seasonConfidence: 0.9,
+      assignments: [{
+        itemId: "title-1",
+        itemSignature: `signature-${fingerprint}`,
+        itemTitle: "Pilot",
+        decision: "suggested",
+        episodes: [episode],
+        confidence: 0.8,
+        confidenceBand: "medium",
+        explanation: ["Episode title and runtime are similar"],
+        alternatives: [{
+          episodes: [episode],
+          confidence: 0.8,
+          evidence: ["Runtime similarity"],
+          scoreComponents: { runtimeSimilarity: 0.9 },
+          kind: "single"
+        }],
+        reviewRequirement: "required"
+      }],
+      confidence: 0.8,
+      confidenceBand: "medium",
+      automaticProcessingSafe: false,
+      reviewRequirement: "required",
+      reviewReasons: ["Manual review required"],
+      duplicateTracks: [],
+      alternateTracks: [],
+      commentaryTracks: [],
+      bonusFeatures: [],
+      specialFeatures: [],
+      approvalRequired: true,
+      executionEnabled: false,
+      executionBlocker: "V2 TV plan execution is not enabled"
+    });
+    const approvalPlan = makePlan("api-plan-approve");
+    const unknownPlan = makePlan("api-plan-unknown");
+    const tvSummary = await app.inject({ method: "GET", url: "/api/v1/tv/summary", headers: { cookie } });
+    assert.equal(tvSummary.statusCode, 200);
+    assert.equal(tvSummary.json().totalDiscsAnalyzed, 2);
+    const invalidTvFilter = await app.inject({
+      method: "GET",
+      url: "/api/v1/tv/analysis?confidence=impossible",
+      headers: { cookie }
+    });
+    assert.equal(invalidTvFilter.statusCode, 400);
+    const acceptMatch = await app.inject({
+      method: "POST",
+      url: `/api/v1/tv/plans/${approvalPlan.id}/corrections`,
+      headers: { cookie },
+      payload: {
+        action: "accept-match",
+        itemId: "title-1",
+        episodes: [episode],
+        reviewer: "admin",
+        reason: "Verified from disc packaging"
+      }
+    });
+    assert.equal(acceptMatch.statusCode, 200);
+    assert.equal(acceptMatch.json().correction.outcome, "accepted");
+    const markUnknown = await app.inject({
+      method: "POST",
+      url: `/api/v1/tv/plans/${unknownPlan.id}/corrections`,
+      headers: { cookie },
+      payload: {
+        action: "mark-unknown",
+        itemId: "title-1",
+        reviewer: "admin",
+        reason: "Disc evidence is ambiguous"
+      }
+    });
+    assert.equal(markUnknown.statusCode, 200);
+    assert.equal(markUnknown.json().plan.assignments[0].decision, "unknown");
+    const approvePlan = await app.inject({
+      method: "POST",
+      url: `/api/v1/tv/plans/${approvalPlan.id}/review`,
+      headers: { cookie },
+      payload: { action: "approve", reviewer: "admin" }
+    });
+    assert.equal(approvePlan.statusCode, 200);
+    assert.equal(approvePlan.json().plan.state, "approved");
+    assert.equal(approvePlan.json().plan.executionEnabled, false);
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input) => {

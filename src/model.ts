@@ -3,6 +3,7 @@ export type JobStatus =
   | "ripping"
   | "converting"
   | "publishing"
+  | "review"
   | "completed"
   | "failed"
   | "cancelled"
@@ -34,13 +35,17 @@ export interface AppSettings {
   lidarrImportDir: string;
   adminPasswordSalt: string;
   adminPasswordHash: string;
+  tvDetectionEnabled: boolean;
+  tvValidationLoggingEnabled: boolean;
+  tvStoreAnalysisEvidence: boolean;
+  tvStoreMatchingEvidence: boolean;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
 export interface Job {
   id: string;
   status: JobStatus;
-  mediaType: "dvd" | "audio_cd";
+  mediaType: string;
   discLabel: string | null;
   title: string | null;
   outputPath: string | null;

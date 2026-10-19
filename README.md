@@ -149,6 +149,23 @@ password in Settings when you first log in.
 
 Version 2 will focus on making TV series DVD archiving as automated and reliable as movie archiving. It will also broaden AutoDisc's scope: rather than being Jellyfin-first, AutoDisc v2 aims to be a general automated ripping and media-organization tool that supports Jellyfin, Sonarr, Radarr, Lidarr, and other tooling as optional integrations.
 
+Version 2 is also the long-term extensible platform foundation. Media sources,
+drive/platform adapters, metadata lookups, transforms, library destinations,
+and notification channels are planned as registered providers with versioned
+contracts, capability declarations, and injected dependencies. The core job
+and workflow services should remain provider-neutral as these integrations
+grow. See the [v2 architecture](./docs/V2-ARCHITECTURE.md) and
+[v2 roadmap](./docs/ROADMAP.md) for the proposed boundaries and staged
+acceptance gates. These extension contracts are a v2 design target and are not
+all implemented in the current release. The current v2 branch has provider
+contracts, open source manifests/artifacts, registered DVD/audio-CD workflows,
+TMDB/MusicBrainz metadata adapters, SQLite repository interfaces/adapters, and
+a shared job coordinator. These are foundation seams, not TV or multi-drive
+features; provider-owned configuration, durable events, drive/platform
+adapters, transforms, and library providers remain future gates. See the
+[v2 migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md) for current
+progress and blockers.
+
 ### Expanded scope (coming in v2)
 - General automated ripping and organization: use AutoDisc to rip and organize DVDs and CDs into folders, whether or not you run Jellyfin.
 - Optional integrations: Jellyfin, Sonarr, Radarr, Lidarr, and similar tools will be supported as optional post-processing/import targets.
@@ -190,6 +207,7 @@ Version 2 will focus on making TV series DVD archiving as automated and reliable
 - Architecture review, risks, proposed structure, and delivery gates:
   [`AUTODISC-ARCHITECTURE.md`](./AUTODISC-ARCHITECTURE.md).
 - One job at a time; repeated disc events are coalesced.
+- The dashboard supports a persistent light/dark appearance toggle.
 - Disc insertion is monitored through udev, with a lightweight two-second
   media-presence check to recover from missed insertion events. If the drive
   reports media before the disc is ready to read—or its media state is not

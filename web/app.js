@@ -1,6 +1,20 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null };
 const loginDialog = $("#login-dialog");
+const themeToggle = $("#theme-toggle");
+
+function setTheme(theme) {
+  const isLight = theme === "light";
+  document.documentElement.dataset.theme = isLight ? "light" : "dark";
+  themeToggle.textContent = isLight ? "Dark mode" : "Light mode";
+  themeToggle.setAttribute("aria-pressed", String(isLight));
+  localStorage.setItem("autodisc-theme", isLight ? "light" : "dark");
+}
+
+setTheme(localStorage.getItem("autodisc-theme") === "light" ? "light" : "dark");
+themeToggle.addEventListener("click", () => {
+  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+});
 
 function notify(message, isError = false) {
   const box = $("#notice");
@@ -135,11 +149,297 @@ async function refreshDashboard() {
   renderJob(data.active || lastFinished, data.state);
   renderJobList($("#recent-list"), data.recent);
   await refreshChart(state.statsRange);
+  await loadTvSummary();
 }
 
 async function refreshHistory() {
   const data = await api("/api/v1/history?limit=250");
   renderJobList($("#history-list"), data.jobs, true);
+}
+
+function tvStat(label, value) {
+  return `<article class="card stat"><span class="muted">${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "0")}</strong></article>`;
+}
+
+function confidenceLabel(band) {
+  return band === "high" ? "High confidence" : band === "medium" ? "Medium confidence" : "Review required";
+}
+
+function renderTvTrend(daily) {
+  const points = daily.slice(-30);
+  const maximum = Math.max(1, ...points.map((item) => item.count));
+  $("#tv-trend").innerHTML = points.length
+    ? points.map((item) => `<span title="${escapeHtml(item.day)}: ${item.count} TV discs" style="height:${Math.max(3, item.count / maximum * 100)}%"></span>`).join("")
+    : '<div class="empty-state">No TV analysis history yet.</div>';
+}
+
+async function loadTvSummary() {
+  const summary = await api("/api/v1/tv/summary");
+  const stats = [
+    ["TV discs analyzed", summary.totalDiscsAnalyzed],
+    ["Episodes identified", summary.totalEpisodesIdentified],
+    ["Matches suggested", summary.totalEpisodeMatchesSuggested],
+    ["High confidence", summary.highConfidenceMatches],
+    ["Medium confidence", summary.mediumConfidenceMatches],
+    ["Low / review required", summary.lowConfidenceMatches],
+    ["Reviews pending", summary.manualReviewsRequired],
+    ["Reviews completed", summary.manualReviewsCompleted],
+    ["Corrections applied", summary.correctionsApplied],
+    ["Duplicate tracks", summary.duplicateTracksIdentified],
+    ["Bonus features", summary.bonusFeaturesIdentified],
+    ["Commentary tracks", summary.commentaryTracksIdentified]
+  ];
+  $("#tv-dashboard-stats").innerHTML = stats.map(([label, value]) => tvStat(label, value)).join("");
+  renderTvTrend(summary.daily);
+  $("#tv-statistics").innerHTML = [
+    ["TV series processed", summary.totalSeriesProcessed],
+    ["Seasons processed", summary.totalSeasonsProcessed],
+    ["Episode matches suggested", summary.totalEpisodeMatchesSuggested],
+    ["Manual corrections", summary.correctionsApplied],
+    ["Labeled-case accuracy", summary.heldOutAccuracy === null ? "Not enough labels" : `${Math.round(summary.heldOutAccuracy * 100)}%`],
+    ["Average plan confidence", summary.meanConfidence === null ? "—" : `${Math.round(summary.meanConfidence * 100)}%`],
+    ["Review approval rate", summary.reviewApprovalRate === null ? "—" : `${Math.round(summary.reviewApprovalRate * 100)}%`]
+  ].map(([label, value]) => tvStat(label, value)).join("");
+  $("#tv-validation-summary").innerHTML = [
+    ["Validation cases", summary.validation.cases],
+    ["Labeled tracks", summary.validation.heldOutLabeledTracks],
+    ["Exact matches", summary.validation.exactMatches],
+    ["Incorrect matches", summary.validation.incorrectMatches],
+    ["Abstentions", summary.validation.abstentions],
+    ["Unresolved tracks", summary.validation.unresolvedTracks],
+    ["Corrections", summary.correctionsApplied]
+  ].map(([label, value]) => tvStat(label, value)).join("");
+}
+
+function renderTvPlanCard(plan, includeActions = false) {
+  const editable = includeActions && !["approved", "rejected"].includes(plan.state);
+  const series = plan.series?.title || "Unknown series";
+  const season = plan.season ? `Season ${plan.season.number}` : "Unknown season";
+  const disc = plan.discPosition?.discNumber ? `Disc ${plan.discPosition.discNumber}` : "Disc position unknown";
+  const confidence = Math.round(plan.confidence * 100);
+  const assignments = plan.assignments.map((assignment) => {
+    const episodes = assignment.episodes.length
+      ? assignment.episodes.map((episode) => `S${episode.seasonNumber}E${episode.episodeNumber}${episode.title ? ` · ${episode.title}` : ""}`).join(" + ")
+      : "Unknown episode";
+    return `<div class="tv-assignment ${assignment.confidenceBand}">
+      <div><b>${escapeHtml(assignment.itemTitle || assignment.itemId)}</b><span class="list-sub">${escapeHtml(episodes)}</span></div>
+      <span class="confidence-pill ${assignment.confidenceBand}">${Math.round(assignment.confidence * 100)}% · ${escapeHtml(confidenceLabel(assignment.confidenceBand))}</span>
+      <p class="tv-reasoning">${assignment.explanation.map(escapeHtml).join(" · ") || "No explanation recorded."}</p>
+      ${assignment.alternatives.length ? `<details><summary>${assignment.alternatives.length} alternative suggestion(s)</summary><ul>${assignment.alternatives.map((option) => `<li>${escapeHtml(option.episodes.map((episode) => `S${episode.seasonNumber}E${episode.episodeNumber}${episode.title ? ` · ${episode.title}` : ""}`).join(" + "))} · ${Math.round(option.confidence * 100)}%</li>`).join("")}</ul></details>` : ""}
+      ${editable ? `<div class="tv-actions">
+        ${assignment.episodes.length ? `<button class="button secondary tv-action" data-action="accept-match" data-plan-id="${escapeHtml(plan.id)}" data-item-id="${escapeHtml(assignment.itemId)}">Accept suggestion</button><button class="button secondary tv-action" data-action="reject-match" data-plan-id="${escapeHtml(plan.id)}" data-item-id="${escapeHtml(assignment.itemId)}">Reject suggestion</button>` : ""}
+        <button class="button secondary tv-action" data-action="override-match" data-plan-id="${escapeHtml(plan.id)}" data-item-id="${escapeHtml(assignment.itemId)}">Override match</button>
+        <button class="button secondary tv-action" data-action="mark-unknown" data-plan-id="${escapeHtml(plan.id)}" data-item-id="${escapeHtml(assignment.itemId)}">Mark unknown</button>
+      </div>` : ""}
+    </div>`;
+  }).join("");
+  return `<article class="tv-plan-card">
+    <div class="tv-plan-heading"><div><b>${escapeHtml(series)}</b><span class="list-sub">${escapeHtml(season)} · ${escapeHtml(disc)} · ${new Date(plan.createdAt).toLocaleString()}</span></div>
+    <span class="confidence-pill ${escapeHtml(plan.confidenceBand)}">${confidence}% · ${escapeHtml(confidenceLabel(plan.confidenceBand))}</span></div>
+    <p>${plan.reviewReasons.map(escapeHtml).join(" · ") || "No additional review reasons."}</p>
+    ${assignments || '<div class="empty-state">No episode assignments were generated.</div>'}
+    <div class="tv-plan-foot"><span>State: ${escapeHtml(plan.state)} · ${plan.duplicateTracks.length} duplicates · ${plan.bonusFeatures.length} bonus · ${plan.commentaryTracks.length} commentary</span>
+      <button class="button secondary tv-action" data-action="view-plan" data-plan-id="${escapeHtml(plan.id)}">Analysis details</button>
+    </div>
+    ${editable ? `<div class="tv-actions">
+      <button class="button primary tv-action" data-action="approve-plan" data-plan-id="${escapeHtml(plan.id)}">Approve plan</button>
+      <button class="button danger tv-action" data-action="reject-plan" data-plan-id="${escapeHtml(plan.id)}">Reject plan</button>
+      <button class="button secondary tv-action" data-action="defer-plan" data-plan-id="${escapeHtml(plan.id)}">Defer</button>
+    </div>` : ""}
+  </article>`;
+}
+
+async function loadTvAnalysis() {
+  const confidence = $("#tv-analysis-confidence").value;
+  const planState = $("#tv-analysis-state").value;
+  const query = new URLSearchParams({ limit: "100" });
+  if (confidence) query.set("confidence", confidence);
+  if (planState) query.set("state", planState);
+  const data = await api(`/api/v1/tv/analysis?${query}`);
+  $("#tv-analysis-list").innerHTML = data.plans.length
+    ? data.plans.map((plan) => `<div class="tv-list-row">${renderTvPlanCard(plan).replace(/^<article class="tv-plan-card">|<\/article>$/g, "")}</div>`).join("")
+    : '<div class="empty-state">No TV reports match these filters.</div>';
+}
+
+async function showTvPlan(planId, target = "#tv-analysis-detail") {
+  const { plan, evidence } = await api(`/api/v1/tv/analysis/${encodeURIComponent(planId)}`);
+  const detail = $(target);
+  detail.innerHTML = `<div class="card-heading"><div><p class="eyebrow">ANALYSIS REPORT</p><h2>${escapeHtml(plan.series?.title || "Unknown series")} · ${escapeHtml(plan.season ? `Season ${plan.season.number}` : "Unknown season")}</h2></div><button class="text-button close-tv-detail">Close</button></div>
+    <p>Disc position: ${escapeHtml(plan.discPosition ? `${plan.discPosition.discNumber}${plan.discPosition.discCount ? ` of ${plan.discPosition.discCount}` : ""}` : "unknown")} · Confidence ${Math.round(plan.confidence * 100)}% · ${escapeHtml(plan.state)}</p>
+    <p>${plan.reviewReasons.map(escapeHtml).join(" · ") || "No review warnings."}</p>
+    ${renderTvPlanCard(plan, false)}
+    <div class="tv-detail-columns"><div><h3>Duplicate tracks</h3><pre>${escapeHtml(JSON.stringify(plan.duplicateTracks, null, 2))}</pre></div><div><h3>Alternate tracks</h3><pre>${escapeHtml(JSON.stringify(plan.alternateTracks, null, 2))}</pre></div>
+      <div><h3>Bonus & commentary</h3><pre>${escapeHtml(JSON.stringify({ bonus: plan.bonusFeatures, commentary: plan.commentaryTracks, specialFeatures: plan.specialFeatures }, null, 2))}</pre></div></div>
+    <h3>Decision evidence</h3><pre>${escapeHtml(evidence ? JSON.stringify({ source: evidence.source, metadata: evidence.metadata, policy: evidence.policy, analysis: evidence.analysis, matches: evidence.matches }, null, 2) : "Evidence capture is disabled or no validation case was retained.")}</pre>`;
+  detail.classList.remove("hidden");
+  detail.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function loadTvMatching() {
+  const { plans } = await api("/api/v1/tv/analysis?limit=100");
+  const items = plans.flatMap((plan) => plan.assignments.map((assignment) => ({ plan, assignment })));
+  $("#tv-matching-list").innerHTML = items.length
+    ? items.map(({ plan, assignment }) => renderTvPlanCard({
+      ...plan,
+      assignments: [assignment]
+    }, true)).join("")
+    : '<div class="empty-state">No TV episode suggestions are available yet.</div>';
+}
+
+async function loadTvReviews() {
+  const selected = $("#tv-review-filter").value;
+  const query = new URLSearchParams({ limit: "100" });
+  if (selected) query.set("state", selected);
+  const { plans } = await api(`/api/v1/tv/reviews?${query}`);
+  $("#tv-review-list").innerHTML = plans.length
+    ? plans.map((plan) => `${renderTvPlanCard(plan, true)}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`).join("")
+    : '<div class="empty-state">No plans in this review state.</div>';
+}
+
+const reviewCategoryLabels = {
+  tv_review: "TV review",
+  cd_review: "CD review",
+  metadata_issue: "Metadata issue",
+  processing_failure: "Processing failure",
+  folder_creation_failure: "Folder creation",
+  disc_read_error: "Disc read error",
+  validation_warning: "Validation warning",
+  configuration_issue: "Configuration issue",
+  system_warning: "System warning"
+};
+
+function renderReviewItem(item) {
+  const actions = item.status === "active" || item.status === "retrying"
+    ? item.suggestedActions.map((action) => {
+      if (action.type === "retry" || action.type === "retry-after-correction") {
+        return `<button class="button primary review-action" data-action="retry" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "open-settings") {
+        return `<button class="button secondary review-action" data-action="open-settings">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "enter-metadata") {
+        return `<button class="button secondary review-action" data-action="enter-metadata" data-job-id="${escapeHtml(item.relatedJobId || "")}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "view-job") {
+        return `<button class="button secondary review-action" data-action="view-job" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "resolve") {
+        return `<button class="button secondary review-action" data-action="resolve" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "dismiss") {
+        return `<button class="button danger review-action" data-action="dismiss" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      return "";
+    }).join("")
+    : "";
+  const details = {
+    ...(item.relatedJobId ? { jobId: item.relatedJobId } : {}),
+    ...(item.relatedDisc ? { disc: item.relatedDisc } : {}),
+    ...(item.relatedDrive ? { drive: item.relatedDrive } : {}),
+    ...(item.requestedPath ? { requestedPath: item.requestedPath } : {}),
+    ...(item.errorDetails || {})
+  };
+  return `<article class="review-item ${escapeHtml(item.severity)}">
+    <div class="review-heading"><div><span class="review-category">${escapeHtml(reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
+      <h3>${escapeHtml(item.title)}</h3><span class="list-sub">${escapeHtml(item.relatedDisc || "Disc not identified")}${item.relatedDrive ? ` · ${escapeHtml(item.relatedDrive)}` : ""} · ${new Date(item.createdAt).toLocaleString()}</span></div>
+      <span class="review-status">${escapeHtml(item.status)}</span></div>
+    <p>${escapeHtml(item.description)}</p>
+    ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
+    ${item.resolutionDetails ? `<p class="list-sub">Resolution: ${escapeHtml(item.resolutionDetails)}${item.resolvedAt ? ` · ${escapeHtml(new Date(item.resolvedAt).toLocaleString())}` : ""}</p>` : ""}
+    ${item.retryCount ? `<p class="list-sub">Retry attempts: ${item.retryCount}</p>` : ""}
+    <div class="tv-actions">${actions}</div>
+    <div class="review-job-details" data-review-details="${escapeHtml(item.id)}"></div>
+  </article>`;
+}
+
+async function loadReviewCentre() {
+  const query = new URLSearchParams({ limit: "250" });
+  for (const [id, key] of [
+    ["review-category", "category"],
+    ["review-severity", "severity"],
+    ["review-status", "status"],
+    ["review-from", "from"],
+    ["review-to", "to"]
+  ]) {
+    const value = $(`#${id}`).value;
+    if (value) query.set(key, key === "to" ? `${value}T23:59:59.999Z` : key === "from" ? `${value}T00:00:00.000Z` : value);
+  }
+  const { summary, items } = await api(`/api/v1/reviews?${query}`);
+  $("#review-summary").innerHTML = [
+    ["Active reviews", summary.active],
+    ["Critical reviews", summary.critical],
+    ["TV reviews", summary.tv],
+    ["CD reviews", summary.cd],
+    ["Processing failures", summary.processingFailures],
+    ["Resolved today", summary.resolvedToday]
+  ].map(([label, value]) => tvStat(label, value)).join("");
+  $("#review-list").innerHTML = items.length
+    ? items.map(renderReviewItem).join("")
+    : '<div class="empty-state">No review items match the selected filters.</div>';
+}
+
+async function loadTvValidation() {
+  const { summary, correctionCount, cases } = await api("/api/v1/tv/validation");
+  $("#tv-validation-summary").innerHTML = [
+    ["Validation cases", summary.cases],
+    ["Held-out labels", summary.heldOutLabeledTracks],
+    ["Exact matches", summary.exactMatches],
+    ["Incorrect matches", summary.incorrectMatches],
+    ["Abstentions", summary.abstentions],
+    ["Unresolved tracks", summary.unresolvedTracks],
+    ["Corrections", Object.values(summary.correctionOutcomes).reduce((total, count) => total + count, 0)]
+  ].map(([label, value]) => tvStat(label, value)).join("");
+  const matchBands = { high: 0, medium: 0, low: 0 };
+  const reviewIssues = new Map();
+  for (const evidence of cases) {
+    for (const item of evidence.matches.items) {
+      const band = item.confidence >= 0.9 ? "high" : item.confidence >= 0.72 ? "medium" : "low";
+      matchBands[band] += 1;
+    }
+    for (const reason of evidence.plan.reviewReasons) {
+      reviewIssues.set(reason, (reviewIssues.get(reason) || 0) + 1);
+    }
+  }
+  const correctionRate = summary.tracks ? `${Math.round(correctionCount / summary.tracks * 100)}%` : "—";
+  const accuracy = summary.heldOutLabeledTracks
+    ? `${Math.round(summary.exactMatches / summary.heldOutLabeledTracks * 100)}%` : "Not enough labels";
+  const commonIssues = [...reviewIssues].sort((left, right) => right[1] - left[1]).slice(0, 4)
+    .map(([reason, count]) => `${reason} (${count})`).join(" · ") || "No review issues recorded";
+  $("#tv-validation-insights").innerHTML = [
+    ["Held-out accuracy", accuracy],
+    ["Correction rate", correctionRate],
+    ["High-confidence tracks", matchBands.high],
+    ["Medium-confidence tracks", matchBands.medium],
+    ["Low-confidence tracks", matchBands.low],
+    ["Common review issues", commonIssues]
+  ].map(([label, value]) => tvStat(label, value)).join("");
+  $("#tv-validation-list").innerHTML = cases.length
+    ? cases.map((evidence) => `<div class="list-row tv-case-row"><div class="list-title">${escapeHtml(evidence.plan.series?.title || evidence.source.label || "Unknown series")}<span class="list-sub">${escapeHtml(evidence.source.mediaKind)} · ${new Date(evidence.capturedAt).toLocaleString()} · ${escapeHtml(evidence.origin)}</span></div><span>${Math.round(evidence.plan.confidence * 100)}%</span><span>${escapeHtml(evidence.plan.state)}</span><button class="button secondary tv-action" data-action="view-case" data-case-id="${escapeHtml(evidence.id)}">View report</button></div>`).join("")
+    : '<div class="empty-state">No validation evidence has been captured. Enable evidence capture in Settings to collect future cases.</div>';
+  $("#tv-validation-detail").classList.add("hidden");
+}
+
+async function showTvValidationCase(caseId) {
+  const detail = await api(`/api/v1/tv/validation/${encodeURIComponent(caseId)}`);
+  const target = $("#tv-validation-detail");
+  target.innerHTML = `<div class="card-heading"><h2>Validation report · ${escapeHtml(detail.evidence.source.label || detail.evidence.id)}</h2><button class="text-button close-tv-detail">Close</button></div><pre>${escapeHtml(detail.report)}</pre>`;
+  target.classList.remove("hidden");
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function loadStatistics() {
+  const [dashboard, tv] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/tv/summary")]);
+  const dvdStats = dashboard.mediaStats.find((item) => item.mediaType === "dvd") || { total: 0 };
+  const musicStats = dashboard.mediaStats.find((item) => item.mediaType === "audio_cd") || { total: 0 };
+  $("#processing-statistics").innerHTML = [
+    ["Movies processed", dvdStats.total],
+    ["Music CDs processed", musicStats.total],
+    ["TV discs analyzed", tv.totalDiscsAnalyzed],
+    ["Average processing time", formatDuration(dashboard.stats.averageSeconds)],
+    ["Successful jobs", dashboard.stats.successful],
+    ["Failed jobs", dashboard.stats.failures],
+    ["Job success rate", dashboard.stats.total ? `${Math.round(dashboard.stats.successful / dashboard.stats.total * 100)}%` : "—"]
+  ].map(([label, value]) => tvStat(label, value)).join("");
 }
 
 async function refreshChart(range) {
@@ -176,6 +476,8 @@ async function loadSettings() {
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
   form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
   form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
+  form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
+  form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
   $("#lidarr-key-status").textContent = data.settings.lidarrApiKeyConfigured
     ? "A Lidarr API key is saved. It is never displayed."
     : "No Lidarr API key is saved.";
@@ -307,6 +609,11 @@ function updateStreams() {
     if (previous && !active) {
       if (state.page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
       if (state.page === "history") refreshHistory().catch((error) => notify(error.message, true));
+      if (state.page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
+      if (state.page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
+      if (state.page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
+      if (state.page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
+      if (state.page === "statistics") loadStatistics().catch((error) => notify(error.message, true));
     }
   });
   if (state.page === "dashboard") {
@@ -319,10 +626,26 @@ function showPage(page) {
   state.page = page;
   document.querySelectorAll(".page").forEach((section) => section.classList.toggle("hidden", section.id !== `page-${page}`));
   document.querySelectorAll("[data-page]").forEach((button) => button.classList.toggle("active", button.dataset.page === page));
-  $("#page-title").textContent = page.charAt(0).toUpperCase() + page.slice(1);
+  const pageTitles = {
+    dashboard: "Dashboard",
+    history: "History",
+    "tv-analysis": "TV Analysis",
+    "episode-matching": "Episode Matching",
+    "tv-reviews": "Review Centre",
+    "tv-validation": "TV Validation",
+    statistics: "Statistics",
+    settings: "Settings"
+  };
+  $("#page-title").textContent = pageTitles[page] || page;
   updateStreams();
   if (page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
+  if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
+  if (page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
+  if (page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
+  if (page === "tv-reviews") loadReviewCentre().catch((error) => notify(error.message, true));
+  if (page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
+  if (page === "statistics") loadStatistics().catch((error) => notify(error.message, true));
   if (page === "settings") loadSettings().catch((error) => notify(error.message, true));
 }
 
@@ -332,6 +655,135 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
   refreshChart(button.dataset.range).catch((error) => notify(error.message, true));
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
+$("#tv-analysis-confidence").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
+$("#tv-analysis-state").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
+$("#tv-review-filter").addEventListener("change", () => loadTvReviews().catch((error) => notify(error.message, true)));
+$("#refresh-reviews").addEventListener("click", () => loadReviewCentre().catch((error) => notify(error.message, true)));
+["review-category", "review-severity", "review-status", "review-from", "review-to"].forEach((id) =>
+  $(`#${id}`).addEventListener("change", () => loadReviewCentre().catch((error) => notify(error.message, true))));
+
+$("#review-list").addEventListener("click", async (event) => {
+  const button = event.target.closest(".review-action");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const action = button.dataset.action;
+    if (action === "open-settings") {
+      showPage("settings");
+      return;
+    }
+    if (action === "enter-metadata") {
+      showPage("dashboard");
+      const status = await api("/api/v1/status");
+      renderManualMusicMetadata(status.manualMusicMetadata);
+      if (!status.manualMusicMetadata) notify("This CD is no longer waiting for manual metadata.", true);
+      return;
+    }
+    if (action === "view-job") {
+      const { job } = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}`);
+      const container = button.closest(".review-item").querySelector(".review-job-details");
+      container.innerHTML = `<details open><summary>Related job and logs</summary>${job ? `<p>${escapeHtml(job.job.title || job.job.discLabel || job.job.id)} · ${escapeHtml(job.job.status)}</p><pre>${escapeHtml(JSON.stringify(job.timeline, null, 2))}</pre>` : "<p>Related job is no longer available.</p>"}</details>`;
+      return;
+    }
+    const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" : "dismiss";
+    const result = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}/${endpoint}`, { method: "POST" });
+    notify(result.message || `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`);
+    await loadReviewCentre();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest(".tv-action, .close-tv-detail");
+  if (!button) return;
+  if (button.classList.contains("close-tv-detail")) {
+    button.closest(".tv-detail")?.classList.add("hidden");
+    return;
+  }
+  button.disabled = true;
+  const planId = button.dataset.planId;
+  const itemId = button.dataset.itemId;
+  try {
+    if (button.dataset.action === "view-plan") {
+      if (state.page !== "tv-analysis") showPage("tv-analysis");
+      await showTvPlan(planId);
+      return;
+    }
+    if (button.dataset.action === "view-case") {
+      await showTvValidationCase(button.dataset.caseId);
+      return;
+    }
+    if (["approve-plan", "reject-plan", "defer-plan"].includes(button.dataset.action)) {
+      const action = button.dataset.action.replace("-plan", "");
+      const reason = action === "reject" ? prompt("Why is this TV plan being rejected?") : "";
+      if (action === "reject" && !reason?.trim()) return;
+      const result = await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/review`, {
+        method: "POST",
+        body: JSON.stringify({ action, reviewer: "admin", ...(reason ? { reason } : {}) })
+      });
+      notify(`TV plan ${result.plan.state}. Media execution remains disabled.`);
+      await Promise.all([loadTvReviews(), loadTvSummary()]);
+      return;
+    }
+    if (["accept-match", "reject-match", "override-match", "mark-unknown"].includes(button.dataset.action)) {
+      let action = button.dataset.action;
+      let episodes;
+      let reason;
+      if (action === "accept-match" || action === "reject-match") {
+        const planData = await api(`/api/v1/tv/analysis/${encodeURIComponent(planId)}`);
+        episodes = planData.plan.assignments.find((item) => item.itemId === itemId)?.episodes;
+        if (action === "accept-match") {
+          reason = "Accepted suggested match";
+          if (!episodes?.length) throw new Error("There is no suggested episode to accept");
+        } else {
+          reason = prompt("Why is this episode suggestion incorrect?")?.trim();
+          if (!reason) return;
+        }
+      } else if (action === "override-match") {
+        const entered = prompt("Enter the episode as seriesId, season number, episode number (comma-separated):");
+        if (!entered) return;
+        const [seriesId, seasonNumber, episodeNumber] = entered.split(",").map((value) => value.trim());
+        if (!seriesId || !/^\d+$/.test(seasonNumber) || !/^\d+$/.test(episodeNumber)) {
+          throw new Error("Use the format seriesId, season number, episode number");
+        }
+        episodes = [{ seriesId, seasonNumber: Number(seasonNumber), episodeNumber: Number(episodeNumber) }];
+        action = "assign-episodes";
+        reason = prompt("Correction reason:")?.trim();
+        if (!reason) return;
+      } else {
+        reason = prompt("Why should this track remain unknown?")?.trim();
+        if (!reason) return;
+      }
+      await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/corrections`, {
+        method: "POST",
+        body: JSON.stringify({ action, itemId, episodes, reviewer: "admin", reason })
+      });
+      notify(action === "mark-unknown" ? "Track marked unknown." : "TV correction recorded for future matching.");
+      await Promise.all([loadTvMatching(), loadTvReviews(), loadTvSummary()]);
+    }
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#export-tv-validation").addEventListener("click", async () => {
+  try {
+    const dataset = await api("/api/v1/tv/validation/export");
+    const file = new Blob([JSON.stringify(dataset, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(file);
+    link.download = "autodisc-tv-validation.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  } catch (error) {
+    notify(error.message, true);
+  }
+});
 $("#cancel-job").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   const id = button.dataset.jobId;
@@ -486,6 +938,8 @@ $("#settings-form").addEventListener("submit", async (event) => {
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
     musicBrainzContactEmail: values.get("musicBrainzContactEmail"),
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
+    tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
+    tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
     lidarrUrl: values.get("lidarrUrl"),
     lidarrImportDir: values.get("lidarrImportDir"),
     metadataProvider: "tmdb",

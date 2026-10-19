@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light dark">
     <title>AutoDisc</title>
     <link rel="stylesheet" href="/style.css">
   </head>
@@ -13,6 +13,11 @@
       <nav aria-label="Main navigation">
         <button class="nav-link active" data-page="dashboard">Dashboard</button>
         <button class="nav-link" data-page="history">History</button>
+        <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
+        <button class="nav-link" data-page="episode-matching">Episode Matching</button>
+        <button class="nav-link" data-page="tv-reviews">Review Centre</button>
+        <button class="nav-link" data-page="tv-validation">TV Validation</button>
+        <button class="nav-link" data-page="statistics">Statistics</button>
         <button class="nav-link" data-page="settings">Settings</button>
       </nav>
       <div class="sidebar-footer"><span class="pulse"></span> Disc monitor active</div>
@@ -20,7 +25,7 @@
     <main>
       <header class="topbar">
         <div><p class="eyebrow">DISC INGESTION APPLIANCE</p><h1 id="page-title">Dashboard</h1></div>
-        <div class="top-actions"><span id="auth-state" class="muted"></span><button id="logout" class="button secondary hidden">Log out</button></div>
+        <div class="top-actions"><span id="auth-state" class="muted"></span><button id="theme-toggle" class="button secondary" type="button" aria-pressed="false">Light mode</button><button id="logout" class="button secondary hidden">Log out</button></div>
       </header>
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="page-dashboard" class="page">
@@ -59,9 +64,68 @@
           <div id="chart" class="chart" aria-label="Successful and failed conversions by day"></div>
         </article>
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">RECENT</p><h2>Latest discs</h2></div><button class="text-button" data-page="history">View history →</button></div><div id="recent-list"></div></article>
+        <article class="card tv-intelligence-card">
+          <div class="card-heading"><div><p class="eyebrow">VERSION 2</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-analysis">View reports →</button></div>
+          <div id="tv-dashboard-stats" class="tv-stat-grid"></div>
+          <div class="card-heading"><h3>TV disc trend · 30 days</h3></div><div id="tv-trend" class="tv-trend"></div>
+        </article>
       </section>
       <section id="page-history" class="page hidden">
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">LIBRARY</p><h2>Conversion history</h2></div><button id="refresh-history" class="button secondary">Refresh</button></div><div id="history-list"></div></article>
+      </section>
+      <section id="page-tv-analysis" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>Recent TV analysis</h2></div>
+            <div class="form-row compact">
+              <label>Confidence<select id="tv-analysis-confidence"><option value="">All confidence</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+              <label>Review status<select id="tv-analysis-state"><option value="">All statuses</option><option value="awaiting-review">Review required</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="ready">Ready</option></select></label>
+            </div>
+          </div>
+          <div id="tv-analysis-list"></div>
+        </article>
+        <article id="tv-analysis-detail" class="card tv-detail hidden"></article>
+      </section>
+      <section id="page-episode-matching" class="page hidden">
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EXPLAINABLE MATCHING</p><h2>Episode suggestions</h2></div></div>
+          <p class="hint">Confidence scores rank available evidence; they are not calibrated probabilities. Unknown is preferred to an unsupported assignment.</p>
+          <div id="tv-matching-list"></div>
+        </article>
+      </section>
+      <section id="page-tv-reviews" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">VERSION 2 OPERATIONS</p><h2>Review Centre</h2></div>
+            <button id="refresh-reviews" class="button secondary" type="button">Refresh</button>
+          </div>
+          <div id="review-summary" class="tv-stat-grid"></div>
+          <div class="review-filters">
+            <label>Category<select id="review-category"><option value="">All categories</option><option value="tv_review">TV review</option><option value="cd_review">CD review</option><option value="metadata_issue">Metadata</option><option value="processing_failure">Processing failure</option><option value="folder_creation_failure">Folder creation</option><option value="disc_read_error">Disc read error</option><option value="validation_warning">Validation warning</option><option value="configuration_issue">Configuration</option><option value="system_warning">System warning</option></select></label>
+            <label>Severity<select id="review-severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+            <label>Status<select id="review-status"><option value="active">Active</option><option value="retrying">Retrying</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option><option value="">All statuses</option></select></label>
+            <label>Created from<input id="review-from" type="date"></label>
+            <label>Created to<input id="review-to" type="date"></label>
+          </div>
+          <div id="review-list"></div>
+        </article>
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">TV WORKFLOW</p><h2>Episode plans awaiting review</h2></div>
+          <label>Show<select id="tv-review-filter"><option value="awaiting-review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All plans</option></select></label>
+        </div><div id="tv-review-list"></div></article>
+      </section>
+      <section id="page-tv-validation" class="page hidden">
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EVIDENCE & DATASETS</p><h2>TV validation</h2></div>
+          <button id="export-tv-validation" class="button secondary" type="button">Export validation dataset</button>
+        </div>
+          <div id="tv-validation-summary" class="tv-stat-grid"></div>
+          <div id="tv-validation-insights" class="tv-stat-grid"></div>
+          <p class="hint">Accuracy and correction rates are descriptive of stored, labeled cases only. They are not claims about all DVD collections.</p>
+          <div id="tv-validation-list"></div>
+        </article>
+        <article id="tv-validation-detail" class="card tv-detail hidden"></article>
+      </section>
+      <section id="page-statistics" class="page hidden">
+        <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
+        <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
+          <p class="hint">TV plans remain analysis-only. No files are assigned, renamed, moved, or published by these reports.</p>
+        </article>
       </section>
       <section id="page-settings" class="page hidden">
         <form id="settings-form" class="settings-layout">
@@ -113,6 +177,19 @@
             <button id="test-lidarr" class="button secondary" type="button">Test Lidarr connection</button>
             <p id="lidarr-status" class="inline-info" role="status"></p>
             <p class="hint">Set this to the shared downloads/import folder that Lidarr can read; AutoDisc creates an Artist - Album folder with numbered, tagged FLAC tracks, then asks Lidarr to match and move them into its library. If Lidarr runs in Docker, use the path as mounted inside the Lidarr container and make sure AutoDisc can access that same path. Add the artist and album to Lidarr and enable MusicBrainz lookup. The Jellyfin Music folder must match Lidarr's library root.</p>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">VERSION 2 · TELEVISION</p><h2>TV Processing</h2>
+            <label class="check"><input name="tvDetectionEnabled" type="checkbox"> Enable TV detection and analysis</label>
+            <label class="check"><input name="tvValidationLoggingEnabled" type="checkbox"> Capture complete analysis and matching evidence</label>
+            <p class="hint">Disabling TV detection restores DVD-only movie handling. Disabling evidence capture does not disable TV analysis or review plans.</p>
+            <div class="policy-panel">
+              <b>Current matching policy (read-only)</b>
+              <p>TV sensitivity: conservative, fixed by the V2 policy.</p>
+              <p>High confidence: ≥ 0.90 · Medium: ≥ 0.72 · Below 0.72: review required.</p>
+              <p>Episode match minimum confidence: 0.72 · Ambiguity margin: 0.12.</p>
+              <p>Low-confidence and ambiguous/multipart matches remain review-gated. User overrides are enabled and audited.</p>
+              <p>Threshold editing is intentionally locked until calibration against a representative real-disc dataset; displayed scores are evidence rankings, not probabilities.</p>
+            </div>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>

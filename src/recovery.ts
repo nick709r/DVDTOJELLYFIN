@@ -1,6 +1,6 @@
 import { readdir, rmdir, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { getSettings, interruptedOutputs, recoverPublishedJob } from "./db.js";
+import type { AutoDiscRepositories } from "./contracts/repositories.js";
 import { mediaDuration } from "./encoding.js";
 import { log } from "./logger.js";
 
@@ -15,8 +15,8 @@ function isWithin(directory: string, path: string): boolean {
     (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
-export async function recoverTemporaryFiles(): Promise<void> {
-  const settings = getSettings();
+export async function recoverTemporaryFiles(repositories: AutoDiscRepositories): Promise<void> {
+  const settings = repositories.settings.get();
   let removedWorkdirs = 0;
   let removedOutputs = 0;
   const workEntries = await readdir(settings.workDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -81,7 +81,7 @@ export async function recoverTemporaryFiles(): Promise<void> {
     }
   }
   let recoveredJobs = 0;
-  for (const job of interruptedOutputs()) {
+  for (const job of repositories.recovery.interruptedOutputs()) {
     const isMovieOutput = job.mediaType === "dvd" && isWithin(settings.moviesDir, job.outputPath);
     const isMusicOutput = job.mediaType === "audio_cd" && isWithin(settings.musicDir, job.outputPath);
     if (!isMovieOutput && !isMusicOutput) continue;
@@ -100,11 +100,11 @@ export async function recoverTemporaryFiles(): Promise<void> {
           await mediaDuration(path);
           outputBytes += trackInfo.size;
         }
-        recoverPublishedJob(job.id, outputBytes);
+        repositories.recovery.recoverPublished(job.id, outputBytes);
       } else {
         if (!info.isFile() || info.size < 1024) continue;
         await mediaDuration(job.outputPath);
-        recoverPublishedJob(job.id, info.size);
+        repositories.recovery.recoverPublished(job.id, info.size);
       }
       recoveredJobs += 1;
     } catch (error) {
