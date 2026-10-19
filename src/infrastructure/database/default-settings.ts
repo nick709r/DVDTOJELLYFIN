@@ -1,0 +1,25 @@
+import type { AppSettings } from "../../model.js";
+
+export const defaultSettings: AppSettings = {
+  moviesDir: process.env.MOVIES_DIR ?? "/srv/jellyfin/Movies",
+  musicDir: process.env.MUSIC_DIR ?? "/srv/jellyfin/Music",
+  workDir: process.env.WORK_DIR ?? "/var/cache/autodisc",
+  opticalDevice: process.env.OPTICAL_DEVICE ?? "/dev/sr0",
+  format: "mp4",
+  quality: 23,
+  preset: "ultrafast",
+  encoder: "auto",
+  autoEject: true,
+  metadataEnabled: false,
+  metadataProvider: "tmdb",
+  metadataApiKey: "",
+  musicMetadataEnabled: false,
+  musicBrainzContactEmail: "",
+  lidarrEnabled: false,
+  lidarrUrl: process.env.LIDARR_URL ?? "http://127.0.0.1:8686",
+  lidarrApiKey: process.env.LIDARR_API_KEY ?? "",
+  lidarrImportDir: process.env.LIDARR_IMPORT_DIR ?? "/var/cache/autodisc/lidarr-import",
+  adminPasswordSalt: "",
+  adminPasswordHash: "",
+  logLevel: "info"
+};

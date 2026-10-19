@@ -11,9 +11,13 @@ events, capability-based workflow planning, and migration gates before adding
 large feature families. See [V2-ARCHITECTURE.md](./V2-ARCHITECTURE.md) for the
 target boundaries, example contracts, safety model, and acceptance gates.
 The first implementation increment adds a contract-tested provider API and
-registry. DVD and audio-CD discovery/acquisition are now wired through source
-providers; migrating downstream metadata, transform, publication, persistence,
-and platform behavior remains part of Gate A.
+registry. DVD and audio-CD discovery/acquisition now use open media contracts
+and registered workflows. TMDB and MusicBrainz are behind metadata contracts,
+SQLite is split into repository adapters, and both existing workflows use a
+shared job coordinator. TV-specific behavior, provider-owned configuration,
+drive/platform adapters, and durable queue/event infrastructure remain future
+gates. See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
+for implementation detail and remaining blockers.
 
 Foundation & Core Improvements
 Codebase Cleanup

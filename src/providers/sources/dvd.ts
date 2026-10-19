@@ -1,9 +1,4 @@
-import type {
-  DvdMediaCandidate,
-  MediaSourceCandidate,
-  MediaSourceProvider,
-  SourceAcquisitionOptions
-} from "../../contracts/media-source.js";
+import type { MediaSourceCandidate, MediaSourceProvider, SourceAcquisitionOptions } from "../../contracts/media-source.js";
 import type { ProviderDescriptor } from "../../contracts/provider.js";
 import { inspectDisc, ripTitle } from "../../media.js";
 import { executableAvailable } from "../../executable.js";
@@ -30,14 +25,22 @@ export class MakeMkvDvdSourceProvider implements MediaSourceProvider {
 
   async dispose(): Promise<void> {}
 
-  async inspect(sourceId: string, signal?: AbortSignal): Promise<DvdMediaCandidate> {
+  async inspect(sourceId: string, signal?: AbortSignal): Promise<MediaSourceCandidate> {
     const disc = await inspectDisc(`dev:${sourceId}`, signal);
     return {
       providerId: descriptor.id,
-      mediaType: "dvd",
+      mediaKind: "dvd",
       sourceId,
       label: disc.label,
-      titles: disc.titles
+      manifest: {
+        mediaKind: "dvd",
+        items: disc.titles.map((title) => ({
+          id: String(title.id),
+          kind: "title",
+          title: title.name,
+          durationSeconds: title.durationSeconds
+        }))
+      }
     };
   }
 
@@ -47,13 +50,26 @@ export class MakeMkvDvdSourceProvider implements MediaSourceProvider {
     options?: SourceAcquisitionOptions,
     signal?: AbortSignal
   ) {
-    if (candidate.mediaType !== "dvd" || candidate.providerId !== descriptor.id) {
+    if (candidate.mediaKind !== "dvd" || candidate.providerId !== descriptor.id) {
       throw new Error("DVD provider received a candidate it does not own");
     }
-    if (options?.titleId === undefined) throw new Error("DVD acquisition requires a selected title ID");
+    const selectedTitle = options?.selection?.manifestItemId;
+    if (selectedTitle === undefined || !/^\d+$/.test(selectedTitle)) {
+      throw new Error("DVD acquisition requires a selected manifest item ID");
+    }
     return {
-      mediaType: "dvd" as const,
-      path: await ripTitle(`dev:${candidate.sourceId}`, options.titleId, workspacePath, signal)
+      source: {
+        id: candidate.sourceId,
+        providerId: descriptor.id,
+        kind: candidate.mediaKind,
+        location: candidate.sourceId
+      },
+      artifacts: [{
+        id: `dvd-title-${selectedTitle}`,
+        kind: "video",
+        mediaType: "video/x-matroska",
+        path: await ripTitle(`dev:${candidate.sourceId}`, Number(selectedTitle), workspacePath, signal)
+      }]
     };
   }
 }

@@ -2,10 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { activeJob, clearInsertedDisc, getSettings } from "./db.js";
 import { events } from "./events.js";
 import { processInsertedDisc } from "./pipeline.js";
 import type { MediaSourceCoordinator } from "./application/media-source-coordinator.js";
+import type { MetadataResolver } from "./application/metadata-resolver.js";
+import type { JobCoordinator } from "./application/job-coordinator.js";
+import type { MediaWorkflowRegistry } from "./application/media-workflow-registry.js";
 import { discRemoved, getRuntimeStatus, setRuntimeStatus } from "./runtime-status.js";
 import { log as writeLog } from "./logger.js";
 
@@ -25,28 +27,34 @@ function log(level: "info" | "warn" | "error", message: string): void {
   writeLog(level, "disc-monitor", message);
 }
 
-async function handleInsert(signal: AbortSignal, sources: MediaSourceCoordinator): Promise<void> {
+async function handleInsert(
+  signal: AbortSignal,
+  sources: MediaSourceCoordinator,
+  workflows: MediaWorkflowRegistry,
+  metadata: MetadataResolver,
+  jobs: JobCoordinator
+): Promise<void> {
   if (signal.aborted) return;
   if (checking) {
     scanRequested = true;
     return;
   }
-  if (seenInsertedDisc || activeJob()) return;
+  if (seenInsertedDisc || jobs.activeJob()) return;
   checking = true;
   setRuntimeStatus("inspecting");
   try {
-    pendingJob = processInsertedDisc(sources, signal);
+    pendingJob = processInsertedDisc(sources, workflows, jobs, metadata, signal);
     seenInsertedDisc = await pendingJob;
     if (seenInsertedDisc) retryDelayMs = 2000;
     else if (!signal.aborted) {
       log("warn", `Disc is not ready or could not be recognized; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
-      scheduleInsert(signal, sources, retryDelayMs);
+      scheduleInsert(signal, sources, workflows, metadata, jobs, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } catch (error) {
     if (!signal.aborted) {
       log("error", `Disc processing could not start: ${error instanceof Error ? error.message : "unknown error"}`);
-      scheduleInsert(signal, sources, retryDelayMs);
+      scheduleInsert(signal, sources, workflows, metadata, jobs, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } finally {
@@ -55,16 +63,23 @@ async function handleInsert(signal: AbortSignal, sources: MediaSourceCoordinator
     checking = false;
     if (scanRequested && !signal.aborted) {
       scanRequested = false;
-      scheduleInsert(signal, sources);
+      scheduleInsert(signal, sources, workflows, metadata, jobs);
     }
   }
 }
 
-function scheduleInsert(signal: AbortSignal, sources: MediaSourceCoordinator, delayMs = 450): void {
+function scheduleInsert(
+  signal: AbortSignal,
+  sources: MediaSourceCoordinator,
+  workflows: MediaWorkflowRegistry,
+  metadata: MetadataResolver,
+  jobs: JobCoordinator,
+  delayMs = 450
+): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     debounceTimer = undefined;
-    void handleInsert(signal, sources);
+    void handleInsert(signal, sources, workflows, metadata, jobs);
   }, delayMs);
 }
 
@@ -82,15 +97,21 @@ async function mediaPresent(device: string): Promise<boolean | null> {
   }
 }
 
-async function reconcileMediaPresence(signal: AbortSignal, sources: MediaSourceCoordinator): Promise<void> {
+async function reconcileMediaPresence(
+  signal: AbortSignal,
+  sources: MediaSourceCoordinator,
+  workflows: MediaWorkflowRegistry,
+  metadata: MetadataResolver,
+  jobs: JobCoordinator
+): Promise<void> {
   if (signal.aborted) return;
-  const device = getSettings().opticalDevice;
+  const device = jobs.getSettings().opticalDevice;
   const present = await mediaPresent(device);
   if (present === false) {
     const confirmedRemoval = mediaWasPresent === true;
     if (confirmedRemoval) {
-      clearInsertedDisc();
-      if (seenInsertedDisc && !activeJob()) {
+      jobs.clearInsertedDisc();
+      if (seenInsertedDisc && !jobs.activeJob()) {
         seenInsertedDisc = false;
         discRemoved();
       }
@@ -101,16 +122,22 @@ async function reconcileMediaPresence(signal: AbortSignal, sources: MediaSourceC
     const newlyPresent = mediaWasPresent !== true;
     mediaWasPresent = true;
     if (newlyPresent) retryDelayMs = 2000;
-    if (newlyPresent && !seenInsertedDisc && !activeJob()) {
-      scheduleInsert(signal, sources);
+    if (newlyPresent && !seenInsertedDisc && !jobs.activeJob()) {
+      scheduleInsert(signal, sources, workflows, metadata, jobs);
     }
   }
 }
 
-async function monitor(signal: AbortSignal, sources: MediaSourceCoordinator): Promise<void> {
+async function monitor(
+  signal: AbortSignal,
+  sources: MediaSourceCoordinator,
+  workflows: MediaWorkflowRegistry,
+  metadata: MetadataResolver,
+  jobs: JobCoordinator
+): Promise<void> {
   while (!stopping && !signal.aborted) {
     try {
-      const device = getSettings().opticalDevice;
+      const device = jobs.getSettings().opticalDevice;
       const child = spawn("udevadm", ["monitor", "--udev", "--subsystem-match=block", "--property"], {
         stdio: ["ignore", "pipe", "pipe"]
       });
@@ -126,17 +153,17 @@ async function monitor(signal: AbortSignal, sources: MediaSourceCoordinator): Pr
           eventText = eventText.slice(boundary + 2);
           const action = block.match(/^ACTION=(\w+)/m)?.[1];
           const path = block.match(/^DEVNAME=(.+)$/m)?.[1]?.trim();
-          const configuredDevice = getSettings().opticalDevice;
+          const configuredDevice = jobs.getSettings().opticalDevice;
           if (path === configuredDevice) writeLog("debug", "disc-monitor", "udev event", { action, path });
           if (path === configuredDevice && action === "remove") {
             seenInsertedDisc = false;
             mediaWasPresent = false;
             retryDelayMs = 2000;
-            clearInsertedDisc();
+            jobs.clearInsertedDisc();
             discRemoved();
           }
           if ((path === configuredDevice || path === `${configuredDevice}1`) &&
-            (action === "add" || action === "change")) scheduleInsert(signal, sources);
+            (action === "add" || action === "change")) scheduleInsert(signal, sources, workflows, metadata, jobs);
           boundary = eventText.indexOf("\n\n");
         }
       });
@@ -147,8 +174,8 @@ async function monitor(signal: AbortSignal, sources: MediaSourceCoordinator): Pr
         seenInsertedDisc = false;
         mediaWasPresent = undefined;
         retryDelayMs = 2000;
-        clearInsertedDisc();
-        scheduleInsert(signal, sources);
+        jobs.clearInsertedDisc();
+        scheduleInsert(signal, sources, workflows, metadata, jobs);
       };
       events.on("settings", onSettings);
       child.once("close", () => events.off("settings", onSettings));
@@ -163,7 +190,7 @@ async function monitor(signal: AbortSignal, sources: MediaSourceCoordinator): Pr
           else resolve();
         });
       });
-      if (!seenInsertedDisc) scheduleInsert(signal, sources);
+      if (!seenInsertedDisc) scheduleInsert(signal, sources, workflows, metadata, jobs);
       await new Promise<void>((resolve) => child.once("close", () => resolve()));
       if (monitorChild === child) monitorChild = undefined;
     } catch (error) {
@@ -175,7 +202,13 @@ async function monitor(signal: AbortSignal, sources: MediaSourceCoordinator): Pr
   }
 }
 
-export function startDiscMonitor(signal: AbortSignal, sources: MediaSourceCoordinator): () => Promise<void> {
+export function startDiscMonitor(
+  signal: AbortSignal,
+  sources: MediaSourceCoordinator,
+  workflows: MediaWorkflowRegistry,
+  metadata: MetadataResolver,
+  jobs: JobCoordinator
+): () => Promise<void> {
   stopping = false;
   scanRequested = false;
   mediaWasPresent = undefined;
@@ -188,17 +221,17 @@ export function startDiscMonitor(signal: AbortSignal, sources: MediaSourceCoordi
     monitorChild?.kill("SIGTERM");
   };
   signal.addEventListener("abort", onAbort, { once: true });
-  scheduleInsert(signal, sources);
-  void reconcileMediaPresence(signal, sources).catch((error: unknown) => {
+  scheduleInsert(signal, sources, workflows, metadata, jobs);
+  void reconcileMediaPresence(signal, sources, workflows, metadata, jobs).catch((error: unknown) => {
     log("error", `Initial optical media state check failed: ${error instanceof Error ? error.message : "unknown error"}`);
   });
   presenceTimer = setInterval(() => {
-    void reconcileMediaPresence(signal, sources).catch((error: unknown) => {
+    void reconcileMediaPresence(signal, sources, workflows, metadata, jobs).catch((error: unknown) => {
       log("error", `Optical media state reconciliation failed: ${error instanceof Error ? error.message : "unknown error"}`);
     });
   }, 2000);
   presenceTimer.unref();
-  const running = monitor(signal, sources);
+  const running = monitor(signal, sources, workflows, metadata, jobs);
   return async () => {
     onAbort();
     await running;

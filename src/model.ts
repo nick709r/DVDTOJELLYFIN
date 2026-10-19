@@ -40,7 +40,7 @@ export interface AppSettings {
 export interface Job {
   id: string;
   status: JobStatus;
-  mediaType: "dvd" | "audio_cd";
+  mediaType: string;
   discLabel: string | null;
   title: string | null;
   outputPath: string | null;

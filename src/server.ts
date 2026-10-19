@@ -6,7 +6,7 @@ import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, activeJob, deleteJob, getSettings, jobStats, listJobs, saveSettings } from "./db.js";
+import { activeJob, dailyJobStats, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
 import { cancelActiveJob } from "./job-control.js";
 import { availableEncoders } from "./encoding.js";
@@ -266,30 +266,14 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/jobs/:id/music-meta
 });
 
 app.get<{ Params: { id: string } }>("/api/v1/history/:id", async (request, reply) => {
-  const job = db.prepare(`
-    SELECT id, status, media_type AS mediaType, disc_label AS discLabel, title, output_path AS outputPath,
-      encoder, output_bytes AS outputBytes, started_at AS startedAt,
-      finished_at AS finishedAt, duration_seconds AS durationSeconds,
-      conversion_seconds AS conversionSeconds,
-      progress, error FROM jobs WHERE id = ?
-  `).get(request.params.id);
-  if (!job) return reply.code(404).send({ error: "Job not found" });
-  const timeline = db.prepare("SELECT at, stage, level, message FROM job_events WHERE job_id = ? ORDER BY id")
-    .all(request.params.id);
-  return { job, timeline };
+  const details = jobDetails(request.params.id);
+  if (!details) return reply.code(404).send({ error: "Job not found" });
+  return details;
 });
 
 app.get<{ Querystring: { range?: string } }>("/api/v1/stats", async (request) => {
   const days = request.query.range === "30d" ? 30 : 7;
-  const series = db.prepare(`
-    SELECT date(started_at) AS day,
-      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS successful,
-      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failures,
-      AVG(CASE WHEN status = 'completed' THEN conversion_seconds END) AS averageSeconds
-    FROM jobs
-    WHERE started_at >= datetime('now', ?)
-    GROUP BY date(started_at) ORDER BY day
-  `).all(`-${days} days`);
+  const series = dailyJobStats(days);
   return { range: `${days}d`, series };
 });
 

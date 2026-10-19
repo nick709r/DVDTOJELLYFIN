@@ -1,16 +1,45 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** Proposed foundation for Version 2; implementation and migration gates
-are described below. This is a target design, not a claim that the current v1
-application already provides these extension points.
+**Status:** v2 foundation in progress. The target design and migration gates
+remain ahead of the implementation; current coverage is summarized below.
 
-**Implementation progress:** The first v2 code increment adds provider
-contracts, a lifecycle-aware registry, and source adapters in `src/contracts`,
-`src/providers/sources`, and `src/bootstrap`. Production DVD/audio-CD discovery
-and acquisition now pass through the registered source-provider coordinator.
-The adapters still wrap v1 extraction functions, and downstream metadata,
-transform, publication, persistence, and platform services remain to be
-migrated before the full provider architecture is implemented.
+**Implementation progress:** The source-provider seam now uses open media
+domain models, and source candidates dispatch through a registered
+media-workflow registry rather than source-kind branches in the core pipeline.
+TMDB movie lookup and MusicBrainz album lookup use metadata-provider contracts,
+health checks, candidate ranking, and fallback results. SQLite connection,
+migrations, and settings/job/history/event/recovery repositories are separated
+behind repository contracts; `db.ts` remains a compatibility facade for
+non-workflow callers. DVD and audio-CD workflows use the injected job
+coordinator for lifecycle state and cancellation context. TV-series domain
+types are present, but no TV workflow or TV metadata provider is implemented.
+See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
+for the current diagram, gate status, extension points, and feature blockers.
+
+## Current implementation shape
+
+```mermaid
+flowchart LR
+  Monitor[Disc monitor] --> SourceCoordinator[MediaSourceCoordinator]
+  SourceCoordinator --> SourceRegistry[Registered source providers]
+  SourceRegistry --> Sources[DVD / Audio CD adapters]
+  SourceCoordinator --> Candidate[Open MediaCandidate + MediaManifest]
+  Candidate --> WorkflowRegistry[MediaWorkflowRegistry]
+  WorkflowRegistry --> Workflows[DVD / Audio CD workflow providers]
+  Workflows --> JobCoordinator[JobCoordinator]
+  JobCoordinator --> RepositoryPorts[Repository contracts]
+  RepositoryPorts --> SqliteAdapters[SQLite repositories]
+  Workflows --> MetadataResolver[MetadataResolver]
+  MetadataResolver --> MetadataRegistry[MetadataProviderRegistry]
+  MetadataRegistry --> MetadataProviders[TMDB movie / MusicBrainz album]
+  MetadataResolver --> Ranked[Ranked MetadataResult + fallback]
+```
+
+The media source coordinator does not inspect media-kind-specific fields.
+Source-specific selection and output handling belongs to registered workflow
+providers. Built-in providers and workflows are currently registered
+statically at the composition root; runtime package discovery, provider-owned
+configuration schemas, and dynamic administration UI are not implemented.
 
 ## 1. Architectural objective
 

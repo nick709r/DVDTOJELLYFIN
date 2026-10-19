@@ -25,12 +25,15 @@ test("source coordinator probes in order and dispatches acquisition to the selec
   const probes = [];
   const dvdCandidate = {
     providerId: "source.dvd",
-    mediaType: "dvd",
+    mediaKind: "dvd",
     sourceId: "drive-1",
     label: "Movie",
-    titles: []
+    manifest: { mediaKind: "dvd", items: [] }
   };
-  const acquisition = { mediaType: "dvd", path: "workspace/movie.mkv" };
+  const acquisition = {
+    source: { id: "drive-1", providerId: "source.dvd", kind: "dvd" },
+    artifacts: [{ id: "movie", kind: "video", path: "workspace/movie.mkv" }]
+  };
   const first = createProvider("source.audio", null, () => {
     throw new Error("audio provider must not acquire");
   });
@@ -42,7 +45,7 @@ test("source coordinator probes in order and dispatches acquisition to the selec
     probes.push("source.dvd.acquire");
     assert.equal(candidate, dvdCandidate);
     assert.equal(workspace, "workspace");
-    assert.deepEqual(options, { titleId: 3 });
+    assert.deepEqual(options, { selection: { manifestItemId: "3" } });
     assert.equal(signal, undefined);
     return acquisition;
   });
@@ -56,18 +59,20 @@ test("source coordinator probes in order and dispatches acquisition to the selec
   assert.equal(inspected.provider, second);
   assert.equal(inspected.candidate, dvdCandidate);
   assert.deepEqual(probes, ["source.audio", "source.dvd:drive-1"]);
-  assert.equal(await coordinator.acquire(inspected, "workspace", { titleId: 3 }), acquisition);
+  assert.equal(await coordinator.acquire(inspected, "workspace", {
+    selection: { manifestItemId: "3" }
+  }), acquisition);
   assert.deepEqual(probes, ["source.audio", "source.dvd:drive-1", "source.dvd.acquire"]);
 });
 
 test("source coordinator rejects providers returning candidates with mismatched identity", async () => {
   const provider = createProvider("source.dvd", {
     providerId: "source.other",
-    mediaType: "dvd",
+    mediaKind: "dvd",
     sourceId: "drive-1",
     label: "",
-    titles: []
-  }, () => ({ mediaType: "dvd", path: "unused" }));
+    manifest: { mediaKind: "dvd", items: [] }
+  }, () => ({ source: { id: "drive-1", providerId: "source.dvd", kind: "dvd" }, artifacts: [] }));
   const coordinator = new MediaSourceCoordinator([provider]);
 
   await assert.rejects(coordinator.inspect("drive-1"), /mismatched identity/);
@@ -75,4 +80,24 @@ test("source coordinator rejects providers returning candidates with mismatched 
 
 test("source coordinator requires at least one configured provider", () => {
   assert.throws(() => new MediaSourceCoordinator([]), /At least one media source provider/);
+});
+
+test("source coordinator accepts a media kind unknown to core orchestration", async () => {
+  const candidate = {
+    providerId: "source.future",
+    sourceId: "watch-folder-1",
+    mediaKind: "uhd_bluray",
+    label: "Future media",
+    manifest: { mediaKind: "uhd_bluray", items: [{ id: "playlist-1", kind: "program" }] }
+  };
+  const acquired = {
+    source: { id: "watch-folder-1", providerId: "source.future", kind: "uhd_bluray" },
+    artifacts: [{ id: "feature-1", kind: "video", path: "workspace/feature.mkv" }]
+  };
+  const provider = createProvider("source.future", candidate, () => acquired);
+  const coordinator = new MediaSourceCoordinator([provider]);
+
+  const inspected = await coordinator.inspect("watch-folder-1");
+  assert.equal(inspected.candidate.mediaKind, "uhd_bluray");
+  assert.equal(await coordinator.acquire(inspected, "workspace"), acquired);
 });

@@ -157,10 +157,14 @@ and workflow services should remain provider-neutral as these integrations
 grow. See the [v2 architecture](./docs/V2-ARCHITECTURE.md) and
 [v2 roadmap](./docs/ROADMAP.md) for the proposed boundaries and staged
 acceptance gates. These extension contracts are a v2 design target and are not
-all implemented in the current release. Provider contracts and a lifecycle
-registry are in place, and DVD/audio-CD discovery and acquisition use the
-registered source providers. Downstream metadata, transform, publication,
-persistence, and platform services still need migration.
+all implemented in the current release. The current v2 branch has provider
+contracts, open source manifests/artifacts, registered DVD/audio-CD workflows,
+TMDB/MusicBrainz metadata adapters, SQLite repository interfaces/adapters, and
+a shared job coordinator. These are foundation seams, not TV or multi-drive
+features; provider-owned configuration, durable events, drive/platform
+adapters, transforms, and library providers remain future gates. See the
+[v2 migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md) for current
+progress and blockers.
 
 ### Expanded scope (coming in v2)
 - General automated ripping and organization: use AutoDisc to rip and organize DVDs and CDs into folders, whether or not you run Jellyfin.

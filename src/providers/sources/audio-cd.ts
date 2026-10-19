@@ -1,9 +1,4 @@
-import type {
-  AudioCdMediaCandidate,
-  MediaSourceCandidate,
-  MediaSourceProvider,
-  SourceAcquisitionOptions
-} from "../../contracts/media-source.js";
+import type { MediaSourceCandidate, MediaSourceProvider, SourceAcquisitionOptions } from "../../contracts/media-source.js";
 import type { ProviderDescriptor } from "../../contracts/provider.js";
 import { inspectAudioCd, ripAudioTracks } from "../../audio-cd.js";
 import { executableAvailable } from "../../executable.js";
@@ -30,17 +25,24 @@ export class CdParanoiaSourceProvider implements MediaSourceProvider {
 
   async dispose(): Promise<void> {}
 
-  async inspect(sourceId: string, signal?: AbortSignal): Promise<AudioCdMediaCandidate | null> {
+  async inspect(sourceId: string, signal?: AbortSignal): Promise<MediaSourceCandidate | null> {
     const disc = await inspectAudioCd(sourceId, signal);
     if (!disc) return null;
     return {
       providerId: descriptor.id,
-      mediaType: "audio_cd",
+      mediaKind: "audio_cd",
       sourceId,
       label: disc.discId ? `Audio CD ${disc.discId}` : "Audio CD",
       fingerprint: disc.fingerprint,
-      discId: disc.discId,
-      trackNumbers: disc.trackNumbers
+      manifest: {
+        mediaKind: "audio_cd",
+        ...(disc.discId ? { identifiers: { musicBrainzDiscId: disc.discId } } : {}),
+        items: disc.trackNumbers.map((number) => ({
+          id: `track-${number}`,
+          kind: "audio-track",
+          trackNumber: number
+        }))
+      }
     };
   }
 
@@ -50,12 +52,25 @@ export class CdParanoiaSourceProvider implements MediaSourceProvider {
     _options?: SourceAcquisitionOptions,
     signal?: AbortSignal
   ) {
-    if (candidate.mediaType !== "audio_cd" || candidate.providerId !== descriptor.id) {
+    if (candidate.mediaKind !== "audio_cd" || candidate.providerId !== descriptor.id) {
       throw new Error("Audio CD provider received a candidate it does not own");
     }
+    const tracks = await ripAudioTracks(candidate.sourceId, workspacePath, signal);
     return {
-      mediaType: "audio_cd" as const,
-      tracks: await ripAudioTracks(candidate.sourceId, workspacePath, signal)
+      source: {
+        id: candidate.sourceId,
+        providerId: descriptor.id,
+        kind: candidate.mediaKind,
+        location: candidate.sourceId
+      },
+      artifacts: tracks.map((track) => ({
+        id: `audio-track-${track.number}`,
+        kind: "audio-track",
+        mediaType: "audio/wav",
+        path: track.path,
+        trackNumber: track.number,
+        attributes: { bytes: track.bytes }
+      }))
     };
   }
 }
