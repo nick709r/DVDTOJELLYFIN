@@ -104,18 +104,38 @@ administrator password.
 - Provide a web dashboard, settings, conversion history, and systemd service
   installation for Linux.
 
-## Coming in version 2.0
+## Coming in Version 2
 
-The next major version is planned to add:
+Version 2 will focus on making TV series DVD archiving as automated and reliable as movie archiving.
 
-- TV show ripping and Jellyfin TV library organization.
-- Radarr integration for managing imported movies.
-- Sonarr integration for managing imported TV episodes.
-- A "Test Eject" button to verify drive ejection behavior from the dashboard/settings.
-- Manual filename/title editing in the dashboard for cases where automatic title detection fails.
+### TV Series DVD Handling
+- Automatic episode detection
+- Improved handling of multi-episode discs
+- Season and episode organization
+- Jellyfin-ready TV library structure
+- Reduced manual renaming and sorting
 
-These are planned features only and are not included in AutoDisc 1.6.5. No version
-2.0 release date has been announced.
+### Multi-Drive Support
+- Multiple optical drives
+- Drive monitoring
+- Queue management for large collections
+
+### Statistics & Monitoring
+- Processing statistics
+- Success and failure tracking
+- Storage usage metrics
+- Optical drive health information
+
+### Quality of Life Improvements
+- Light theme
+- First-run setup wizard
+- Discord, email, and Home Assistant notifications
+- Improved diagnostics and error reporting
+
+### Ongoing Improvements
+- Code cleanup and refactoring
+- Performance optimizations
+- Better logging and maintainability
 
 ## Design and behavior
 
@@ -169,7 +189,7 @@ On a fresh Lubuntu/Ubuntu or Debian install, download the current `main` source
 and run the installer with this one-line command:
 
 ```sh
-sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output /tmp/DVDTOJELLYFIN-main.tar.gz && tar -xzf /tmp/DVDTOJELLYFIN-main.tar.gz -C /tmp && sudo /tmp/DVDTOJELLYFIN-main/install.sh
+sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --outp[...]
 ```
 
 The installer configures the signed NodeSource apt repository and installs
@@ -333,7 +353,7 @@ sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
 Then run the same one-line install/update command from the deployment section:
 
 ```sh
-sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output /tmp/DVDTOJELLYFIN-main.tar.gz && tar -xzf /tmp/DVDTOJELLYFIN-main.tar.gz -C /tmp && sudo /tmp/DVDTOJELLYFIN-main/install.sh
+sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --outp[...]
 ```
 
 The installer starts the service and updater watcher when it finishes. Confirm
