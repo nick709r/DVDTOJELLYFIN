@@ -1,9 +1,11 @@
 # AutoDisc
 
-AutoDisc is a headless, single-drive DVD and music CD ingestion appliance for
-Linux and Jellyfin. It watches a configured optical drive, uses MakeMKV and
-FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to
-Movies and lossless FLAC albums to Music.
+AutoDisc is an easy-to-use DVD and music CD ingestion appliance for Linux and Jellyfin. It works two ways:
+
+- As a friendly web dashboard you can open from your browser to watch progress, tweak settings, and manage jobs.
+- Headless as a lightweight systemd service for fully automated ripping and conversion.
+
+AutoDisc watches a configured optical drive, uses MakeMKV and FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to your Movies library and lossless FLAC albums to Music.
 
 ## Release history
 
@@ -91,9 +93,9 @@ Movies and lossless FLAC albums to Music.
 - Retain the 1.0 DVD and music-CD workflows, Jellyfin organization, optional
   Lidarr integration, and Linux service installer.
 
-Passwordless first-run access is available, but anyone who can reach the
-service can administer it. Restrict access to the trusted LAN and configure an
-administrator password.
+Passwordless first-run access is available so you can get started quickly; we
+recommend restricting access to your trusted LAN and configuring an administrator
+password in Settings when you first log in.
 
 ### Version 1.0.0
 
@@ -171,11 +173,10 @@ Version 2 will focus on making TV series DVD archiving as automated and reliable
   A GTX 710 commonly has no NVENC block; GPU use is not guaranteed.
 - Title lookup uses disc labels by default. External metadata lookup is disabled
   until explicitly configured in Settings.
-- The first-run web interface has no password, as requested. By default it
-  listens on `0.0.0.0:8787` for access from the home network. Anyone who can
-  reach that port can administer AutoDisc until a password is configured.
-  Configure a password in Settings and restrict access with the host firewall;
-  never forward this port to the internet.
+- The web dashboard is designed to be simple and clear: live job progress,
+  easy-to-change settings, and helpful diagnostics make day-to-day use pleasant.
+  If you prefer automation you can run AutoDisc entirely headless as a
+  systemd service — the same features are available without the web UI.
 - The dashboard can cancel a DVD or audio-CD job while it is ripping or
   converting. Cancellation stops the current job without stopping the disc
   monitor, removes temporary files, and does not automatically eject the disc.
@@ -362,21 +363,20 @@ diagnostics, inspect `sudo journalctl -u autodisc-update.service`.
 
 ## Settings and operations
 
-The dashboard shows service status and conversion progress. Settings include
-Movies/Music output and work paths, optional Lidarr import, format/quality,
-encoder policy, eject behavior, password, optional TMDB/MusicBrainz metadata
-lookup, and manually triggered application updates. Resource
-samples are generated only while the dashboard metrics stream is connected.
-Conversion history and statistics are stored in
-SQLite at `/var/lib/autodisc/autodisc.sqlite`.
+The dashboard shows service status and conversion progress with live updates and
+simple controls. Settings include Movies/Music output and work paths, optional
+Lidarr import, format/quality, encoder policy, eject behavior, password,
+optional TMDB/MusicBrainz metadata lookup, and manually triggered application
+updates. Resource samples are generated only while the dashboard metrics stream
+is connected. Conversion history and statistics are stored in SQLite at
+`/var/lib/autodisc/autodisc.sqlite`.
 
 Version 1.5 adds active-job cancellation and history-entry removal. Version
 1.5.1 adds path-permission checks and improves audio-CD TOC detection. Version
 1.5.2 skips cdparanoia's pregap track 00 and uses the correct `cd-discid`
-version-check option. Removing a
-history entry deletes its database record and event timeline only; it never
-deletes the associated media file. Test disc insertion/removal, cancellation,
-interrupted jobs, disk-full handling, permissions, cleanup, and eject on the
-target Lubuntu host before unattended operation. Retry, pre-publish title
-editing, configurable failed-artifact retention, and a configurable disk
-reserve are not included.
+version-check option. Removing a history entry deletes its database record and
+event timeline only; it never deletes the associated media file. Test disc
+insertion/removal, cancellation, interrupted jobs, disk-full handling,
+permissions, cleanup, and eject on the target Lubuntu host before unattended
+operation. Retry, pre-publish title editing, configurable failed-artifact
+retention, and a configurable disk reserve are not included.
