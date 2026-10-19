@@ -7,6 +7,45 @@ AutoDisc is an easy-to-use DVD and music CD ingestion appliance for Linux and Je
 
 AutoDisc watches a configured optical drive, uses MakeMKV and FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to your Movies library and lossless FLAC albums to Music.
 
+## Quick start
+
+Get AutoDisc up and running in a few minutes:
+
+1. Install on a fresh Lubuntu/Ubuntu or Debian host (this installs Node, FFmpeg, cdparanoia, and helper tools):
+
+```sh
+sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
+  curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output autodisc.tar.gz && \
+  tar xzf autodisc.tar.gz && cd DVDTOJELLYFIN-main && sudo ./installer.sh
+```
+
+2. (Optional) Install MakeMKV separately to enable DVD ripping — AutoDisc does not bundle MakeMKV. When MakeMKV is installed and `makemkvcon` is on the service PATH, DVD ripping is enabled.
+
+3. Open the web dashboard from another device on your LAN:
+
+   - Find the server LAN IP with `hostname -I` and open `http://<server-lan-ip>:8787`.
+   - The first-run dashboard has no password so you can get started quickly; set an administrator password in Settings after you confirm access is restricted to your trusted LAN.
+
+4. Configure your Movies and Music folders, work directory, and optical drive in Settings. Test with a known DVD and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
+
+Quick commands:
+
+- Check service status and logs:
+
+```sh
+sudo systemctl status autodisc.service
+sudo journalctl -u autodisc.service -f
+```
+
+- Stop the service and make a backup of the database:
+
+```sh
+sudo systemctl stop autodisc.service
+sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
+```
+
+That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
+
 ## Release history
 
 ### Version 1.6.5
@@ -231,7 +270,7 @@ works without it.
    `sudo systemctl restart autodisc.service`. If a firewall is enabled, allow
    TCP port 8787 only from your home subnet. Because the initial interface has
    no password, restrict network access and configure a password promptly. Do
-   not forward this port from the internet.
+   not forward this port to the internet.
 
    The service must have read/write access to the Movies and work directories
    and access to the configured optical drive. In direct-to-Jellyfin music mode,
