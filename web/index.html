@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>AutoDisc</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" aria-label="AutoDisc dashboard"><img src="/autodisc-logo.png" alt="AutoDisc — Analyze, Archive, Organize"></a>
+      <nav aria-label="Main navigation">
+        <button class="nav-link active" data-page="dashboard">Dashboard</button>
+        <button class="nav-link" data-page="history">History</button>
+        <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
+        <button class="nav-link" data-page="episode-matching">Episode Matching</button>
+        <button class="nav-link" data-page="tv-reviews">Review Centre</button>
+        <button class="nav-link" data-page="tv-validation">TV Validation</button>
+        <button class="nav-link" data-page="statistics">Statistics</button>
+        <button class="nav-link" data-page="settings">Settings</button>
+      </nav>
+      <div class="sidebar-footer"><span class="pulse"></span> Disc monitor active</div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">DISC INGESTION APPLIANCE</p><h1 id="page-title">Dashboard</h1></div>
+        <div class="top-actions"><span id="auth-state" class="muted"></span><button id="theme-toggle" class="button secondary" type="button" aria-pressed="false">Light mode</button><button id="logout" class="button secondary hidden">Log out</button></div>
+      </header>
+      <div id="notice" class="notice hidden" role="status"></div>
+      <section id="page-dashboard" class="page">
+        <div id="warning" class="warning hidden"></div>
+        <div class="stat-grid">
+          <article class="card stat"><span class="muted">Discs processed</span><strong id="total-count">0</strong></article>
+          <article class="card stat"><span class="muted">Successful</span><strong id="success-count">0</strong></article>
+          <article class="card stat"><span class="muted">Failures</span><strong id="failure-count">0</strong></article>
+          <article class="card stat"><span class="muted">Average processing</span><strong id="average-duration">—</strong></article>
+        </div>
+        <div class="dashboard-grid">
+          <article class="card current-card">
+            <div class="card-heading"><div><p class="eyebrow">LIVE JOB</p><h2 id="job-title">Waiting for a DVD</h2></div><span id="job-badge" class="badge idle">Idle</span></div>
+            <p id="job-detail" class="muted">Insert a video DVD to begin.</p>
+            <button id="cancel-job" class="button danger hidden" type="button">Cancel job</button>
+            <p id="cancel-status" class="inline-info hidden" role="status"></p>
+            <div class="progress-track"><div id="progress-bar"></div></div>
+            <div class="progress-meta"><span id="progress-label">Waiting</span><span id="encoder-label">Encoder —</span></div>
+            <div class="stage-row" id="stage-row">
+              <span data-stage="ripping">Rip</span><i></i><span data-stage="converting">Convert</span><i></i><span data-stage="publishing">Move</span>
+            </div>
+          </article>
+          <article class="card system-card">
+            <div class="card-heading"><div><p class="eyebrow">SYSTEM</p><h2>Live resources</h2></div><span class="live-dot">LIVE</span></div>
+            <div class="resource"><span>CPU</span><div class="mini-track"><i id="cpu-bar"></i></div><b id="cpu-value">—</b></div>
+            <div class="resource"><span>Memory</span><div class="mini-track"><i id="memory-bar"></i></div><b id="memory-value">—</b></div>
+            <div class="resource"><span>GPU</span><div class="mini-track"><i id="gpu-bar"></i></div><b id="gpu-value">Unavailable</b></div>
+            <div class="resource"><span>Work free</span><b id="work-free">—</b></div>
+            <div class="resource"><span>Movies free</span><b id="movies-free">—</b></div>
+            <div class="resource"><span>Music free</span><b id="music-free">—</b></div>
+            <p class="hint">Metrics pause when this dashboard is closed.</p>
+          </article>
+        </div>
+        <article class="card chart-card">
+          <div class="card-heading"><div><p class="eyebrow">ACTIVITY</p><h2>Conversion history</h2></div><div class="segmented"><button class="range active" data-range="7d">7 days</button><button class="range" data-range="30d">30 days</button></div></div>
+          <div id="chart" class="chart" aria-label="Successful and failed conversions by day"></div>
+        </article>
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">RECENT</p><h2>Latest discs</h2></div><button class="text-button" data-page="history">View history →</button></div><div id="recent-list"></div></article>
+        <article class="card tv-intelligence-card">
+          <div class="card-heading"><div><p class="eyebrow">VERSION 2</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-analysis">View reports →</button></div>
+          <div id="tv-dashboard-stats" class="tv-stat-grid"></div>
+          <div class="card-heading"><h3>TV disc trend · 30 days</h3></div><div id="tv-trend" class="tv-trend"></div>
+        </article>
+        <article class="card tv-intelligence-card">
+          <div class="card-heading"><div><p class="eyebrow">TV METADATA</p><h2>Lookup activity</h2></div><button class="text-button" data-page="settings">Configure providers →</button></div>
+          <div id="tv-metadata-dashboard-stats" class="tv-stat-grid"></div>
+          <p id="tv-metadata-dashboard-status" class="hint" role="status">Loading metadata provider metrics…</p>
+          <div id="tv-metadata-provider-activity" class="tv-metadata-provider-activity"></div>
+        </article>
+      </section>
+      <section id="page-history" class="page hidden">
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">LIBRARY</p><h2>Conversion history</h2></div><button id="refresh-history" class="button secondary">Refresh</button></div><div id="history-list"></div></article>
+      </section>
+      <section id="page-tv-analysis" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>Recent TV analysis</h2></div>
+            <div class="form-row compact">
+              <label>Confidence<select id="tv-analysis-confidence"><option value="">All confidence</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+              <label>Review status<select id="tv-analysis-state"><option value="">All statuses</option><option value="awaiting-review">Review required</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="ready">Ready</option></select></label>
+            </div>
+          </div>
+          <div id="tv-analysis-list"></div>
+        </article>
+        <article id="tv-analysis-detail" class="card tv-detail hidden"></article>
+      </section>
+      <section id="page-episode-matching" class="page hidden">
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EXPLAINABLE MATCHING</p><h2>Episode suggestions</h2></div></div>
+          <p class="hint">Confidence scores rank available evidence; they are not calibrated probabilities. Unknown is preferred to an unsupported assignment.</p>
+          <div id="tv-matching-list"></div>
+        </article>
+      </section>
+      <section id="page-tv-reviews" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">VERSION 2 OPERATIONS</p><h2>Review Centre</h2></div>
+            <button id="refresh-reviews" class="button secondary" type="button">Refresh</button>
+          </div>
+          <div id="review-summary" class="tv-stat-grid"></div>
+          <div class="review-filters">
+            <label>Category<select id="review-category"><option value="">All categories</option><option value="tv_review">TV review</option><option value="cd_review">CD review</option><option value="metadata_issue">Metadata</option><option value="processing_failure">Processing failure</option><option value="folder_creation_failure">Folder creation</option><option value="disc_read_error">Disc read error</option><option value="validation_warning">Validation warning</option><option value="configuration_issue">Configuration</option><option value="system_warning">System warning</option></select></label>
+            <label>Severity<select id="review-severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+            <label>Status<select id="review-status"><option value="active">Active</option><option value="retrying">Retrying</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option><option value="">All statuses</option></select></label>
+            <label>Created from<input id="review-from" type="date"></label>
+            <label>Created to<input id="review-to" type="date"></label>
+          </div>
+          <div id="review-list"></div>
+        </article>
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">TV WORKFLOW</p><h2>Episode plans awaiting review</h2></div>
+          <label>Show<select id="tv-review-filter"><option value="awaiting-review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All plans</option></select></label>
+        </div><div id="tv-review-list"></div></article>
+      </section>
+      <section id="page-tv-validation" class="page hidden">
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EVIDENCE & DATASETS</p><h2>TV validation</h2></div>
+          <button id="export-tv-validation" class="button secondary" type="button">Export validation dataset</button>
+        </div>
+          <div id="tv-validation-summary" class="tv-stat-grid"></div>
+          <div id="tv-validation-insights" class="tv-stat-grid"></div>
+          <p class="hint">Labeled validation accuracy and correction rates describe stored, labeled cases only. They are not claims about all DVD collections.</p>
+          <div id="tv-validation-list"></div>
+        </article>
+        <article id="tv-validation-detail" class="card tv-detail hidden"></article>
+      </section>
+      <section id="page-statistics" class="page hidden">
+        <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
+        <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
+          <p class="hint">TV plans remain analysis-only. No files are assigned, renamed, moved, or published by these reports.</p>
+        </article>
+      </section>
+      <section id="page-settings" class="page hidden">
+        <form id="settings-form" class="settings-layout">
+          <article class="card settings-card update-card"><p class="eyebrow">SOFTWARE</p><h2>AutoDisc updates</h2>
+            <p id="update-version" class="inline-info">Checking installed version…</p>
+            <button id="check-updates" class="button secondary" type="button">Check for updates</button>
+            <p id="update-status" class="inline-info" role="status">Updates are checked only when you click the button. A newer version is applied automatically.</p>
+            <section class="release-notes" aria-live="polite">
+              <div class="card-heading"><h3 id="release-notes-title">Latest release notes</h3><a id="release-notes-link" class="hidden" target="_blank" rel="noopener noreferrer">View on GitHub</a></div>
+              <pre id="release-notes-body">Click “Check for updates” to load notes for the latest version.</pre>
+            </section>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
+            <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
+            <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
+            <label>TV Output Folder (TV Root)<input name="tvRootDir" required placeholder="/srv/jellyfin/TV"></label>
+            <p class="hint">The TV root is created and validated when checked or saved. TV publishing and automatic Series/Season folder creation are not enabled.</p>
+            <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
+            <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
+            <button id="check-paths" class="button secondary" type="button">Check paths and permissions</button>
+            <div id="paths-status" class="path-check-list hidden" role="status" aria-live="polite"></div>
+            <div class="form-row"><label>Output format<select name="format"><option value="mp4">MP4</option><option value="mkv">MKV</option></select></label><label>Quality <small>(18 = higher quality)</small><input name="quality" type="number" min="18" max="30" step="1"></label></div>
+            <label>Encoding preset<select name="preset"><option value="ultrafast">Ultrafast — lower CPU, larger file</option><option value="veryfast">Very fast</option><option value="medium">Medium — slower, more efficient</option></select></label>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">ENCODING</p><h2>Encoder & behavior</h2>
+            <label>Encoder preference<select name="encoder"><option value="auto">Automatic — prefer NVIDIA</option><option value="nvidia">NVIDIA NVENC (fallback enabled)</option><option value="software">Software (libx264)</option></select></label>
+            <label class="check"><input name="autoEject" type="checkbox"> Eject disc after successful conversion</label>
+            <div id="encoder-capability" class="inline-info">Checking FFmpeg encoders…</div>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">TITLE MATCHING</p><h2>Optional online metadata</h2>
+            <label class="check"><input name="metadataEnabled" type="checkbox"> Enable TMDB title lookup</label>
+            <label>TMDB API key<input name="metadataApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key"></label>
+            <label class="check"><input name="clearMetadataKey" type="checkbox"> Clear saved API key</label>
+            <p id="metadata-key-status" class="inline-info"></p>
+            <p class="hint">Lookup is off by default. Disc labels are sent to TMDB only when enabled and a key is configured.</p>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">MUSIC CDS</p><h2>Album details</h2>
+            <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
+            <label>Contact email for MusicBrainz<input name="musicBrainzContactEmail" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com (optional)"></label>
+            <p class="hint">MusicBrainz read-only lookups do not require an API key. AutoDisc identifies itself with a User-Agent; adding a contact email helps MusicBrainz reach you if there is an issue.</p>
+            <p class="hint">When enabled, a successful automatic match continues without interruption. If no usable match is found, the CD job waits for you to enter a release ID or provide album and track names in the dashboard. With lookup disabled, CDs keep processing unattended with generic track names.</p>
+            <p class="hint">MusicBrainz provides album and track names for the FLAC tags and filenames. Lidarr needs these details to identify and categorize albums.</p>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">LIBRARY MANAGEMENT</p><h2>Lidarr import</h2>
+            <label class="check"><input name="lidarrEnabled" type="checkbox"> Import named music albums through Lidarr</label>
+            <label>Lidarr URL<input name="lidarrUrl" type="url" required placeholder="http://127.0.0.1:8686"></label>
+            <label>Lidarr API key<input name="lidarrApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key"></label>
+            <label class="check"><input name="clearLidarrApiKey" type="checkbox"> Clear saved Lidarr API key</label>
+            <p id="lidarr-key-status" class="inline-info"></p>
+            <label>Lidarr downloads/import folder<input name="lidarrImportDir" required placeholder="/var/cache/autodisc/lidarr-import"></label>
+            <button id="test-lidarr" class="button secondary" type="button">Test Lidarr connection</button>
+            <p id="lidarr-status" class="inline-info" role="status"></p>
+            <p class="hint">Set this to the shared downloads/import folder that Lidarr can read; AutoDisc creates an Artist - Album folder with numbered, tagged FLAC tracks, then asks Lidarr to match and move them into its library. If Lidarr runs in Docker, use the path as mounted inside the Lidarr container and make sure AutoDisc can access that same path. Add the artist and album to Lidarr and enable MusicBrainz lookup. The Jellyfin Music folder must match Lidarr's library root.</p>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">VERSION 2 · TELEVISION</p><h2>TV Processing</h2>
+            <label class="check"><input name="tvDetectionEnabled" type="checkbox"> Enable TV detection and analysis</label>
+            <label class="check"><input name="tvValidationLoggingEnabled" type="checkbox"> Capture complete analysis and matching evidence</label>
+            <p class="hint">Disabling TV detection prevents TV analysis. Discs matching confirmed or uncertain TV criteria remain held for review rather than entering movie publishing. Disabling evidence capture does not disable TV analysis or review plans.</p>
+            <div class="policy-panel">
+              <b>Current matching policy (read-only)</b>
+              <p>TV sensitivity: conservative, fixed by the V2 policy.</p>
+              <p>High confidence: ≥ 0.90 · Medium: ≥ 0.72 · Below 0.72: review required.</p>
+              <p>Episode match minimum confidence: 0.72 · Ambiguity margin: 0.12.</p>
+              <p>Low-confidence and ambiguous/multipart matches remain review-gated. User overrides are enabled and audited.</p>
+              <p>Threshold editing is intentionally locked until calibration against a representative real-disc dataset; displayed scores are evidence rankings, not probabilities.</p>
+            </div>
+          </article>
+          <article class="card settings-card tv-metadata-settings">
+            <p class="eyebrow">VERSION 2 · PROVIDERS</p><h2>TV Metadata</h2>
+            <p class="hint">When enabled, TV analysis looks up series and episode candidates using the selected providers. Results inform suggestions only; no episodes are automatically assigned or published.</p>
+            <label class="check"><input name="tvMetadataLookupEnabled" type="checkbox"> Enable TV metadata lookup during analysis</label>
+            <div id="tv-metadata-providers" class="tv-metadata-providers" aria-live="polite">Loading registered metadata providers…</div>
+            <div class="form-row">
+              <label>Preferred provider<select name="tvMetadataPreferredProviderId"></select></label>
+              <label>Fallback provider<select name="tvMetadataFallbackProviderId"></select></label>
+            </div>
+            <div class="form-row">
+              <label class="check"><input name="tvMetadataCacheEnabled" type="checkbox"> Cache metadata lookup results</label>
+              <label>Cache duration (hours)<input name="tvMetadataCacheDurationHours" type="number" min="1" max="8760" step="1"></label>
+            </div>
+            <div class="tv-actions">
+              <button id="refresh-tv-metadata-providers" class="button secondary" type="button">Refresh provider metadata</button>
+              <button id="refresh-tv-metadata-cache" class="button secondary" type="button">Refresh metadata cache</button>
+              <button id="clear-tv-metadata-cache" class="button secondary" type="button">Clear metadata cache</button>
+            </div>
+            <p id="tv-metadata-cache-status" class="inline-info" role="status"></p>
+            <div class="policy-panel">
+              <b>Current TV matching policy (read-only)</b>
+              <div id="tv-metadata-matching-policy">Loading the current policy…</div>
+            </div>
+          </article>
+          <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
+            <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
+            <p class="hint">Username is <b>admin</b>. A password must be at least 12 characters. Without a password, anyone who can reach the service can administer it. Never expose it to the internet.</p>
+            <label>Logging level<select name="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
+          </article>
+          <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>
+        </form>
+      </section>
+    </main>
+    <dialog id="login-dialog">
+      <form id="login-form" method="dialog">
+        <p class="eyebrow">ADMINISTRATION</p><h2>Sign in to AutoDisc</h2>
+        <p class="muted">Use the admin account to manage the appliance.</p>
+        <label>Username<input name="username" value="admin" autocomplete="username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+        <p id="login-error" class="error-text"></p>
+        <button class="button primary" type="submit">Sign in</button>
+      </form>
+    </dialog>
+    <dialog id="music-metadata-dialog" class="metadata-dialog">
+      <form id="music-metadata-form">
+        <p class="eyebrow">MANUAL MUSIC DETAILS</p><h2>MusicBrainz could not identify this CD</h2>
+        <p id="music-metadata-disc" class="muted"></p>
+        <label>MusicBrainz release ID<input name="releaseId" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+        <button id="lookup-musicbrainz-release" class="button secondary" type="button">Look up release ID</button>
+        <p id="music-metadata-status" class="inline-info" role="status">Enter a release ID to load matching album and track details, or fill them in below.</p>
+        <input name="source" type="hidden" value="manual">
+        <div class="form-row">
+          <label>Artist<input name="artist" maxlength="200" required></label>
+          <label>Album<input name="album" maxlength="200" required></label>
+        </div>
+        <label>Year<input name="year" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="Optional"></label>
+        <div id="manual-track-fields" class="manual-track-fields"></div>
+        <div class="metadata-actions">
+          <button class="button primary" type="submit">Save metadata and continue</button>
+          <button id="cancel-metadata-job" class="button danger" type="button">Cancel disc job</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

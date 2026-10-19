@@ -1,0 +1,115 @@
+import { mkdir, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { ProcessFailure, runProcess } from "./process.js";
+import { log } from "./logger.js";
+import { musicBrainzDiscIdFromToc } from "./musicbrainz-discid.js";
+
+const cdparanoia = process.env.CDPARANOIA_COMMAND ?? "cdparanoia";
+const cdDiscId = process.env.CD_DISCID_COMMAND ?? "cd-discid";
+
+export interface AudioDisc {
+  trackNumbers: number[];
+  discId: string | null;
+  fingerprint: string;
+}
+
+export interface AudioTrackFile {
+  number: number;
+  path: string;
+  bytes: number;
+}
+
+export function parseRippedAudioTrackNumber(filename: string): number | null {
+  const match = /^track(\d+)\.cdda\.wav$/i.exec(filename);
+  if (!match) return null;
+  const number = Number(match[1]);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+export function parseAudioTrackNumbers(output: string): number[] {
+  return [...new Set(output.split(/\r?\n/)
+    .map((line) => audioTrackNumber(line))
+    .filter((track): track is number => track !== null))]
+    .sort((left, right) => left - right);
+}
+
+function audioTrackNumber(line: string): number | null {
+  const trackStyle = /^\s*track\s+(\d+)\s*:/i.exec(line);
+  const tableStyle = /^\s*(\d+)\.\s+\d+\s+\[\d{1,2}:\d{2}\.\d{2}\]/.exec(line);
+  const number = Number(trackStyle?.[1] ?? tableStyle?.[1]);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+export async function inspectAudioCd(device: string, signal?: AbortSignal): Promise<AudioDisc | null> {
+  let result;
+  try {
+    result = await runProcess(cdparanoia, ["-Q", "-d", device], {
+      timeoutMs: 30_000,
+      ...(signal ? { signal } : {})
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const missingTool = error instanceof ProcessFailure && error.message.includes("ENOENT");
+    log(missingTool ? "warn" : "info", "audio-cd",
+      missingTool ? "cdparanoia is unavailable; audio CD detection is disabled" : "Could not inspect the disc as an audio CD", {
+      error: error instanceof Error ? error.message : "cdparanoia failed"
+    });
+    return null;
+  }
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const trackNumbers = parseAudioTrackNumbers(output);
+  if (trackNumbers.length === 0) {
+    log("debug", "audio-cd", "No audio tracks found in cdparanoia table-of-contents output");
+    return null;
+  }
+
+  let discId: string | null = null;
+  try {
+    const identity = await runProcess(cdDiscId, ["--musicbrainz", device], {
+      timeoutMs: 15_000,
+      ...(signal ? { signal } : {})
+    });
+    discId = musicBrainzDiscIdFromToc(identity.stdout, trackNumbers.length);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    log("warn", "audio-cd", "Could not read CD disc ID; using the detected table of contents", {
+      errorType: error instanceof Error ? error.name : "unknown"
+    });
+  }
+
+  const toc = output.split(/\r?\n/).filter((line) => audioTrackNumber(line) !== null).join("\n");
+  const fingerprint = createHash("sha256").update(discId ?? toc).digest("hex");
+  return { trackNumbers, discId, fingerprint };
+}
+
+export async function ripAudioTracks(
+  device: string,
+  workDir: string,
+  signal?: AbortSignal
+): Promise<AudioTrackFile[]> {
+  const outputDir = join(workDir, "audio-tracks");
+  await mkdir(outputDir, { recursive: true, mode: 0o750 });
+  await runProcess(cdparanoia, ["-B", "-d", device], {
+    timeoutMs: 8 * 60 * 60 * 1000,
+    cwd: outputDir,
+    ...(signal ? { signal } : {})
+  });
+  const entries = await readdir(outputDir);
+  if (entries.some((name) => /^track00\.cdda\.wav$/i.test(name))) {
+    log("info", "audio-cd", "Ignoring cdparanoia track 00 pregap file; disc TOC tracks start at 1");
+  }
+  const tracks = await Promise.all(entries
+    .map((name) => {
+      const number = parseRippedAudioTrackNumber(name);
+      return number === null ? null : { number, path: join(outputDir, name) };
+    })
+    .filter((track): track is { number: number; path: string } => track !== null)
+    .map(async (track) => ({ ...track, bytes: (await stat(track.path)).size })));
+  tracks.sort((left, right) => left.number - right.number);
+  if (tracks.length === 0 || tracks.some((track) => track.bytes < 1024)) {
+    throw new Error("CD paranoia did not produce valid audio track files");
+  }
+  return tracks;
+}

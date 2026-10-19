@@ -1,0 +1,23 @@
+[Unit]
+Description=Apply a requested AutoDisc update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/autodisc-update
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/opt /etc/systemd/system /usr/local/libexec /var/lib/autodisc
+TimeoutStartSec=30min
+TimeoutStopSec=120s

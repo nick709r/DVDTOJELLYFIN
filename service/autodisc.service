@@ -1,0 +1,42 @@
+[Unit]
+Description=AutoDisc DVD and music CD ingestion appliance
+Documentation=file:/opt/autodisc/README.md
+After=network.target systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+User=autodisc
+Group=autodisc
+SupplementaryGroups=cdrom video
+EnvironmentFile=-/etc/default/autodisc
+Environment=NODE_ENV=production
+Environment=HOME=/var/lib/autodisc
+Environment=PORT=8787
+Environment=DATABASE_PATH=/var/lib/autodisc/autodisc.sqlite
+Environment=WORK_DIR=/var/cache/autodisc
+Environment=MOVIES_DIR=/srv/jellyfin/Movies
+Environment=TV_DIR=/srv/jellyfin/TV
+Environment=OPTICAL_DEVICE=/dev/sr0
+WorkingDirectory=/opt/autodisc
+ExecStart=/usr/bin/node /opt/autodisc/dist/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+KillSignal=SIGTERM
+UMask=0027
+StateDirectory=autodisc
+CacheDirectory=autodisc
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
