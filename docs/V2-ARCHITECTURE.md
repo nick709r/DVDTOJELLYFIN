@@ -1,7 +1,7 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** v2 foundation in progress. The target design and migration gates
-remain ahead of the implementation; current coverage is summarized below.
+**Status:** v2 foundation in progress; initial TV analysis engine implemented.
+The target design and remaining migration gates are summarized below.
 
 **Implementation progress:** The source-provider seam now uses open media
 domain models, and source candidates dispatch through a registered
@@ -11,10 +11,14 @@ health checks, candidate ranking, and fallback results. SQLite connection,
 migrations, and settings/job/history/event/recovery repositories are separated
 behind repository contracts; `db.ts` remains a compatibility facade for
 non-workflow callers. DVD and audio-CD workflows use the injected job
-coordinator for lifecycle state and cancellation context. TV-series domain
-types are present, but no TV workflow or TV metadata provider is implemented.
+coordinator for lifecycle state and cancellation context. The analysis-only
+`TvAnalysisEngine` ranks series, seasons, and episode candidates from metadata,
+runtime, disc structure, history, and corrections; it produces explainable
+reports and makes no assignments. It is not yet wired into DVD processing.
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for the current diagram, gate status, extension points, and feature blockers.
+See [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md) for its input, scoring,
+report, and remaining integration work.
 
 ## Current implementation shape
 
@@ -33,6 +37,15 @@ flowchart LR
   MetadataResolver --> MetadataRegistry[MetadataProviderRegistry]
   MetadataRegistry --> MetadataProviders[TMDB movie / MusicBrainz album]
   MetadataResolver --> Ranked[Ranked MetadataResult + fallback]
+  Manifest[Media manifest]
+  Metadata[Normalized TV metadata candidates]
+  History[Historical disc evidence]
+  Corrections[Prior user corrections]
+  Manifest --> TvAnalysis[TvAnalysisEngine - analysis only]
+  Metadata --> TvAnalysis
+  History --> TvAnalysis
+  Corrections --> TvAnalysis
+  TvAnalysis --> TvReport[Explainable TV Disc Analysis Report]
 ```
 
 The media source coordinator does not inspect media-kind-specific fields.

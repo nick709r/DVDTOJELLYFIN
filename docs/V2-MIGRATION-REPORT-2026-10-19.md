@@ -61,7 +61,7 @@ domain behavior.
 | Metadata providers | **Foundation complete; configuration partial** | Added provider contract, health type, registry, resolver, title-similarity/popularity confidence scoring, ranking, fallback and per-provider failure reporting. TMDB movie and MusicBrainz album adapters are registered and injected into workflows. |
 | Persistence/repositories | **SQLite adapter split complete; compatibility paths remain** | Separated connection setup, migrations, and settings/job/history/event/recovery SQLite repositories. Added repository interfaces and test coverage for old-schema upgrades. `db.ts` remains a compatibility façade for legacy API callers and startup settings access; monitor, recovery, and workflows use injected repository services. |
 | Job coordination | **Foundation integrated** | Added job context, steps, results/failures, lifecycle status/event persistence, progress updates, terminal handling, and cancellation-control delegation. DVD/CD workflows consume the injected coordinator. Serial operation is unchanged. |
-| TV-series domain | **Models only** | Added series, season, episode, disc-analysis, episode-candidate, episode-match, and confidence types covering multi-disc context, specials, bonus/commentary items, alternate releases, duplicates, and manual corrections. |
+| TV-series analysis | **Analysis engine implemented; not integrated** | Added a deterministic `TvAnalysisEngine` and report model combining normalized metadata, runtimes, disc structure, matching history, and prior corrections. Reports rank candidates, classify likely extras/commentary/specials, explain evidence, and recommend review; they do not assign episodes. |
 | Durable events, queue, platform and drive abstraction | **Not started** | Existing process-local events and Linux monitor remain; one active job and one configured optical device are still enforced. |
 
 ## Provider extension points
@@ -81,14 +81,17 @@ domain behavior.
   existing tables/data and can be replaced behind these interfaces.
 - **Job execution:** use `JobCoordinator` with an injected `JobContext`, typed
   steps/results/failures, and shared repository/event services.
-- **TV analysis:** build on the TV domain types; no provider or workflow
-  implementation is included yet.
+- **TV analysis:** `TvAnalysisEngine` and its explainable report are available
+  as an analysis-only application service. The DVD workflow does not invoke it.
 
 ## Created files
 
 - `src/domain/media.ts`
 - `src/domain/metadata.ts`
 - `src/domain/television.ts`
+- `src/application/tv-analysis-engine.ts`
+- `test/tv-analysis-engine.test.js`
+- `docs/TV-ANALYSIS-ENGINE.md`
 - `src/contracts/metadata-provider.ts`
 - `src/contracts/repositories.ts`
 - `src/contracts/job-control.ts`
@@ -139,19 +142,19 @@ domain behavior.
 Removed unused direct TMDB implementation `src/title.ts`; the production TMDB
 adapter is now `src/providers/metadata/tmdb-movie.ts`.
 
-## Remaining blockers before Advanced TV Series Support
+## Remaining blockers before production TV-series support
 
 1. No TVDB/TMDB-TV/local/user metadata providers, series/episode search
    contracts, or TV-specific provider configuration and health reporting.
 2. The metadata candidate payload is intentionally generic and not yet
    normalized into validated movie/series/season/episode schemas. The existing
    manual MusicBrainz release-ID API remains a direct integration path.
-3. There is no disc-to-episode segmentation/matching workflow, multi-episode
-   title handling, confidence policy for episode matches, or operator
-   correction persistence.
-4. TV domain objects are models only; there are no repositories or migrations
-   for series, seasons, episodes, alternatives, duplicate relationships, or
-   correction history.
+3. The analysis engine is not invoked by DVD processing. Production integration
+   still needs disc-title segmentation, multi-episode title handling, and
+   confidence/review thresholds validated against real disc structures.
+4. There are no repositories or migrations for analysis history, series,
+   seasons, episodes, alternatives, duplicate relationships, or correction
+   history; the engine accepts these as input and persists nothing.
 5. Transform and library publication behavior remains in concrete workflow
    implementations. TV folder templates and library-provider contracts are
    not yet in place.

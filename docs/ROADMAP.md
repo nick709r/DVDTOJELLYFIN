@@ -18,6 +18,10 @@ shared job coordinator. TV-specific behavior, provider-owned configuration,
 drive/platform adapters, and durable queue/event infrastructure remain future
 gates. See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for implementation detail and remaining blockers.
+The first TV feature increment adds a standalone, analysis-only engine that
+combines metadata, runtime, disc structure, historical matches, and corrections
+into an explainable report. It is not wired into DVD processing and does not
+assign or rename episodes; see [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md).
 
 Foundation & Core Improvements
 Codebase Cleanup
