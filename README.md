@@ -147,7 +147,14 @@ password in Settings when you first log in.
 
 ## Coming in Version 2
 
-Version 2 will focus on making TV series DVD archiving as automated and reliable as movie archiving.
+Version 2 will focus on making TV series DVD archiving as automated and reliable as movie archiving. It will also broaden AutoDisc's scope: rather than being Jellyfin-first, AutoDisc v2 aims to be a general automated ripping and media-organization tool that supports Jellyfin, Sonarr, Radarr, Lidarr, and other tooling as optional integrations.
+
+### Expanded scope (coming in v2)
+- General automated ripping and organization: use AutoDisc to rip and organize DVDs and CDs into folders, whether or not you run Jellyfin.
+- Optional integrations: Jellyfin, Sonarr, Radarr, Lidarr, and similar tools will be supported as optional post-processing/import targets.
+- Flexible output: produce files organized for media servers or simple folder-based archives for personal collections.
+- Metadata-first but optional: external metadata lookups and automatic matching will be available but can be disabled for offline or manual workflows.
+- Open to everyone: v2 will emphasize being useful to non-Jellyfin users who want a reliable, automated ripping and organization appliance.
 
 ### TV Series DVD Handling
 - Automatic episode detection
