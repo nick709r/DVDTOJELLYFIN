@@ -12,6 +12,7 @@
       <a class="brand" href="#dashboard" aria-label="AutoDisc dashboard"><img src="/autodisc-logo.png" alt="AutoDisc — Analyze, Archive, Organize"></a>
       <nav aria-label="Main navigation">
         <button class="nav-link active" data-page="dashboard">Dashboard</button>
+        <button class="nav-link" data-page="diagnostics">Disc Diagnostics</button>
         <button class="nav-link" data-page="history">History</button>
         <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
         <button class="nav-link" data-page="episode-matching">Episode Matching</button>
@@ -78,6 +79,23 @@
       </section>
       <section id="page-history" class="page hidden">
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">LIBRARY</p><h2>Conversion history</h2></div><button id="refresh-history" class="button secondary">Refresh</button></div><div id="history-list"></div></article>
+      </section>
+      <section id="page-diagnostics" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">LIVE INSPECTION</p><h2>Disc Diagnostics</h2></div>
+            <div class="diagnostics-controls"><label for="diagnostics-job">Disc or job</label><select id="diagnostics-job"></select><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button></div>
+          </div>
+          <div id="diagnostics-live" class="diagnostics-grid"></div>
+          <p id="diagnostics-live-status" class="hint" role="status">Waiting for disc detection data.</p>
+        </article>
+        <div class="diagnostics-grid">
+          <article class="card"><p class="eyebrow">CLASSIFICATION</p><h2>Scorecard</h2><div id="diagnostics-classification"></div></article>
+          <article class="card"><p class="eyebrow">DISC STRUCTURE</p><h2>Inspected contents</h2><div id="diagnostics-structure"></div></article>
+        </div>
+        <article class="card table-card"><p class="eyebrow">TV ANALYSIS</p><h2>Series and episode evidence</h2><div id="diagnostics-tv"></div></article>
+        <article class="card table-card"><p class="eyebrow">METADATA</p><h2>Provider lookups</h2><div id="diagnostics-metadata"></div></article>
+        <article class="card table-card"><p class="eyebrow">PROCESSING PIPELINE</p><h2>Stage timeline</h2><div id="diagnostics-pipeline"></div></article>
+        <article class="card table-card"><p class="eyebrow">LIVE LOG</p><h2>Job events</h2><div id="diagnostics-log"></div></article>
       </section>
       <section id="page-tv-analysis" class="page hidden">
         <article class="card table-card">

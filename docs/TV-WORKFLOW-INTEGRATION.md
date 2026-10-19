@@ -35,6 +35,11 @@ failures create a deduplicated Review Centre configuration issue. The root is
 not yet used for TV publishing, and no Series/Season subdirectories are
 created.
 
+The Disc Diagnostics page exposes the persisted classification scorecard,
+TV analysis and matching reports, metadata provider outcomes, and per-job
+pipeline events. TV candidate lists and confidence scores are evidence for
+review, not automatic episode assignments or publishing instructions.
+
 ## Workflow diagram
 
 ```mermaid

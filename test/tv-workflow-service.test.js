@@ -126,6 +126,8 @@ test("TV workflow creates analysis, match report, and confidence-gated processin
   assert.equal(result.plan.automaticProcessingSafe, true);
   assert.equal(result.plan.executionEnabled, false);
   assert.equal(result.plan.state, "ready");
+  assert.equal(result.metadataLookups.length, 3);
+  assert.ok(result.metadataLookups.every((lookup) => lookup.durationMs >= 0));
   assert.equal(savedPlans.length, 1);
 });
 

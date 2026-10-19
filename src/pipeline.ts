@@ -4,6 +4,7 @@ import type { JobCoordinator } from "./application/job-coordinator.js";
 import type { MetadataResolver } from "./application/metadata-resolver.js";
 import { isUpdatePending } from "./updater.js";
 import { log } from "./logger.js";
+import { updateCandidateDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
 
 export async function processInsertedDisc(
   sources: MediaSourceCoordinator,
@@ -42,6 +43,14 @@ async function processInsertedDiscCore(
     inspectedSource = await sources.inspect(devicePath, signal);
   } catch (error) {
     if (signal.aborted) throw error;
+    const inspection = sources.inspectionDiagnostics();
+    updateDiscDiagnostics({
+      status: "Source inspection failed",
+      mediaType: "unknown",
+      classification: "Unknown",
+      providersAttempted: inspection?.attemptedProviders ?? [],
+      reason: error instanceof Error ? error.message : "Source inspection failed"
+    });
     jobs.createReview({
       category: "disc_read_error",
       severity: "high",
@@ -49,7 +58,8 @@ async function processInsertedDiscCore(
       description: error instanceof Error ? error.message : "Source inspection failed",
       relatedDrive: devicePath,
       errorDetails: {
-        message: error instanceof Error ? error.message : "Source inspection failed"
+        message: error instanceof Error ? error.message : "Source inspection failed",
+        sourceProvidersAttempted: inspection?.attemptedProviders ?? []
       },
       suggestedActions: [
         { type: "retry", label: "Retry disc detection" },
@@ -69,11 +79,20 @@ async function processInsertedDiscCore(
     return false;
   }
   if (!inspectedSource) {
+    const inspection = sources.inspectionDiagnostics();
+    updateDiscDiagnostics({
+      status: "Unknown media",
+      mediaType: "unknown",
+      classification: "Unknown",
+      providersAttempted: inspection?.attemptedProviders ?? [],
+      reason: `No registered source provider recognized the inserted media. Attempted: ${inspection?.attemptedProviders.join(", ") || "none"}.`
+    });
     log("warn", "disc", "No processing job was created because no source provider recognized the inserted media", {
       devicePath
     });
     return false;
   }
+  updateCandidateDiagnostics(inspectedSource.candidate, sources.inspectionDiagnostics()?.attemptedProviders ?? []);
   const processed = await workflows.process(inspectedSource, {
     sources,
     jobs,
@@ -82,6 +101,10 @@ async function processInsertedDiscCore(
     devicePath
   });
   if (!processed) {
+    updateDiscDiagnostics({
+      status: "Workflow declined the disc",
+      reason: `The ${inspectedSource.candidate.mediaKind} workflow did not start a job.`
+    });
     log("warn", "disc", "The selected media workflow declined processing; no job was created", {
       devicePath,
       sourceId: inspectedSource.candidate.sourceId,

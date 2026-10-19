@@ -8,6 +8,12 @@ export interface MetadataCandidate {
   confidence: MetadataConfidence;
   metadata: Readonly<Record<string, unknown>>;
   identifiers?: Readonly<Record<string, string>>;
+  lookupDiagnostics?: {
+    sourceProviderId: string;
+    fallbackUsed: boolean;
+    cacheHit: boolean;
+    durationMs: number;
+  };
 }
 
 export interface MetadataResult {

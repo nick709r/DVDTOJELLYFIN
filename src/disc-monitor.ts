@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { events } from "./events.js";
+import { beginDiscDiagnostics, clearDiscDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
 import { processInsertedDisc } from "./pipeline.js";
 import type { MediaSourceCoordinator } from "./application/media-source-coordinator.js";
 import type { MetadataResolver } from "./application/metadata-resolver.js";
@@ -42,18 +43,24 @@ async function handleInsert(
   }
   if (seenInsertedDisc || jobs.activeJob()) return;
   checking = true;
+  beginDiscDiagnostics(jobs.getSettings().opticalDevice);
   setRuntimeStatus("inspecting");
   try {
     pendingJob = processInsertedDisc(sources, workflows, jobs, metadata, signal);
     seenInsertedDisc = await pendingJob;
     if (seenInsertedDisc) retryDelayMs = 2000;
     else if (!signal.aborted) {
+      updateDiscDiagnostics({ status: "No processing job started", reason: "See the latest inspection diagnostics; detection will retry." });
       log("warn", `Inspection created no processing job; see the preceding disc diagnostics; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
       scheduleInsert(signal, sources, workflows, metadata, jobs, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } catch (error) {
     if (!signal.aborted) {
+      updateDiscDiagnostics({
+        status: "Inspection failed",
+        reason: error instanceof Error ? error.message : "Disc processing could not start"
+      });
       log("error", `Disc processing could not start: ${error instanceof Error ? error.message : "unknown error"}`);
       scheduleInsert(signal, sources, workflows, metadata, jobs, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
@@ -112,6 +119,7 @@ async function reconcileMediaPresence(
     const confirmedRemoval = mediaWasPresent === true;
     if (confirmedRemoval) {
       jobs.clearInsertedDisc();
+      clearDiscDiagnostics();
       if (seenInsertedDisc && !jobs.activeJob()) {
         seenInsertedDisc = false;
         discRemoved();
@@ -161,6 +169,7 @@ async function monitor(
             mediaWasPresent = false;
             retryDelayMs = 2000;
             jobs.clearInsertedDisc();
+            clearDiscDiagnostics();
             discRemoved();
           }
           if ((path === configuredDevice || path === `${configuredDevice}1`) &&
@@ -176,6 +185,7 @@ async function monitor(
         mediaWasPresent = undefined;
         retryDelayMs = 2000;
         jobs.clearInsertedDisc();
+        clearDiscDiagnostics();
         scheduleInsert(signal, sources, workflows, metadata, jobs);
       };
       events.on("settings", onSettings);

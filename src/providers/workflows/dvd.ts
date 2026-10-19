@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { MediaWorkflow, MediaWorkflowContext } from "../../application/media-workflow-registry.js";
 import type { DiscTitle } from "../../model.js";
 import { events, notifyStatus } from "../../events.js";
+import { getLiveDiscDiagnostics, updateDiscDiagnostics } from "../../diagnostics.js";
 import { convert } from "../../encoding.js";
 import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
@@ -63,6 +64,23 @@ export class DvdWorkflow implements MediaWorkflow {
 
     const id = randomUUID();
     const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal, devicePath);
+    jobs.record(context, "disc-detected", "info", JSON.stringify({
+      driveId: devicePath,
+      devicePath,
+      detectionMethod: getLiveDiscDiagnostics()?.detectionMethod ?? "udev event or optical-media presence monitor",
+      detectedAt: getLiveDiscDiagnostics()?.detectedAt ?? new Date().toISOString(),
+      discType: info.mediaKind,
+      label: info.label || null,
+      fingerprint,
+      sourceProvider: info.providerId,
+      providersAttempted: sources.inspectionDiagnostics?.()?.attemptedProviders ?? [],
+      sourceId: info.sourceId,
+      manifest: info.manifest,
+      titleCount: titles.length,
+      mainTitleCandidate: selectedTitle.id,
+      tvCandidateTitles: titles.filter((title) => title.durationSeconds >= 600 && title.durationSeconds <= 6000),
+      bonusContentCandidates: titles.filter((title) => /\b(?:bonus|extra|featurette|trailer|commentary|interview)\b/i.test(title.name))
+    }));
     const tvAssessment = assessTvDisc({
       sourceId: info.sourceId,
       providerId: info.providerId,
@@ -71,6 +89,10 @@ export class DvdWorkflow implements MediaWorkflow {
       manifest: info.manifest
     });
     const tvEnabled = settings.tvDetectionEnabled !== false;
+    updateDiscDiagnostics({
+      status: "Classification complete",
+      classification: tvAssessment.classification === "movie" ? "Movie" : tvAssessment.classification === "tv" ? "TV" : "Review required"
+    });
     log("info", "disc", `Disc classified as ${tvAssessment.classification === "movie" ? "Movie" : tvAssessment.classification === "tv" ? "TV" : "TV review required"}`, {
       jobId: id,
       sourceId: info.sourceId,
@@ -82,10 +104,15 @@ export class DvdWorkflow implements MediaWorkflow {
       reasons: tvAssessment.reasons,
       tvDetectionEnabled: tvEnabled
     });
+    const scoreWeights = [0.55, 0.2, 0.1, 0.1, 0.05];
     jobs.record(context, "tv-classification", "info", JSON.stringify({
       decision: tvAssessment.classification,
       confidence: tvAssessment.confidence,
-      criteria: tvAssessment.criteria,
+      criteria: tvAssessment.criteria.map((criterion, index) => ({
+        ...criterion,
+        weight: scoreWeights[index] ?? 0,
+        contribution: criterion.passed ? scoreWeights[index] ?? 0 : 0
+      })),
       reasons: tvAssessment.reasons,
       tvDetectionEnabled: tvEnabled
     }));
@@ -120,6 +147,15 @@ export class DvdWorkflow implements MediaWorkflow {
           jobs.update(context, { title: tvResult.plan.series?.title ?? info.label ?? null });
           jobs.record(context, "tv-processing-plan", "info", message);
           jobs.record(context, "tv-review", "warn", tvResult.plan.executionBlocker);
+          jobs.record(context, "metadata-lookups", tvResult.metadataLookups.some((lookup) => lookup.failures.length) ? "warn" : "info",
+            JSON.stringify({
+              lookups: tvResult.metadataLookups
+            }));
+          jobs.record(context, "tv-analysis", "info", JSON.stringify({
+            analysis: tvResult.analysis,
+            matching: tvResult.matches,
+            plan: tvResult.plan
+          }));
           const classificationDetails = {
             classification: tvAssessment.classification,
             confidence: tvAssessment.confidence,

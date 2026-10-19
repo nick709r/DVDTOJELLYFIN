@@ -11,38 +11,74 @@ export interface InspectedMediaSource {
   candidate: MediaSourceCandidate;
 }
 
+export interface MediaSourceInspectionDiagnostics {
+  sourceId: string;
+  attemptedProviders: readonly string[];
+  result: "inspecting" | "recognized" | "unrecognized" | "failed";
+  selectedProvider?: string;
+  failure?: string;
+}
+
 export class MediaSourceCoordinator {
+  private latestInspection: MediaSourceInspectionDiagnostics | null = null;
+
   constructor(private readonly providers: readonly MediaSourceProvider[]) {
     if (!providers.length) throw new Error("At least one media source provider must be registered");
   }
 
   async inspect(sourceId: string, signal?: AbortSignal): Promise<InspectedMediaSource | null> {
     const attemptedProviders: string[] = [];
+    this.latestInspection = { sourceId, attemptedProviders, result: "inspecting" };
     for (const provider of this.providers) {
       if (signal?.aborted) throw signal.reason ?? new Error("Source inspection cancelled");
       attemptedProviders.push(provider.describe().id);
-      const candidate = await provider.inspect(sourceId, signal);
-      if (!candidate) continue;
-      if (typeof candidate !== "object" || candidate === null ||
-        typeof candidate.providerId !== "string" || typeof candidate.sourceId !== "string" ||
-        typeof candidate.mediaKind !== "string" || typeof candidate.label !== "string" ||
-        typeof candidate.manifest !== "object" || candidate.manifest === null ||
-        !Array.isArray(candidate.manifest.items)) {
-        throw new Error(`Source provider ${provider.describe().id} returned an invalid media candidate`);
+      try {
+        const candidate = await provider.inspect(sourceId, signal);
+        if (!candidate) continue;
+        if (typeof candidate !== "object" || candidate === null ||
+          typeof candidate.providerId !== "string" || typeof candidate.sourceId !== "string" ||
+          typeof candidate.mediaKind !== "string" || typeof candidate.label !== "string" ||
+          typeof candidate.manifest !== "object" || candidate.manifest === null ||
+          !Array.isArray(candidate.manifest.items)) {
+          throw new Error(`Source provider ${provider.describe().id} returned an invalid media candidate`);
+        }
+        if (candidate.providerId !== provider.describe().id || candidate.sourceId !== sourceId) {
+          throw new Error(`Source provider ${provider.describe().id} returned a candidate with mismatched identity`);
+        }
+        if (!candidate.mediaKind || candidate.manifest.mediaKind !== candidate.mediaKind) {
+          throw new Error(`Source provider ${provider.describe().id} returned an invalid media manifest`);
+        }
+        this.latestInspection = {
+          sourceId,
+          attemptedProviders: [...attemptedProviders],
+          result: "recognized",
+          selectedProvider: candidate.providerId
+        };
+        return { provider, candidate };
+      } catch (error) {
+        this.latestInspection = {
+          sourceId,
+          attemptedProviders: [...attemptedProviders],
+          result: "failed",
+          failure: error instanceof Error ? error.message : "Unknown provider inspection failure"
+        };
+        throw error;
       }
-      if (candidate.providerId !== provider.describe().id || candidate.sourceId !== sourceId) {
-        throw new Error(`Source provider ${provider.describe().id} returned a candidate with mismatched identity`);
-      }
-      if (!candidate.mediaKind || candidate.manifest.mediaKind !== candidate.mediaKind) {
-        throw new Error(`Source provider ${provider.describe().id} returned an invalid media manifest`);
-      }
-      return { provider, candidate };
     }
+    this.latestInspection = {
+      sourceId,
+      attemptedProviders: [...attemptedProviders],
+      result: "unrecognized"
+    };
     log("warn", "media-source", "No registered source provider recognized the inserted media", {
       sourceId,
       attemptedProviders
     });
     return null;
+  }
+
+  inspectionDiagnostics(): MediaSourceInspectionDiagnostics | null {
+    return this.latestInspection ? { ...this.latestInspection, attemptedProviders: [...this.latestInspection.attemptedProviders] } : null;
   }
 
   async acquire(

@@ -8,6 +8,7 @@ import type { AudioTrackFile } from "./audio-cd.js";
 import type { MusicAlbumMetadata } from "./music-metadata.js";
 import { events } from "./events.js";
 import { log } from "./logger.js";
+import { getLiveDiscDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
 import type { MetadataResolver } from "./application/metadata-resolver.js";
 import { isMusicAlbumMetadata } from "./providers/metadata/musicbrainz.js";
 import { waitForManualMusicMetadata } from "./manual-music-metadata.js";
@@ -180,7 +181,9 @@ export async function processAudioCd(
   acquireTracks: (workspacePath: string, signal?: AbortSignal) => Promise<AudioTrackFile[]>,
   signal: AbortSignal | undefined,
   metadataResolver: MetadataResolver | undefined,
-  jobs: JobCoordinator
+  jobs: JobCoordinator,
+  sourceProviderId = "source.audio-cd.cdparanoia",
+  providersAttempted: readonly string[] = [sourceProviderId]
 ): Promise<boolean> {
   if (jobs.activeJob()) return true;
   if (jobs.lastDiscFingerprint() === disc.fingerprint) {
@@ -201,6 +204,21 @@ export async function processAudioCd(
   let failureCode: string | undefined;
   let failureDetails: Readonly<Record<string, unknown>> | undefined;
   const context = jobs.begin(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", "audio_cd", disc.fingerprint, signal, device);
+  updateDiscDiagnostics({ status: "Audio CD identified", classification: "Audio", mediaType: "audio_cd" });
+  jobs.record(context, "disc-detected", "info", JSON.stringify({
+    driveId: device,
+    devicePath: device,
+    detectionMethod: getLiveDiscDiagnostics()?.detectionMethod ?? "udev event or optical-media presence monitor",
+    detectedAt: getLiveDiscDiagnostics()?.detectedAt ?? new Date().toISOString(),
+    discType: "audio_cd",
+    label: disc.discId ? `Audio CD ${disc.discId}` : "Audio CD",
+    fingerprint: disc.fingerprint,
+    sourceProvider: sourceProviderId,
+    providersAttempted,
+    discId: disc.discId,
+    trackCount: disc.trackNumbers.length,
+    tracks: disc.trackNumbers.map((number) => ({ number, durationSeconds: null }))
+  }));
 
   try {
     events.emit("status");
@@ -236,6 +254,15 @@ export async function processAudioCd(
         attributes: { trackNumbers: disc.trackNumbers }
       }, signal)
       : undefined;
+    if (metadataResult) jobs.record(context, "metadata-results", metadataResult.providerFailures.length ? "warn" : "info",
+      JSON.stringify({
+        entityType: "album",
+        selected: metadataResult.selected ?? null,
+        candidates: metadataResult.candidates,
+        failures: metadataResult.providerFailures,
+        durationMs: null,
+        cacheUsage: "Not reported by the metadata provider interface"
+      }));
     let metadata: MusicAlbumMetadata = metadataResult?.selected && isMusicAlbumMetadata(metadataResult.selected.metadata)
       ? metadataResult.selected.metadata
       : {

@@ -112,6 +112,7 @@ export class JobCoordinator {
 
   record(context: JobContext, stage: string, level: string, message: string): void {
     this.repositories.events.add(context.id, stage, level, message);
+    this.publisher.publish(context.id);
   }
 
   warn(context: JobContext, message: string): void {

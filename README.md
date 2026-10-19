@@ -57,6 +57,19 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 
 ## Release history
 
+### Version 1.12.0
+
+- Add a live Disc Diagnostics dashboard page for drive detection, source
+  provider attempts, disc structure, classification scorecards, TV analysis,
+  episode matching, metadata results, pipeline events, and job logs.
+- Persist structured source manifests and TV analysis/metadata outcomes in job
+  history; stream event updates to the diagnostics page while it is open.
+- Report metadata provider fallback and per-result cache use where available.
+  Explicitly identify chapter counts, audio track lengths, and empty-result
+  cache state when current providers do not expose them.
+- Keep resource metrics scoped to the Dashboard; Disc Diagnostics does not
+  start a separate system resource sampler.
+
 ### Version 1.11.0
 
 - Add explainable DVD TV classification with a confidence scorecard and

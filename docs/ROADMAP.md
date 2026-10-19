@@ -1,10 +1,10 @@
 AutoDisc Roadmap
 
-This roadmap separates the capabilities already shipped in v1.11.0 from
+This roadmap separates the capabilities already shipped in v1.12.0 from
 remaining Version 2 development. Priorities may change based on community
 feedback and validation results.
 
-## Current status in v1.11.0
+## Current status in v1.12.0
 
 | Area | Status |
 |---|---|
@@ -14,6 +14,7 @@ feedback and validation results.
 | TV workflow and review | TV plans are persisted and held for review; the dashboard exposes analysis, matching, plan approval/correction, and validation evidence. TV output execution remains disabled. |
 | TV output destination | A configurable TV library root is created/validated and reports writable permissions and available space. Series/Season folder creation and TV publishing remain disabled. |
 | Universal Review Centre | Implemented for TV/CD reviews, metadata issues, processing failures, folder failures, disc-read errors, validation warnings, configuration issues, and system warnings. |
+| Disc diagnostics | Live diagnostics page backed by detection snapshots and persisted job events; provider-specific unavailable fields are identified explicitly. |
 | Audio-CD publishing | Missing Music/artist directories are created; albums are atomically published under `Artist/Album`, with collision-safe naming and Review Centre recovery on destination failures. |
 | Drives and platforms | One configured Linux optical drive and one active job remain supported. Multi-drive scheduling and non-Linux platforms are not implemented. |
 
@@ -23,6 +24,11 @@ for implementation details and acceptance blockers.
 ## Version 2
 
 Version 2 focuses on transforming AutoDisc from a Jellyfin-focused ripping workflow into a more complete media archiving platform.
+
+Disc Diagnostics is the first V2 observability slice: it presents live
+detection context and persisted job evidence without starting background
+resource sampling. Provider-specific fields that are not available are
+identified as unavailable rather than inferred.
 
 Architecture is a release requirement, not a later cleanup task. Version 2
 must establish provider contracts, dependency-injected composition, durable
@@ -42,7 +48,7 @@ queue/event infrastructure remain future gates. See
 [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md) and
 [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md).
 
-AutoDisc v1.11.0 includes provider-backed TV metadata lookups in the existing
+AutoDisc v1.12.0 includes provider-backed TV metadata lookups in the existing
 analysis workflow. Results remain suggestions only; episode assignment and TV
 output execution are not enabled. See
 [TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md) for provider, cache, and

@@ -58,7 +58,7 @@ export class TvMetadataLookupService {
       settings.tvMetadataFallbackProviderId
     ].filter((id, index, values): id is string => Boolean(id) && values.indexOf(id) === index);
     const failures: string[] = [];
-    for (const providerId of orderedIds) {
+    for (const [providerIndex, providerId] of orderedIds.entries()) {
       if (!this.registry.has(providerId) || !settings.tvMetadataProviderEnabled[providerId]) continue;
       const apiKey = settings.tvMetadataProviderApiKeys[providerId] ?? "";
       if (!apiKey) continue;
@@ -77,7 +77,15 @@ export class TvMetadataLookupService {
         if (cached) {
           const result = JSON.parse(cached.result_json) as MetadataProviderCandidate[];
           this.audit(providerId, input, true, true, true, false, 0, null, null);
-          if (result.length) return result;
+          if (result.length) return result.map((candidate) => ({
+            ...candidate,
+            lookupDiagnostics: {
+              sourceProviderId: providerId,
+              fallbackUsed: providerIndex > 0,
+              cacheHit: true,
+              durationMs: 0
+            }
+          }));
           continue;
         }
       }
@@ -99,7 +107,15 @@ export class TvMetadataLookupService {
         }
         this.audit(providerId, input, true, false, settings.tvMetadataCacheEnabled, true, durationMs, null, null);
         this.saveProviderStatus(providerId, "healthy", new Date().toISOString(), null);
-        if (result.length) return result;
+        if (result.length) return result.map((candidate) => ({
+          ...candidate,
+          lookupDiagnostics: {
+            sourceProviderId: providerId,
+            fallbackUsed: providerIndex > 0,
+            cacheHit: false,
+            durationMs
+          }
+        }));
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : "Unknown provider lookup failure";

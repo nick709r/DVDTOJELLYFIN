@@ -2,7 +2,7 @@ import type { MetadataResolver } from "./metadata-resolver.js";
 import { TvAnalysisEngine } from "./tv-analysis-engine.js";
 import { TvEpisodeMatchingEngine } from "./tv-episode-matching-engine.js";
 import { tvItemSignature } from "./tv-analysis-engine.js";
-import type { MetadataCandidate } from "../domain/metadata.js";
+import type { MetadataCandidate, MetadataResult } from "../domain/metadata.js";
 import type { MediaManifestItem } from "../domain/media.js";
 import type { TvValidationService } from "./tv-validation-service.js";
 import type {
@@ -61,6 +61,17 @@ export interface TvWorkflowResult {
   analysis: TvDiscAnalysisReport;
   matches: TvEpisodeMatchReport;
   plan: TvProcessingPlan;
+  metadataLookups: readonly {
+    entityType: string;
+    durationMs: number;
+    candidates: readonly MetadataCandidate[];
+    failures: readonly { providerId: string; message: string }[];
+  }[];
+}
+
+interface TimedMetadataResult {
+  result: MetadataResult;
+  durationMs: number;
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -355,13 +366,21 @@ export class TvWorkflowService {
     if (assessTvDisc(source).classification === "movie") return undefined;
 
     const seasonStructure = parseDiscStructure(source.label);
-    const [seriesResult, seasonResult, episodeResult] = await Promise.all([
-      this.metadata.resolve({
+    const timedResolve = async (
+      entityType: string,
+      input: Parameters<MetadataResolver["resolve"]>[0]
+    ): Promise<TimedMetadataResult> => {
+      const startedAt = Date.now();
+      const result = await this.metadata.resolve(input, signal);
+      return { result, durationMs: Date.now() - startedAt };
+    };
+    const [seriesLookup, seasonLookup, episodeLookup] = await Promise.all([
+      timedResolve("series", {
         entityType: "series",
         ...(cleanSeriesQuery(source.label) ? { query: cleanSeriesQuery(source.label) } : {}),
         attributes: { mediaKind: source.mediaKind, sourceId: source.sourceId }
-      }, signal),
-      seasonStructure.seasonNumber === undefined ? Promise.resolve(undefined) : this.metadata.resolve({
+      }),
+      seasonStructure.seasonNumber === undefined ? Promise.resolve(undefined) : timedResolve("season", {
         entityType: "season",
         query: `${source.label} season ${seasonStructure.seasonNumber}`,
         attributes: {
@@ -369,8 +388,8 @@ export class TvWorkflowService {
           seasonNumber: seasonStructure.seasonNumber,
           sourceId: source.sourceId
         }
-      }, signal),
-      this.metadata.resolve({
+      }),
+      timedResolve("episode", {
         entityType: "episode",
         ...(source.label ? { query: source.label } : {}),
         attributes: {
@@ -379,8 +398,11 @@ export class TvWorkflowService {
           fingerprint,
           items: source.manifest.items
         }
-      }, signal)
+      })
     ]);
+    const seriesResult = seriesLookup.result;
+    const seasonResult = seasonLookup?.result;
+    const episodeResult = episodeLookup.result;
     const seriesCandidates = seriesResult.candidates
       .map(seriesCandidate).filter((candidate): candidate is TvSeriesMetadataCandidate => candidate !== undefined);
     const seasonCandidates = (seasonResult?.candidates ?? [])
@@ -406,7 +428,27 @@ export class TvWorkflowService {
       feedback
     });
     const plan = this.planRepository.save(planInput(analysis, matches));
-    const result = { analysis, matches, plan };
+    const metadataLookups = [
+      {
+        entityType: "series",
+        durationMs: seriesLookup.durationMs,
+        candidates: seriesResult.candidates,
+        failures: seriesResult.providerFailures
+      },
+      ...(seasonLookup ? [{
+        entityType: "season",
+        durationMs: seasonLookup.durationMs,
+        candidates: seasonResult?.candidates ?? [],
+        failures: seasonResult?.providerFailures ?? []
+      }] : []),
+      {
+        entityType: "episode",
+        durationMs: episodeLookup.durationMs,
+        candidates: episodeResult.candidates,
+        failures: episodeResult.providerFailures
+      }
+    ];
+    const result = { analysis, matches, plan, metadataLookups };
     this.validationService?.capture({
       sourceId: source.sourceId,
       providerId: source.providerId,

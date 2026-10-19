@@ -20,6 +20,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const home = await app.inject({ method: "GET", url: "/" });
     assert.equal(home.statusCode, 200);
     assert.match(home.body, /AutoDisc/);
+    assert.match(home.body, /Disc Diagnostics/);
+    assert.match(home.body, /page-diagnostics/);
 
     const initial = await app.inject({ method: "GET", url: "/api/v1/settings" });
     assert.equal(initial.statusCode, 200);
@@ -32,6 +34,10 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.musicBrainzContactEmail, "");
     assert.equal("adminPasswordHash" in initial.json().settings, false);
     assert.equal("lidarrApiKey" in initial.json().settings, false);
+    const emptyDiagnostics = await app.inject({ method: "GET", url: "/api/v1/diagnostics" });
+    assert.equal(emptyDiagnostics.statusCode, 200);
+    assert.equal(emptyDiagnostics.json().job, null);
+    assert.deepEqual(emptyDiagnostics.json().timeline, []);
 
     const pathCheck = await app.inject({
       method: "POST",
@@ -391,11 +397,12 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
           { name: "v1.10.0" },
           { name: "v1.11.0" },
           { name: "v1.12.0" },
+          { name: "v1.13.0" },
           { name: "main" }
         ]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.includes("/releases/tags/")) return new Response("", { status: 404 });
-      return new Response("### Version 1.12.0\n- Test release notes.", { status: 200 });
+      return new Response("### Version 1.13.0\n- Test release notes.", { status: 200 });
     };
     try {
       const updateCheck = await app.inject({
@@ -404,7 +411,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         headers: { cookie }
       });
       assert.equal(updateCheck.statusCode, 200);
-      assert.equal(updateCheck.json().latestVersion, "v1.12.0");
+      assert.equal(updateCheck.json().latestVersion, "v1.13.0");
       assert.equal(updateCheck.json().updateAvailable, true);
       assert.match(updateCheck.json().releaseNotes, /Test release notes/);
     } finally {
@@ -419,6 +426,15 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     });
     assert.equal(updateDuringJob.statusCode, 409);
     jobs.finishJob("update-blocked-by-active-job", "failed", "expected test cleanup");
+    jobs.addEvent("update-blocked-by-active-job", "diagnostic-fixture", "warn", "fixture diagnostic event");
+    const diagnosticHistory = await app.inject({
+      method: "GET",
+      url: "/api/v1/diagnostics?jobId=update-blocked-by-active-job",
+      headers: { cookie }
+    });
+    assert.equal(diagnosticHistory.statusCode, 200);
+    assert.equal(diagnosticHistory.json().job.id, "update-blocked-by-active-job");
+    assert.equal(diagnosticHistory.json().timeline.at(-1).stage, "diagnostic-fixture");
 
     const invalidBody = await app.inject({
       method: "PUT",

@@ -1,6 +1,6 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** Current as of AutoDisc v1.11.0 on `main`. The v2 provider foundation,
+**Status:** Current as of AutoDisc v1.12.0 on `main`. The v2 provider foundation,
 TV analysis/matching/workflow integration, TV dashboard and validation
 evidence, universal Review Centre, and audio-CD destination recovery are
 implemented. TVDB/TMDB TV metadata lookup, provider failover, provider-aware
@@ -31,7 +31,7 @@ Migration 9 adds the persistent universal Review Centre. Authenticated
 dashboard/API review actions expose filtering, details, and supported recovery;
 audio-CD publishing creates and verifies `Music/Artist/Album` destinations
 before atomic publication.
-AutoDisc 1.11.0 registers a `ConfiguredTvMetadataProvider` adapter with the
+AutoDisc 1.12.0 registers a `ConfiguredTvMetadataProvider` adapter with the
 production `MetadataResolver`. Provider selection, fallback, health-aware
 failover, optional provider-aware caching, and lookup metrics are handled
 outside the analysis and matching engines. Metadata results contribute
@@ -80,6 +80,10 @@ flowchart LR
   DVD --> TvPrefilter{Explainable TV scorecard}
   TvPrefilter -- confirmed movie --> MovieWorkflow[Existing movie workflow]
   TvPrefilter -- confirmed or uncertain TV --> TvWorkflow[TV analysis or review hold]
+  DiscMonitor --> Diagnostics[Live Disc Diagnostics]
+  MovieWorkflow --> Diagnostics
+  TvWorkflow --> Diagnostics
+  AudioCD --> Diagnostics
   TvWorkflow --> TvAnalysis
   TvWorkflow --> Plan[Persisted TV Processing Plan]
   Plan --> Review[Review state; execution disabled]
@@ -117,6 +121,11 @@ collision-safe `Artist/Album` destination. Destination and publication errors
 create a folder-creation review with filesystem error and parent permission
 details; retry checks the destination parent and asks the optical-disc monitor
 to rescan rather than leaving an empty album directory behind.
+
+Disc Diagnostics is a dashboard page over the live detection snapshot and
+persisted per-job event timeline. It does not run a separate polling or system
+metrics sampler. See [DISC-DIAGNOSTICS.md](./DISC-DIAGNOSTICS.md) for its API,
+data coverage, and provider limitations.
 
 ## 1. Architectural objective
 

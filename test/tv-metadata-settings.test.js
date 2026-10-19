@@ -120,8 +120,12 @@ test("TV metadata settings, provider lookup, caching, auditing, and metrics work
     const lookup = await tvMetadataLookupService.lookup({ entityType: "series", query: "Example Series" });
     assert.equal(lookup[0].title, "Example Series");
     assert.equal(lookup[0].identifiers.tmdbTvId, "44");
+    assert.equal(lookup[0].lookupDiagnostics.cacheHit, false);
+    assert.equal(lookup[0].lookupDiagnostics.sourceProviderId, "tmdb-tv");
+    assert.equal(lookup[0].lookupDiagnostics.fallbackUsed, true);
     const cachedLookup = await tvMetadataLookupService.lookup({ entityType: "series", query: "Example Series" });
     assert.equal(cachedLookup[0].id, "44");
+    assert.equal(cachedLookup[0].lookupDiagnostics.cacheHit, true);
 
     const metrics = await app.inject({ method: "GET", url: "/api/v1/tv/metadata/metrics" });
     assert.equal(metrics.json().lookupsAttempted, 4);

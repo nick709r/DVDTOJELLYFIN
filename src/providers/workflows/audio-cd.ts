@@ -23,6 +23,6 @@ export class AudioCdWorkflow implements MediaWorkflow {
         path: artifact.path,
         bytes: Number(artifact.attributes?.bytes ?? (await stat(artifact.path)).size)
       })));
-    }, signal, metadata, jobs);
+    }, signal, metadata, jobs, candidate.providerId, sources.inspectionDiagnostics?.()?.attemptedProviders ?? []);
   }
 }

@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [] };
+const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null };
 const loginDialog = $("#login-dialog");
 const themeToggle = $("#theme-toggle");
 
@@ -135,6 +135,214 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   })[char]);
+}
+
+function parseDiagnosticMessage(message) {
+  try {
+    const value = JSON.parse(message);
+    return value && typeof value === "object" ? value : { detail: String(value) };
+  } catch {
+    return { detail: message };
+  }
+}
+
+function diagnosticValue(value) {
+  if (value === null || value === undefined || value === "") return "Unavailable";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
+}
+
+function diagnosticConfidence(value) {
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "Unavailable";
+}
+
+function diagnosticMediaType(value) {
+  return ({
+    dvd: "DVD",
+    audio_cd: "Audio CD",
+    unknown: "Unknown"
+  })[value] || diagnosticValue(value);
+}
+
+function diagnosticClassification(value) {
+  return ({
+    movie: "Movie",
+    tv: "TV",
+    review: "Review Required",
+    audio: "Audio",
+    audio_cd: "Audio",
+    unknown: "Unknown"
+  })[value] || diagnosticValue(value);
+}
+
+function diagnosticPairs(entries) {
+  return `<dl class="diagnostic-pairs">${entries.map(([label, value]) =>
+    `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(diagnosticValue(value))}</dd></div>`
+  ).join("")}</dl>`;
+}
+
+function renderDiagnostics(payload) {
+  const select = $("#diagnostics-job");
+  const selectedId = payload.job?.id || (payload.liveOnly ? "" : state.diagnosticsJobId);
+  const jobs = payload.jobs || [];
+  select.innerHTML = `<option value="">Live / latest disc</option>${jobs.map((job) => {
+    const label = job.title || job.discLabel || job.id;
+    return `<option value="${escapeHtml(job.id)}">${escapeHtml(label)} · ${escapeHtml(new Date(job.startedAt).toLocaleString())} · ${escapeHtml(job.status)}</option>`;
+  }).join("")}`;
+  if (selectedId && jobs.some((job) => job.id === selectedId)) select.value = selectedId;
+  else select.value = "";
+  state.diagnosticsJobId = select.value;
+
+  const live = payload.live;
+  const job = payload.job;
+  const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
+  const events = timeline.map((item) => ({ ...item, data: parseDiagnosticMessage(item.message) }));
+  const inspection = events.find((item) => item.stage === "disc-detected")?.data || live?.candidate || {};
+  const scoreEvent = [...events].reverse().find((item) => item.stage === "tv-classification" &&
+    Array.isArray(item.data.criteria) && item.data.criteria.some((criterion) => Number.isFinite(criterion.weight))) ||
+    [...events].reverse().find((item) => item.stage === "tv-classification" &&
+      (item.data.decision || item.data.classification));
+  const selectedClassification = diagnosticClassification(scoreEvent?.data.decision || scoreEvent?.data.classification ||
+    (job?.mediaType === "audio_cd" ? "Audio" : live?.classification || "Unknown"));
+  const activeLabel = job?.discLabel || inspection.label || live?.discLabel;
+  const selectedMedia = job?.mediaType || inspection.discType || live?.mediaType;
+  const liveFacts = [
+    ["Drive ID", inspection.driveId || live?.driveId || `Configured drive · ${payload.configuredDevice || "Unavailable"}`],
+    ["Device path", inspection.devicePath || live?.devicePath || payload.configuredDevice],
+    ["Disc type", diagnosticMediaType(selectedMedia)],
+    ["Detection time", (inspection.detectedAt || live?.detectedAt)
+      ? new Date(inspection.detectedAt || live.detectedAt).toLocaleString()
+      : "Unavailable"],
+    ["Disc label", activeLabel],
+    ["Disc fingerprint", job?.id ? inspection.fingerprint : live?.fingerprint],
+    ["Detection method", inspection.detectionMethod || live?.detectionMethod],
+    ["Source provider", inspection.sourceProvider || live?.sourceProvider],
+    ["Providers attempted", (inspection.providersAttempted || live?.providersAttempted || []).join(", ") || "Unavailable"],
+    ["Media classification", selectedClassification],
+    ["Job status", job?.status || live?.status || "Waiting for disc"]
+  ];
+  $("#diagnostics-live").innerHTML = diagnosticPairs(liveFacts);
+  $("#diagnostics-live-status").textContent = job
+    ? `${job.title || activeLabel || "Disc"} · ${job.id}${job.error ? ` · ${job.error}` : ""}`
+    : live?.reason || (live ? `${live.status} · Updated ${new Date(live.updatedAt).toLocaleString()}` : "No disc detection is currently active. Live diagnostics update when a disc is detected.");
+
+  if (scoreEvent) {
+    const criteria = Array.isArray(scoreEvent.data.criteria) ? scoreEvent.data.criteria : [];
+    $("#diagnostics-classification").innerHTML = `
+      ${diagnosticPairs([
+        ["Overall classification", diagnosticClassification(scoreEvent.data.decision || scoreEvent.data.classification)],
+        ["Confidence score", diagnosticConfidence(scoreEvent.data.confidence)],
+        ["Decision", diagnosticClassification(scoreEvent.data.decision || scoreEvent.data.classification)],
+        ["Reason", (scoreEvent.data.reasons || []).join("; ") || "No failed criteria"]
+      ])}
+      <div class="diagnostic-criteria">${criteria.map((criterion) => `
+        <div class="${criterion.passed ? "criterion-pass" : "criterion-fail"}">
+          <b>${criterion.passed ? "✓" : "✗"} ${escapeHtml(criterion.id)}</b>
+          <span>${escapeHtml(criterion.explanation)}</span>
+          <small>Weight ${diagnosticConfidence(criterion.weight)} · Contribution ${diagnosticConfidence(criterion.contribution)}</small>
+        </div>`).join("") || '<p class="empty-state">Scorecard is not available for this disc.</p>'}</div>`;
+  } else {
+    $("#diagnostics-classification").innerHTML = '<div class="empty-state">Classification has not been recorded for this disc.</div>';
+  }
+
+  const manifest = inspection.manifest || live?.candidate?.manifest;
+  const items = Array.isArray(manifest?.items) ? manifest.items : [];
+  if (selectedMedia === "audio_cd") {
+    const tracks = inspection.tracks || items.map((item) => ({ number: item.trackNumber, durationSeconds: item.durationSeconds }));
+    $("#diagnostics-structure").innerHTML = `${diagnosticPairs([
+      ["Track count", inspection.trackCount ?? tracks.length],
+      ["Disc ID", inspection.discId || manifest?.identifiers?.musicBrainzDiscId],
+      ["Disc fingerprint", inspection.fingerprint || live?.fingerprint]
+    ])}<div class="diagnostic-list">${tracks.map((track) =>
+      `<div>Track ${escapeHtml(diagnosticValue(track.number))}<span>${track.durationSeconds ? escapeHtml(formatDuration(track.durationSeconds)) : "Length unavailable from current CD inspection"}</span></div>`
+    ).join("") || '<p class="empty-state">Audio track data is not available.</p>'}</div>`;
+  } else if (selectedMedia === "dvd") {
+    const titles = inspection.tvCandidateTitles || [];
+    const bonus = inspection.bonusContentCandidates || [];
+    const mainId = String(inspection.mainTitleCandidate ?? "");
+    $("#diagnostics-structure").innerHTML = `${diagnosticPairs([
+      ["Title count", inspection.titleCount ?? items.filter((item) => item.kind === "title").length],
+      ["Chapters", "Unavailable from current MakeMKV inspection"],
+      ["Main title candidate", mainId ? `Title ${mainId}` : "Unavailable"]
+    ])}<div class="diagnostic-list">${items.filter((item) => item.kind === "title").map((item) => {
+      const isMain = String(item.id) === mainId;
+      const isTv = titles.some((candidate) => String(candidate.id) === String(item.id));
+      const isBonus = bonus.some((candidate) => String(candidate.id) === String(item.id));
+      return `<div><b>Title ${escapeHtml(item.id)}${item.title ? ` · ${escapeHtml(item.title)}` : ""}</b><span>${formatDuration(item.durationSeconds)}${isMain ? " · Main title candidate" : ""}${isTv ? " · TV candidate" : ""}${isBonus ? " · Bonus candidate" : ""}</span></div>`;
+    }).join("") || '<p class="empty-state">No title manifest is available.</p>'}</div>`;
+  } else {
+    $("#diagnostics-structure").innerHTML = '<div class="empty-state">Disc structure is not available until a source provider recognizes the media.</div>';
+  }
+
+  const analysisEvent = [...events].reverse().find((item) => item.stage === "tv-analysis");
+  const analysis = analysisEvent?.data.analysis;
+  const matching = analysisEvent?.data.matching;
+  if (analysis) {
+    const series = analysis.seriesCandidates || [];
+    const seasons = analysis.seasonCandidates || [];
+    const itemsAnalysis = analysis.items || [];
+    const matches = matching?.items || [];
+    $("#diagnostics-tv").innerHTML = `<h3>Series candidates</h3>${series.length ? series.map((candidate) =>
+      `<div class="diagnostic-row">${escapeHtml(candidate.series?.title || "Unknown series")} · ${diagnosticConfidence(candidate.confidence)} · ${escapeHtml(candidate.providerId || "provider unavailable")}</div>`
+    ).join("") : '<p class="empty-state">No series candidates.</p>'}
+      <h3>Season candidates</h3>${seasons.length ? seasons.map((candidate) =>
+      `<div class="diagnostic-row">Season ${escapeHtml(candidate.season?.number)} · ${diagnosticConfidence(candidate.confidence)} · ${escapeHtml(candidate.providerId || "provider unavailable")}</div>`
+    ).join("") : '<p class="empty-state">No season candidates.</p>'}
+      <h3>Disc items and duplicate / bonus / commentary evidence</h3>${itemsAnalysis.map((item) =>
+      `<div class="diagnostic-row">${escapeHtml(item.title || item.itemId)} · ${escapeHtml(item.kind)} · ${diagnosticConfidence(item.confidence)}${item.duplicateOf ? ` · duplicate of ${escapeHtml(item.duplicateOf)}` : ""}</div>`
+    ).join("") || '<p class="empty-state">No TV item analysis.</p>'}
+      <div class="diagnostic-analysis-summary">${[
+        ["Duplicate detection", analysis.probableDuplicates],
+        ["Alternate detection", analysis.probableAlternates],
+        ["Bonus features", analysis.probableBonusContent],
+        ["Commentary detection", analysis.commentaryTracks]
+      ].map(([label, values]) => `<div><b>${label}</b><span>${values?.length ? values.map((item) =>
+        `${escapeHtml(item.title || item.itemId)} · ${diagnosticConfidence(item.confidence)}`
+      ).join("; ") : "None identified"}</span></div>`).join("")}</div>
+      <h3>Episode matching</h3>${matches.map((item) =>
+      `<div class="diagnostic-row"><b>${escapeHtml(item.itemTitle || item.itemId)}</b> · ${item.decision === "unknown" ? "Unknown" : escapeHtml((item.suggestedEpisodes || []).map((episode) => `S${episode.seasonNumber}E${episode.episodeNumber} ${episode.title || ""}`).join(", ") || item.decision)} · ${diagnosticConfidence(item.confidence)}
+      <p>${escapeHtml((item.evidence || []).join("; "))}</p>${(item.alternatives || []).map((alternative) =>
+        `<small>Alternative: ${escapeHtml((alternative.episodes || []).map((episode) => `S${episode.seasonNumber}E${episode.episodeNumber} ${episode.title || ""}`).join(", "))} · ${diagnosticConfidence(alternative.confidence)}</small>`
+      ).join("")}</div>`
+    ).join("") || '<p class="empty-state">No episode matches were recorded.</p>'}`;
+  } else {
+    $("#diagnostics-tv").innerHTML = '<div class="empty-state">TV analysis was not triggered for this disc.</div>';
+  }
+
+  const metadataEvent = [...events].reverse().find((item) => item.stage === "metadata-lookups" || item.stage === "metadata-results");
+  const lookups = metadataEvent?.data.lookups || (metadataEvent ? [metadataEvent.data] : []);
+  $("#diagnostics-metadata").innerHTML = lookups.length ? lookups.map((lookup) =>
+    `<div class="diagnostic-metadata"><b>${escapeHtml(lookup.entityType || "Metadata lookup")}</b>
+      <span>Duration: ${Number.isFinite(lookup.durationMs) ? `${lookup.durationMs} ms` : "Unavailable"}</span>
+      <span>Providers used: ${escapeHtml([...new Set((lookup.candidates || []).map((candidate) => candidate.lookupDiagnostics?.sourceProviderId || candidate.providerId))].join(", ") || "No provider result")}</span>
+      <span>Fallback provider: ${lookup.candidates?.some((candidate) => candidate.lookupDiagnostics?.fallbackUsed) ? "Used" : lookup.candidates?.length ? "Not used for returned candidates" : "Unavailable"}</span>
+      <span>Cache: ${lookup.candidates?.length && lookup.candidates.every((candidate) => candidate.lookupDiagnostics) ? lookup.candidates.some((candidate) => candidate.lookupDiagnostics.cacheHit) ? "Hit" : "Miss" : "Unavailable for this result"}</span>
+      ${(lookup.candidates || []).map((candidate) => `<div>${escapeHtml(candidate.title || candidate.metadata?.title || candidate.id)} · ${diagnosticConfidence(candidate.confidence)} · ${escapeHtml(candidate.lookupDiagnostics?.sourceProviderId || candidate.providerId)} · ${Number.isFinite(candidate.lookupDiagnostics?.durationMs) ? `${candidate.lookupDiagnostics.durationMs} ms` : "Timing unavailable"}</div>`).join("")}
+      ${(lookup.failures || []).map((failure) => `<div class="diagnostic-error">Provider failure · ${escapeHtml(failure.providerId)}: ${escapeHtml(failure.message)}</div>`).join("")}
+      ${(lookup.candidates || []).length === 0 && (lookup.failures || []).length === 0 ? '<small>No candidate or failure was reported by the provider.</small>' : ""}
+    </div>`
+  ).join("") : '<div class="empty-state">No metadata lookup event was recorded for this job.</div>';
+
+  $("#diagnostics-pipeline").innerHTML = events.length ? events.map((item, index) => {
+    const next = events[index + 1];
+    const start = Date.parse(item.at);
+    const end = next ? Date.parse(next.at) : job?.finishedAt ? Date.parse(job.finishedAt) : Date.now();
+    const elapsed = Number.isFinite(start) && Number.isFinite(end) ? formatDuration(Math.max(0, (end - start) / 1000)) : "Unavailable";
+    return `<div class="pipeline-event ${item.level === "error" ? "is-error" : item.level === "warn" ? "is-warning" : ""}">
+      <div><b>${escapeHtml(item.stage)}</b><span class="result">${escapeHtml(item.level)}</span></div>
+      <small>${escapeHtml(new Date(item.at).toLocaleString())} · ${escapeHtml(elapsed)} to next event</small>
+      <p>${escapeHtml(item.message)}</p>
+    </div>`;
+  }).join("") : '<div class="empty-state">No processing pipeline events have been recorded.</div>';
+  $("#diagnostics-log").innerHTML = events.length ? [...events].reverse().slice(0, 80).map((item) =>
+    `<div class="diagnostic-log-row"><time>${escapeHtml(new Date(item.at).toLocaleTimeString())}</time><b class="${item.level === "error" ? "diagnostic-error" : item.level === "warn" ? "diagnostic-warning" : ""}">${escapeHtml(item.level)} · ${escapeHtml(item.stage)}</b><span>${escapeHtml(item.message)}</span></div>`
+  ).join("") : '<div class="empty-state">Live job events will appear here as AutoDisc processes the disc.</div>';
+}
+
+async function loadDiagnostics(jobId = "", liveOnly = false) {
+  const query = liveOnly ? "?live=1" : jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
+  const payload = await api(`/api/v1/diagnostics${query}`);
+  renderDiagnostics(payload);
 }
 
 async function refreshDashboard() {
@@ -678,6 +886,8 @@ function renderMetrics(snapshot) {
 }
 
 function stopStreams() {
+  clearTimeout(state.diagnosticsRefreshTimer);
+  state.diagnosticsRefreshTimer = null;
   state.metricsStream?.close();
   state.metricsStream = null;
   state.statusStream?.close();
@@ -704,6 +914,13 @@ function updateStreams() {
       if (state.page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
       if (state.page === "statistics") loadStatistics().catch((error) => notify(error.message, true));
     }
+    if (state.page === "diagnostics") {
+      clearTimeout(state.diagnosticsRefreshTimer);
+      state.diagnosticsRefreshTimer = setTimeout(() => {
+        if (state.page !== "diagnostics") return;
+        loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true));
+      }, 150);
+    }
   });
   if (state.page === "dashboard") {
     state.metricsStream = new EventSource("/api/v1/system/events");
@@ -717,6 +934,7 @@ function showPage(page) {
   document.querySelectorAll("[data-page]").forEach((button) => button.classList.toggle("active", button.dataset.page === page));
   const pageTitles = {
     dashboard: "Dashboard",
+    diagnostics: "Disc Diagnostics",
     history: "History",
     "tv-analysis": "TV Analysis",
     "episode-matching": "Episode Matching",
@@ -728,6 +946,7 @@ function showPage(page) {
   $("#page-title").textContent = pageTitles[page] || page;
   updateStreams();
   if (page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
+  if (page === "diagnostics") loadDiagnostics().catch((error) => notify(error.message, true));
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
   if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
   if (page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
@@ -744,6 +963,11 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
   refreshChart(button.dataset.range).catch((error) => notify(error.message, true));
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
+$("#refresh-diagnostics").addEventListener("click", () => loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true)));
+$("#diagnostics-job").addEventListener("change", () => {
+  const jobId = $("#diagnostics-job").value;
+  loadDiagnostics(jobId, !jobId).catch((error) => notify(error.message, true));
+});
 $("#tv-analysis-confidence").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-analysis-state").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-review-filter").addEventListener("change", () => loadTvReviews().catch((error) => notify(error.message, true)));

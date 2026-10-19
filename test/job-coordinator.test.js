@@ -35,7 +35,7 @@ test("job coordinator centralizes start, step, progress event, terminal result a
   assert.deepEqual(coordinator.complete(context), { jobId: "job-1", status: "completed" });
   assert.deepEqual(calls[0], ["add", "job-1", "Test", null, "future_media"]);
   assert.deepEqual(calls.at(-1), ["finish", "job-1", "completed", null, undefined]);
-  assert.deepEqual(published.map((event) => event[1]), ["inspecting", "ripping", "completed"]);
+  assert.deepEqual(published.map((event) => event[1]), ["inspecting", "ripping", undefined, "completed"]);
 
   const cancelled = coordinator.begin("job-2", "Test", "future_media", null, controller.signal);
   controller.abort(new Error("cancelled"));

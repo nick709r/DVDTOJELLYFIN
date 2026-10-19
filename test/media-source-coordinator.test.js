@@ -92,6 +92,11 @@ test("source coordinator logs when no provider recognizes the inserted media", a
   try {
     const coordinator = new MediaSourceCoordinator([provider]);
     assert.equal(await coordinator.inspect("/dev/sr0"), null);
+    assert.deepEqual(coordinator.inspectionDiagnostics(), {
+      sourceId: "/dev/sr0",
+      attemptedProviders: ["source.video-dvd.makemkv"],
+      result: "unrecognized"
+    });
   } finally {
     console.warn = originalWarn;
   }
@@ -99,6 +104,24 @@ test("source coordinator logs when no provider recognizes the inserted media", a
   assert.equal(messages.length, 1);
   assert.equal(messages[0].message, "No registered source provider recognized the inserted media");
   assert.deepEqual(messages[0].attemptedProviders, ["source.video-dvd.makemkv"]);
+});
+
+test("source coordinator preserves provider failure details for diagnostics", async () => {
+  const provider = createProvider("source.video-dvd.makemkv", null, () => {
+    throw new Error("Acquisition should not run during inspection");
+  });
+  provider.inspect = async () => {
+    throw new Error("optical read failure");
+  };
+  const coordinator = new MediaSourceCoordinator([provider]);
+
+  await assert.rejects(coordinator.inspect("/dev/sr0"), /optical read failure/);
+  assert.deepEqual(coordinator.inspectionDiagnostics(), {
+    sourceId: "/dev/sr0",
+    attemptedProviders: ["source.video-dvd.makemkv"],
+    result: "failed",
+    failure: "optical read failure"
+  });
 });
 
 test("source coordinator accepts a media kind unknown to core orchestration", async () => {
@@ -118,5 +141,11 @@ test("source coordinator accepts a media kind unknown to core orchestration", as
 
   const inspected = await coordinator.inspect("watch-folder-1");
   assert.equal(inspected.candidate.mediaKind, "uhd_bluray");
+  assert.deepEqual(coordinator.inspectionDiagnostics(), {
+    sourceId: "watch-folder-1",
+    attemptedProviders: ["source.future"],
+    result: "recognized",
+    selectedProvider: "source.future"
+  });
   assert.equal(await coordinator.acquire(inspected, "workspace"), acquired);
 });

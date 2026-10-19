@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeJob, dailyJobStats, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
+import { getLiveDiscDiagnostics } from "./diagnostics.js";
 import { cancelActiveJob } from "./job-control.js";
 import { availableEncoders } from "./encoding.js";
 import { executableAvailable } from "./executable.js";
@@ -304,6 +305,33 @@ app.get<{ Params: { id: string } }>("/api/v1/history/:id", async (request, reply
   const details = jobDetails(request.params.id);
   if (!details) return reply.code(404).send({ error: "Job not found" });
   return details;
+});
+
+app.get<{ Querystring: { jobId?: string; live?: string } }>("/api/v1/diagnostics", async (request, reply) => {
+  const active = activeJob();
+  const liveOnly = request.query.live === "1";
+  const jobId = liveOnly ? undefined : request.query.jobId || active?.id || listJobs(1)[0]?.id;
+  if (!jobId) {
+    return {
+      live: getLiveDiscDiagnostics(),
+      job: null,
+      timeline: [],
+      jobs: listJobs(50),
+      liveOnly,
+      configuredDevice: getSettings().opticalDevice
+    };
+  }
+  const details = jobDetails(jobId);
+  if (!details) return reply.code(404).send({ error: "Diagnostic job not found" });
+  return {
+    live: getLiveDiscDiagnostics(),
+    job: details.job,
+    timeline: details.timeline,
+    jobs: listJobs(50),
+    liveOnly: false,
+    configuredDevice: getSettings().opticalDevice,
+    active: active?.id === jobId
+  };
 });
 
 app.get<{ Querystring: { range?: string } }>("/api/v1/stats", async (request) => {
@@ -1185,7 +1213,9 @@ app.get("/api/v1/events", async (request, reply) => {
     const active = activeJob();
     const state = active?.status ?? getRuntimeStatus();
     const manualMusicMetadata = active ? getManualMusicMetadataPrompt(active.id) : null;
-    if (!reply.raw.destroyed && !reply.raw.write(`event: status\ndata: ${JSON.stringify({ active, state, manualMusicMetadata })}\n\n`)) {
+    if (!reply.raw.destroyed && !reply.raw.write(`event: status\ndata: ${JSON.stringify({
+      active, state, manualMusicMetadata, diagnostics: getLiveDiscDiagnostics()
+    })}\n\n`)) {
       reply.raw.end();
     }
   };
