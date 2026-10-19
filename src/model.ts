@@ -43,20 +43,21 @@ export interface AppSettings {
   adminPasswordHash: string;
   tvDetectionEnabled: boolean;
   tvValidationLoggingEnabled: boolean;
-  tvStoreAnalysisEvidence: boolean;
-  tvStoreMatchingEvidence: boolean;
   tvMetadataLookupEnabled: boolean;
   tvMetadataPreferredProviderId: string;
   tvMetadataFallbackProviderId: string;
   tvMetadataCacheEnabled: boolean;
   tvMetadataCacheDurationHours: number;
-  tvMetadataAutomaticRefresh: boolean;
-  tvMetadataIncludeSpecials: boolean;
-  tvMetadataIncludeBonusContent: boolean;
-  tvMetadataIncludeMultipartEpisodes: boolean;
   tvMetadataProviderEnabled: Record<string, boolean>;
   tvMetadataProviderApiKeys: Record<string, string>;
   tvMetadataProviderValidation: Record<string, TvMetadataValidationResult>;
+  tvMetadataProviderStatus: Record<string, {
+    status: "healthy" | "unavailable" | "authentication_failure" | "rate_limited";
+    lastSuccessfulLookup: string | null;
+    lastFailure: string | null;
+    lastFailureAt: string | null;
+    usageCount: number;
+  }>;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 

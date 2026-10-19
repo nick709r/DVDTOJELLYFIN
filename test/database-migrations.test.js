@@ -46,7 +46,13 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 14);
+  db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
+    "tvStoreAnalysisEvidence", "true", "2026-01-01T00:00:00.000Z"
+  );
+  db.prepare("DELETE FROM schema_migrations WHERE version = 13").run();
+  migrateDatabase(db, defaultSettings);
+  assert.equal(db.prepare("SELECT 1 FROM settings WHERE key = ?").get("tvStoreAnalysisEvidence"), undefined);
   db.close();
 });
 

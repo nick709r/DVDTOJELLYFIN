@@ -136,10 +136,10 @@ misrepresented as inputs to that original match result.
    metadata can collide; the same disc with different labels or provider
    manifests can differ. It does not hash sectors, volume IDs, or video
    content. The exact fingerprint algorithm is recorded with each case.
-3. **Metadata confidence is trusted, not calibrated.** There are currently no
-   built-in TV metadata providers. Provider scores, episode numbering,
-   season-zero conventions, release-specific ordering, and runtimes may be
-   absent or wrong.
+3. **Metadata confidence is trusted, not calibrated.** TVDB and TMDB TV
+   providers now return series, season, and episode candidates, but provider
+   scores, episode numbering, season-zero conventions, release-specific
+   ordering, and runtimes may be absent or wrong.
 4. **Runtime is a weak signal.** Manifest duration can include studio logos,
    credits, playlists, padding, or split/combined episodes. The matcher applies
    a simple runtime comparison and does not inspect chapter boundaries or

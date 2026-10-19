@@ -102,23 +102,28 @@ season, disc-position and episode evidence, avoiding a high metadata score
 concealing a weak track. Confidence measures the quality of mapping evidence;
 it does not mean TV file execution is implemented.
 
-## Current metadata limitation
+## TV metadata providers
 
-The existing production metadata providers are TMDB movie and MusicBrainz
-album providers. The workflow asks the generic metadata resolver for `series`,
-`season`, and `episode` entities, but those built-in providers abstain. Thus a
-season-labeled DVD can produce a complete **unknown/review-required** plan
-until a TV provider is registered. A provider can participate through the
-existing generic metadata contract by returning validated TV metadata payloads
-with the documented `itemId`, `seriesId`, `seasonNumber`, `episodeNumber`,
-runtime, and optional multipart fields.
+TVDB and TMDB TV lookup is registered with the production metadata resolver
+through `ConfiguredTvMetadataProvider`. Provider selection, fallback,
+health-aware failover, optional cache, and lookup auditing are managed outside
+the analysis and matching engines. Metadata candidates include the
+`itemId`, `seriesId`, `seasonNumber`, `episodeNumber`, title, and runtime
+evidence consumed by the existing analysis workflow.
+
+Provider lookup results remain suggestions and can still be incomplete,
+ambiguous, or incorrect. A lookup failure leaves the workflow's conservative
+unknown/review-required behavior in place. No automatic assignment or TV
+output execution is enabled. See
+[`TV-METADATA-SETTINGS.md`](./TV-METADATA-SETTINGS.md) for configuration and
+API details.
 
 ## Remaining blockers
 
 ### Before full Version 2 TV workflow / Archivist Mode
 
-1. Add TVDB/TMDB-TV/local/user metadata adapters and strict runtime validation
-   for metadata payloads. No built-in provider currently returns TV entities.
+1. Add local/user metadata adapters and stronger runtime validation for
+   provider payloads; TVDB and TMDB TV adapters are available.
 2. Validate the prefilter against varied real DVD box sets, anime, specials,
    bonus-heavy releases, region differences, and discs with incomplete labels.
 3. Collect representative validation cases, including known prefilter

@@ -60,11 +60,12 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 ### Version 1.9.1
 
 - Add TV metadata provider settings for registered providers, lookup preferences,
-  cache preferences, provider enablement, and securely persisted API keys.
-- Add TVDB and TMDB TV credential connection tests, provider health reporting,
-  read-only matching policy details, and an honest metadata activity card.
-- Keep TV metadata lookup and cache refresh configuration-only; neither feature
-  is connected to TV analysis, matching, or processing workflows yet.
+  cache preferences, provider enablement, and locally persisted API keys.
+- Add TVDB and TMDB TV series/season/episode lookup to analysis, with provider
+  fallback, health-aware failover, provider-specific caching, refresh/clear
+  actions, lookup auditing, and live usage metrics.
+- Remove metadata controls that did not affect behavior; lookup suggestions
+  remain review-only and do not enable automatic episode assignment or output.
 - Add the supplied AutoDisc logo to the dashboard and document the current UI
   with screenshots.
 
@@ -190,8 +191,8 @@ validation evidence, corrections, and the universal Review Centre.
 
 TV analysis and episode matching produce explainable suggestions and
 confidence-gated plans; they do **not** rip, rename, or publish TV episodes.
-Built-in TV-series metadata lookup and safe TV output execution remain future
-work. Review the [Version 2 architecture](./docs/V2-ARCHITECTURE.md),
+TVDB and TMDB TV metadata are now available as analysis candidates; safe TV
+output execution remains future work. Review the [Version 2 architecture](./docs/V2-ARCHITECTURE.md),
 [migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md),
 [TV workflow integration](./docs/TV-WORKFLOW-INTEGRATION.md), and
 [Version 2 roadmap](./docs/ROADMAP.md) for current implementation details and
@@ -199,9 +200,8 @@ remaining blockers.
 
 ### Remaining Version 2 roadmap
 
-- Validate TV detection and matching against a broad, manually reviewed
-  collection of real discs; add TV metadata providers and calibrated
-  confidence behavior.
+- Validate TV detection, metadata results, and matching against a broad,
+  manually reviewed collection of real discs; calibrate confidence behavior.
 - Implement safe TV title acquisition, episode output naming, atomic
   publication, cleanup, and recovery before enabling TV processing.
 - Add multi-drive scheduling only after per-drive identity, job state,

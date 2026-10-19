@@ -14,11 +14,13 @@ test("production provider runtime registers source and metadata providers", asyn
       "source.audio-cd.cdparanoia",
       "source.video-dvd.makemkv",
       "metadata.tmdb.movie",
-      "metadata.musicbrainz.release"
+      "metadata.musicbrainz.release",
+      "metadata.tv.configured"
     ]);
     assert.deepEqual(runtime.metadataProviders.list().map((provider) => provider.describe().id), [
       "metadata.tmdb.movie",
-      "metadata.musicbrainz.release"
+      "metadata.musicbrainz.release",
+      "metadata.tv.configured"
     ]);
     assert.deepEqual(runtime.workflows.list(), ["audio_cd", "dvd"]);
   } finally {

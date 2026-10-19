@@ -147,8 +147,8 @@ persists confidence-gated plans, and consumes exact-disc corrections. The DVD
 workflow holds these discs for review instead of treating them as movies.
 The operator dashboard includes analysis/matching views, plan review, and the
 universal Review Centre; validation evidence is persisted and exportable.
-Remaining blockers include built-in TV metadata providers, broad physical-disc
-validation, and safe TV file execution. See
+Remaining blockers include broad physical-disc validation, provider-result
+calibration, and safe TV file execution. See
 [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md) and
 [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for current integration details and blockers.

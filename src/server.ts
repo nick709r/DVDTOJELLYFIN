@@ -21,6 +21,7 @@ import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-meta
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
 import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js";
+import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
 import { tvWorkflowPolicy } from "./application/tv-workflow-service.js";
 import { repositories } from "./db.js";
@@ -725,11 +726,7 @@ app.get("/api/v1/tv/metadata", async () => {
       preferredProviderId: settings.tvMetadataPreferredProviderId,
       fallbackProviderId: settings.tvMetadataFallbackProviderId,
       cacheEnabled: settings.tvMetadataCacheEnabled,
-      cacheDurationHours: settings.tvMetadataCacheDurationHours,
-      automaticRefresh: settings.tvMetadataAutomaticRefresh,
-      includeSpecials: settings.tvMetadataIncludeSpecials,
-      includeBonusContent: settings.tvMetadataIncludeBonusContent,
-      includeMultipartEpisodes: settings.tvMetadataIncludeMultipartEpisodes
+      cacheDurationHours: settings.tvMetadataCacheDurationHours
     },
     matchingPolicy: {
       confidenceThresholds: {
@@ -751,37 +748,24 @@ app.get("/api/v1/tv/metadata/providers", async () => ({
 }));
 
 app.get("/api/v1/tv/metadata/metrics", async () => {
-  const settings = getSettings();
-  const preferred = tvMetadataProviderRegistry.list(settings)
-    .find((provider) => provider.id === settings.tvMetadataPreferredProviderId);
-  return {
-    available: false,
-    activeProvider: null,
-    configuredPreferredProvider: preferred ? { id: preferred.id, name: preferred.name } : null,
-    totalSearches: null,
-    cacheHitRate: null,
-    failedLookups: null,
-    successfulLookups: null,
-    message: "TV metadata lookup and caching are not implemented; no lookup metrics are collected."
-  };
+  return tvMetadataLookupService.metrics();
 });
 
 app.post<{ Params: { id: string } }>("/api/v1/tv/metadata/providers/:id/test", async (request, reply) => {
   const { id } = request.params;
-  if (!tvMetadataProviderRegistry.has(id)) {
-    return reply.code(404).send({ error: "TV metadata provider is not registered" });
+  if (!tvMetadataProviderRegistry.isLookupImplemented(id)) {
+    return reply.code(404).send({ error: "TV metadata provider lookup is not implemented" });
   }
   const current = getSettings();
   const apiKey = current.tvMetadataProviderApiKeys[id] ?? "";
   if (!apiKey) return reply.code(400).send({ error: "Save an API key before testing this provider" });
 
-  const validatedAt = new Date().toISOString();
   try {
     await tvMetadataProviderRegistry.validateConnection(id, apiKey);
     const result = {
       status: "success" as const,
-      message: "Provider credentials and connection validated. TV metadata lookup is not implemented.",
-      validatedAt
+      message: "Provider credentials and connection validated.",
+      validatedAt: new Date().toISOString()
     };
     saveSettings({
       tvMetadataProviderValidation: { ...current.tvMetadataProviderValidation, [id]: result }
@@ -796,7 +780,7 @@ app.post<{ Params: { id: string } }>("/api/v1/tv/metadata/providers/:id/test", a
     const result = {
       status: "failure" as const,
       message: providerMessage,
-      validatedAt
+      validatedAt: new Date().toISOString()
     };
     saveSettings({
       tvMetadataProviderValidation: { ...current.tvMetadataProviderValidation, [id]: result }
@@ -805,11 +789,29 @@ app.post<{ Params: { id: string } }>("/api/v1/tv/metadata/providers/:id/test", a
   }
 });
 
-app.post("/api/v1/tv/metadata/cache/refresh", async (_request, reply) =>
-  reply.code(501).send({
-    error: "TV metadata caching is configuration-only; no cache backend or TV lookup provider is implemented, so no metadata was refreshed."
-  })
-);
+app.post("/api/v1/tv/metadata/cache/refresh", async () => {
+  const result = await tvMetadataLookupService.refreshCache();
+  return {
+    ok: result.failed === 0,
+    ...result,
+    message: result.failed
+      ? `Refreshed ${result.refreshed} cached metadata entries; ${result.failed} failed.`
+      : `Refreshed ${result.refreshed} cached metadata entr${result.refreshed === 1 ? "y" : "ies"}.`
+  };
+});
+
+app.delete("/api/v1/tv/metadata/cache", async () => ({
+  ok: true,
+  ...tvMetadataLookupService.clearCache(),
+  message: "TV metadata cache cleared."
+}));
+
+app.post("/api/v1/tv/metadata/providers/refresh", async () => {
+  const providers = await tvMetadataLookupService.refreshProviders();
+  const metadata = await tvMetadataLookupService.refreshCache();
+  return { ok: providers.every((provider) => provider.status === "healthy" || provider.status === "disabled") && metadata.failed === 0,
+    refreshedAt: new Date().toISOString(), providers, metadata };
+});
 
 app.get("/api/v1/updates/status", async () => ({
   currentVersion: await getInstalledVersion(),
@@ -962,22 +964,6 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     if (typeof body.tvMetadataCacheEnabled !== "boolean") return reply.code(400).send({ error: "tvMetadataCacheEnabled must be a boolean" });
     patch.tvMetadataCacheEnabled = body.tvMetadataCacheEnabled;
   }
-  if ("tvMetadataAutomaticRefresh" in body) {
-    if (typeof body.tvMetadataAutomaticRefresh !== "boolean") return reply.code(400).send({ error: "tvMetadataAutomaticRefresh must be a boolean" });
-    patch.tvMetadataAutomaticRefresh = body.tvMetadataAutomaticRefresh;
-  }
-  if ("tvMetadataIncludeSpecials" in body) {
-    if (typeof body.tvMetadataIncludeSpecials !== "boolean") return reply.code(400).send({ error: "tvMetadataIncludeSpecials must be a boolean" });
-    patch.tvMetadataIncludeSpecials = body.tvMetadataIncludeSpecials;
-  }
-  if ("tvMetadataIncludeBonusContent" in body) {
-    if (typeof body.tvMetadataIncludeBonusContent !== "boolean") return reply.code(400).send({ error: "tvMetadataIncludeBonusContent must be a boolean" });
-    patch.tvMetadataIncludeBonusContent = body.tvMetadataIncludeBonusContent;
-  }
-  if ("tvMetadataIncludeMultipartEpisodes" in body) {
-    if (typeof body.tvMetadataIncludeMultipartEpisodes !== "boolean") return reply.code(400).send({ error: "tvMetadataIncludeMultipartEpisodes must be a boolean" });
-    patch.tvMetadataIncludeMultipartEpisodes = body.tvMetadataIncludeMultipartEpisodes;
-  }
   if ("tvMetadataCacheDurationHours" in body) {
     if (!Number.isInteger(body.tvMetadataCacheDurationHours) ||
       Number(body.tvMetadataCacheDurationHours) < 1 || Number(body.tvMetadataCacheDurationHours) > 8760) {
@@ -986,7 +972,7 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     patch.tvMetadataCacheDurationHours = Number(body.tvMetadataCacheDurationHours);
   }
   const validateTvProviderId = (value: unknown, allowBlank = false): value is string =>
-    typeof value === "string" && ((allowBlank && value === "") || tvMetadataProviderRegistry.has(value));
+    typeof value === "string" && ((allowBlank && value === "") || tvMetadataProviderRegistry.isLookupImplemented(value));
   if ("tvMetadataPreferredProviderId" in body) {
     if (!validateTvProviderId(body.tvMetadataPreferredProviderId)) {
       return reply.code(400).send({ error: "Preferred TV metadata provider must be registered" });
@@ -1011,7 +997,7 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     }
     const enabled = { ...currentSettings.tvMetadataProviderEnabled };
     for (const [id, isEnabled] of Object.entries(value)) {
-      if (!tvMetadataProviderRegistry.has(id) || typeof isEnabled !== "boolean") {
+      if (!tvMetadataProviderRegistry.isLookupImplemented(id) || typeof isEnabled !== "boolean") {
         return reply.code(400).send({ error: "TV metadata provider enablement contains an invalid provider or value" });
       }
       enabled[id] = isEnabled;
@@ -1025,7 +1011,7 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     }
     const apiKeys = { ...currentSettings.tvMetadataProviderApiKeys };
     for (const [id, apiKey] of Object.entries(value)) {
-      if (!tvMetadataProviderRegistry.has(id) || typeof apiKey !== "string" || apiKey.length > 512) {
+      if (!tvMetadataProviderRegistry.isLookupImplemented(id) || typeof apiKey !== "string" || apiKey.length > 512) {
         return reply.code(400).send({ error: "TV metadata provider API key is invalid" });
       }
       apiKeys[id] = apiKey.trim();

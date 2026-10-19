@@ -1,70 +1,80 @@
-# TV Metadata Settings
+# TV Metadata Lookup
 
-AutoDisc 1.9.1 exposes TV metadata configuration and provider credential
-validation in the dashboard. This is a configuration and visibility release:
-TVDB/TMDB TV lookups, metadata caching, and automatic refresh are not connected
-to TV analysis, episode matching, or disc processing. Enabling these settings
-does not change processing behavior.
+AutoDisc v1.9.1 can retrieve TV series, season, and episode candidates during
+TV analysis. Metadata influences explainable suggestions only: it does not
+automatically assign episodes or publish TV files.
 
-## Provider catalog
+## Providers
 
-`TvMetadataProviderRegistry` is a separate catalog in
-`src/application/tv-metadata-provider-registry.ts`. It intentionally does not
-register providers in the production `MetadataProviderRegistry` or
-`MetadataResolver`, so planned TV providers cannot affect the existing movie or
-TV workflows.
+`TvMetadataProviderRegistry` owns provider registration and lookup dispatch.
+`ConfiguredTvMetadataProvider` adapts its results to the existing
+`MetadataResolver` contract, so the TV workflow can use metadata without
+vendor-specific logic in the analysis or matching engines.
 
-The bootstrap catalog currently registers:
+| Provider ID | Lookup behavior |
+|---|---|
+| `tvdb` | TVDB v4 authentication, series search, season identification, and episode retrieval |
+| `tmdb-tv` | TMDB TV series search and season episode retrieval |
 
-| Provider ID | Display name | Credential validation | TV lookup |
-|---|---|---|---|
-| `tvdb` | TVDB | TVDB v4 login/token response | Not implemented |
-| `tmdb-tv` | TMDB TV | TMDB v3 configuration endpoint | Not implemented |
+The preferred provider is tried first. The configured fallback is used when
+the preferred provider fails or has no results. Providers disabled by the
+administrator, missing credentials, or a known authentication, rate-limit, or
+availability failure are not queried. Use **Refresh provider metadata** to
+recheck provider connectivity and refresh cached results.
 
-Future providers register a descriptor with an ID, display name, credential
-requirements, implementation state, and connection validator. The dashboard
-renders the provider list and configuration controls from the registry; no
-provider-specific dashboard markup is needed.
+Connection testing checks saved credentials against provider endpoints.
+Lookup health is separately updated from actual lookup attempts. Provider API
+keys are stored in the local SQLite settings database and are not returned by
+settings or health APIs; they are not encrypted at rest, so host filesystem
+permissions must protect the database.
 
-Provider health distinguishes configuration/credential state from lookup
-capability. A successful connection test means credentials reached and were
-accepted by the provider; it does not claim that AutoDisc can perform TV
-metadata searches.
+## Cache and audit
 
-## Settings and secret handling
+Optional SQLite caching is provider-aware and keyed by entity type, query,
+season, and track details. Entries expire after the configured duration.
+**Refresh metadata cache** re-fetches existing entries from their original
+providers and updates their expiry. **Clear metadata cache** deletes all
+entries. When caching is disabled, lookups still run and are audited, but no
+results are written to the cache.
 
-TV metadata preferences are persisted through the existing SQLite settings
-repository. Provider IDs in preferred/fallback selections and dynamic provider
-maps are validated against the registered catalog. API keys are stored in the
-settings table (not encrypted at rest) and never included in settings,
-provider-health, dashboard, or validation responses. Protect the local
-database with normal host filesystem permissions. The dashboard only receives
-whether a key is configured.
+Each provider attempt, fallback, cache hit, and failure is recorded with query,
+timestamp, duration, outcome, and safe error details. The dashboard reports
+attempts, successful and failed attempts, cache hits/misses, provider usage,
+average live lookup time, provider health, last successful lookup, and last
+failure time/message. These are observed service metrics, not estimates.
 
-Connection tests use the saved key and a bounded 10-second request. The latest
-outcome, safe message, and timestamp are persisted per provider. Validation
-failure does not enable or disable a provider and does not alter the active
-metadata resolver.
+## Settings
+
+- **Enable TV metadata lookup during analysis** gates all TV provider calls.
+- **Preferred provider** and **fallback provider** control lookup order.
+- **Enable provider** gates a provider independently; a required API key must
+  also be configured.
+- **Cache metadata lookup results** controls whether result data is cached.
+- **Cache duration** controls entry expiry when caching is enabled.
+
+The earlier automatic-refresh and include-specials/bonus/multipart controls
+were removed because they did not affect current lookup behavior. Evidence
+capture remains controlled by the TV Processing setting; obsolete
+`tvStoreAnalysisEvidence` and `tvStoreMatchingEvidence` keys are removed during
+database migration.
 
 ## API
 
-- `GET /api/v1/tv/metadata` returns settings, registered providers, and the
-  current read-only confidence/review policy.
-- `GET /api/v1/tv/metadata/providers` returns provider health and last
-  validation outcomes without credentials.
-- `POST /api/v1/tv/metadata/providers/:id/test` validates the saved provider
-  credentials and records the result.
-- `GET /api/v1/tv/metadata/metrics` returns metadata activity. Values are
-  nullable and `available` is false until lookup instrumentation exists.
-- `POST /api/v1/tv/metadata/cache/refresh` currently returns HTTP 501 with an
-  explicit message because no TV lookup/cache backend is implemented.
-- `PUT /api/v1/settings` persists and validates the TV metadata preferences.
+- `GET /api/v1/tv/metadata` returns active settings, operational providers, and
+  the read-only matching policy.
+- `GET /api/v1/tv/metadata/providers` returns provider health and lookup
+  timestamps without credentials.
+- `POST /api/v1/tv/metadata/providers/:id/test` tests saved credentials.
+- `POST /api/v1/tv/metadata/providers/refresh` checks enabled providers and
+  refreshes stored provider-specific metadata entries.
+- `GET /api/v1/tv/metadata/metrics` returns values aggregated from lookup audit
+  records.
+- `POST /api/v1/tv/metadata/cache/refresh` re-fetches cached metadata entries.
+- `DELETE /api/v1/tv/metadata/cache` clears all cached entries.
+- `PUT /api/v1/settings` validates and persists lookup, provider, and cache
+  configuration.
 
-## Remaining implementation gates
-
-Before the preferences can affect processing, implement concrete TV metadata
-providers, provider-owned settings/secret storage, an explicit cache backend
-and invalidation policy, lookup metrics, and workflow integration with
-confidence-aware handling of incomplete or conflicting results. These changes
-must remain separate from the analysis and episode-matching engines and require
-their own integration tests.
+TV lookups use bounded provider requests. If all eligible providers fail, the
+workflow records provider failure evidence and retains its conservative
+review-only behavior. Provider results remain candidates; no automatic
+episode assignment or TV publishing is enabled.

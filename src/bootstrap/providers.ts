@@ -18,6 +18,8 @@ import { DvdWorkflow } from "../providers/workflows/dvd.js";
 import { TvWorkflowService } from "../application/tv-workflow-service.js";
 import { TvReviewService } from "../application/tv-review-service.js";
 import { TvValidationService } from "../application/tv-validation-service.js";
+import { ConfiguredTvMetadataProvider } from "../application/tv-metadata-lookup-service.js";
+import { tvMetadataLookupService } from "./tv-metadata-runtime.js";
 
 function isMediaSourceProvider(provider: Provider): provider is MediaSourceProvider {
   return provider.describe().kind === "source" &&
@@ -54,7 +56,8 @@ export async function createProviderRuntime(
   const metadataProviders = new MetadataProviderRegistry();
   const configuredMetadataProviders = [
     new TmdbMovieMetadataProvider(getSettings),
-    new MusicBrainzMetadataProvider(getSettings)
+    new MusicBrainzMetadataProvider(getSettings),
+    new ConfiguredTvMetadataProvider(tvMetadataLookupService)
   ];
   for (const provider of sourceProviders) registry.register(provider);
   for (const provider of configuredMetadataProviders) {

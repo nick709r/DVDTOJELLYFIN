@@ -1,11 +1,22 @@
+import type { MetadataProviderCandidate } from "../contracts/metadata-provider.js";
 import type { AppSettings, TvMetadataValidationResult } from "../model.js";
 
 export type TvMetadataProviderHealth =
+  | "disabled"
   | "not_configured"
   | "unverified"
   | "healthy"
-  | "validation_failed"
-  | "lookup_unavailable";
+  | "unavailable"
+  | "authentication_failure"
+  | "rate_limited";
+
+export interface TvMetadataLookupInput {
+  entityType: string;
+  query: string;
+  seasonNumber?: number;
+  items?: readonly { id: string; title?: string; durationSeconds?: number }[];
+  signal?: AbortSignal;
+}
 
 export interface TvMetadataProviderDescriptor {
   id: string;
@@ -17,6 +28,10 @@ export interface TvMetadataProviderDescriptor {
   health: TvMetadataProviderHealth;
   healthMessage: string;
   lastValidation: TvMetadataValidationResult | null;
+  lastSuccessfulLookup: string | null;
+  lastFailure: string | null;
+  lastFailureAt: string | null;
+  usageCount: number;
 }
 
 export interface TvMetadataProvider {
@@ -25,6 +40,15 @@ export interface TvMetadataProvider {
   apiKeyRequired: boolean;
   lookupImplemented: boolean;
   validateConnection(apiKey: string, fetcher: typeof fetch): Promise<void>;
+  lookup(input: TvMetadataLookupInput, apiKey: string, fetcher: typeof fetch): Promise<readonly MetadataProviderCandidate[]>;
+}
+
+function validationHealth(result: TvMetadataValidationResult | null): TvMetadataProviderHealth {
+  if (!result) return "unverified";
+  if (result.status === "success") return "healthy";
+  if (/rate limited|HTTP 429/i.test(result.message)) return "rate_limited";
+  if (/authentication|HTTP 401|HTTP 403/i.test(result.message)) return "authentication_failure";
+  return "unavailable";
 }
 
 export class TvMetadataProviderRegistry {
@@ -44,24 +68,31 @@ export class TvMetadataProviderRegistry {
     return this.providers.has(id);
   }
 
+  isLookupImplemented(id: string): boolean {
+    return this.providers.get(id)?.lookupImplemented ?? false;
+  }
+
   list(settings: AppSettings): TvMetadataProviderDescriptor[] {
-    return [...this.providers.values()].map((provider) => {
+    return [...this.providers.values()].filter((provider) => provider.lookupImplemented).map((provider) => {
       const apiKeyConfigured = Boolean(settings.tvMetadataProviderApiKeys[provider.id]);
       const lastValidation = settings.tvMetadataProviderValidation[provider.id] ?? null;
-      const health: TvMetadataProviderHealth = !provider.lookupImplemented
-        ? "lookup_unavailable"
+      const lookupStatus = settings.tvMetadataProviderStatus[provider.id];
+      const health: TvMetadataProviderHealth = !(settings.tvMetadataProviderEnabled[provider.id] ?? false)
+        ? "disabled"
         : !apiKeyConfigured
           ? "not_configured"
-          : !lastValidation
-            ? "unverified"
-            : lastValidation.status === "success" ? "healthy" : "validation_failed";
-      const healthMessage = !provider.lookupImplemented
-        ? "TV lookup integration is not implemented; settings do not affect processing."
-        : !apiKeyConfigured
+          : lookupStatus?.status ?? validationHealth(lastValidation);
+      const healthMessage = health === "disabled"
+        ? "Provider is disabled."
+        : health === "not_configured"
           ? "API key is not configured."
-          : !lastValidation
-            ? "Credentials have not been validated."
-            : lastValidation.message;
+          : health === "healthy"
+            ? lookupStatus?.lastSuccessfulLookup
+              ? "Last lookup succeeded."
+              : lastValidation?.status === "success" ? "Provider connection validated." : "Provider is healthy."
+            : lookupStatus?.lastFailure ??
+              (lastValidation?.status === "failure" ? lastValidation.message : null) ??
+              lastValidation?.message ?? "Provider has not completed a lookup.";
       return {
         id: provider.id,
         name: provider.name,
@@ -71,7 +102,13 @@ export class TvMetadataProviderRegistry {
         apiKeyConfigured,
         health,
         healthMessage,
-        lastValidation
+        lastValidation,
+        lastSuccessfulLookup: lookupStatus?.lastSuccessfulLookup ?? null,
+        lastFailure: lookupStatus?.lastFailure ??
+          (lastValidation?.status === "failure" ? lastValidation.message : null),
+        lastFailureAt: lookupStatus?.lastFailureAt ??
+          (lastValidation?.status === "failure" ? lastValidation.validatedAt : null),
+        usageCount: lookupStatus?.usageCount ?? 0
       };
     });
   }
@@ -81,5 +118,22 @@ export class TvMetadataProviderRegistry {
     if (!provider) throw new Error("TV metadata provider is not registered");
     if (provider.apiKeyRequired && !apiKey) throw new Error("Save an API key before testing this provider");
     await provider.validateConnection(apiKey, fetcher);
+  }
+
+  async lookup(
+    id: string,
+    input: TvMetadataLookupInput,
+    apiKey: string,
+    fetcher: typeof fetch = fetch
+  ): Promise<readonly MetadataProviderCandidate[]> {
+    const provider = this.providers.get(id);
+    if (!provider) throw new Error("TV metadata provider is not registered");
+    if (!provider.lookupImplemented) throw new Error(`TV metadata lookup is not implemented for ${provider.name}`);
+    if (provider.apiKeyRequired && !apiKey) throw new Error(`${provider.name} API key is not configured`);
+    return provider.lookup(input, apiKey, fetcher);
+  }
+
+  listIds(): string[] {
+    return [...this.providers.keys()];
   }
 }

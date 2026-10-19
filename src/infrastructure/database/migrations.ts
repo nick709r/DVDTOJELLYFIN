@@ -166,6 +166,64 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (9, ?)")
     .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tv_metadata_cache (
+      cache_key TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      query_text TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      cached_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS tv_metadata_cache_expiry ON tv_metadata_cache(expires_at);
+    CREATE TABLE IF NOT EXISTS tv_metadata_lookup_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      query_text TEXT NOT NULL,
+      attempted_at TEXT NOT NULL,
+      success INTEGER NOT NULL CHECK (success IN (0, 1)),
+      cache_hit INTEGER NOT NULL CHECK (cache_hit IN (0, 1)),
+      duration_ms INTEGER NOT NULL,
+      error_kind TEXT,
+      error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS tv_metadata_lookup_audit_provider_time
+      ON tv_metadata_lookup_audit(provider_id, attempted_at);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (10, ?)")
+    .run(new Date().toISOString());
+  const cacheColumns = db.prepare("PRAGMA table_info(tv_metadata_cache)").all() as Array<{ name: string }>;
+  if (!cacheColumns.some((column) => column.name === "input_json")) {
+    db.exec("ALTER TABLE tv_metadata_cache ADD COLUMN input_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (11, ?)")
+    .run(new Date().toISOString());
+  const auditColumns = db.prepare("PRAGMA table_info(tv_metadata_lookup_audit)").all() as Array<{ name: string }>;
+  if (!auditColumns.some((column) => column.name === "cache_enabled")) {
+    db.exec("ALTER TABLE tv_metadata_lookup_audit ADD COLUMN cache_enabled INTEGER NOT NULL DEFAULT 0");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (12, ?)")
+    .run(new Date().toISOString());
+  const retiredSettingsMigration = db.prepare("SELECT 1 FROM schema_migrations WHERE version = 13").get();
+  if (!retiredSettingsMigration) {
+    db.prepare(`
+      DELETE FROM settings WHERE key IN (
+        'tvMetadataAutomaticRefresh', 'tvMetadataIncludeSpecials',
+        'tvMetadataIncludeBonusContent', 'tvMetadataIncludeMultipartEpisodes',
+        'tvStoreAnalysisEvidence', 'tvStoreMatchingEvidence'
+      )
+    `).run();
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (13, ?)")
+      .run(new Date().toISOString());
+  }
+  const auditProviderCallColumn = db.prepare("PRAGMA table_info(tv_metadata_lookup_audit)").all() as Array<{ name: string }>;
+  if (!auditProviderCallColumn.some((column) => column.name === "provider_called")) {
+    db.exec("ALTER TABLE tv_metadata_lookup_audit ADD COLUMN provider_called INTEGER NOT NULL DEFAULT 1");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (14, ?)")
+    .run(new Date().toISOString());
   const recoveryTime = new Date().toISOString();
   const markInterrupted = db.transaction(() => {
     const jobs = db.prepare(`

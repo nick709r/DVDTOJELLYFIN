@@ -5,8 +5,10 @@
 
 This report tracks the Version 2 architecture, TV intelligence, validation
 evidence, and universal Review Centre delivered in v1.9.0. TV output execution,
-parallel jobs, multi-drive processing, built-in TV metadata providers, and new
-library integrations remain out of scope.
+parallel jobs, multi-drive processing, and new library integrations remain out
+of scope. The v1.9.1 follow-up now includes TVDB/TMDB TV metadata lookup,
+provider failover, caching, and audit metrics; see
+[TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md).
 
 ## Updated architecture diagram
 
@@ -206,20 +208,17 @@ adapter is now `src/providers/metadata/tmdb-movie.ts`.
 
 ## Remaining blockers before production TV-series support
 
-1. No TVDB/TMDB-TV/local/user metadata providers, series/episode search
-   contracts, or TV-specific provider configuration and health reporting.
-2. The metadata candidate payload is intentionally generic and not yet
-   normalized into validated movie/series/season/episode schemas. The existing
-   manual MusicBrainz release-ID API remains a direct integration path.
-3. No built-in TV metadata provider currently returns series, season, or
-   episode entities; likely TV discs therefore produce unknown/review plans.
-4. Disc fingerprints still use label and manifest metadata rather than
+1. TVDB/TMDB-TV lookup returns candidates, but provider ordering, episode
+   ordering, and confidence scores still need validation against real discs.
+2. The metadata candidate payload is intentionally generic; stronger runtime
+   validation and local/user provider adapters remain future work.
+3. Disc fingerprints still use label and manifest metadata rather than
    physical-disc identifiers or content hashes; distinct pressings can collide
    or the same disc can vary across providers.
-5. Review and correction APIs/UI exist, but correction conflict, audit,
+4. Review and correction APIs/UI exist, but correction conflict, audit,
    retry, and reprocessing policies need to be completed for end-to-end TV
    workflow use.
-6. TV output execution, multi-title segmentation, naming, publication, and
+5. TV output execution, multi-title segmentation, naming, publication, and
    cleanup policies remain unimplemented.
 7. Confidence thresholds and duplicate/alternate heuristics require validation
    against representative physical discs before unattended processing.

@@ -192,11 +192,11 @@ async function loadTvSummary() {
   $("#tv-dashboard-stats").innerHTML = stats.map(([label, value]) => tvStat(label, value)).join("");
   renderTvTrend(summary.daily);
   $("#tv-statistics").innerHTML = [
-    ["TV series processed", summary.totalSeriesProcessed],
-    ["Seasons processed", summary.totalSeasonsProcessed],
+    ["TV series analyzed", summary.totalSeriesProcessed],
+    ["Seasons analyzed", summary.totalSeasonsProcessed],
     ["Episode matches suggested", summary.totalEpisodeMatchesSuggested],
     ["Manual corrections", summary.correctionsApplied],
-    ["Labeled-case accuracy", summary.heldOutAccuracy === null ? "Not enough labels" : `${Math.round(summary.heldOutAccuracy * 100)}%`],
+    ["Labeled validation accuracy", summary.heldOutAccuracy === null ? "Not enough labels" : `${Math.round(summary.heldOutAccuracy * 100)}%`],
     ["Average plan confidence", summary.meanConfidence === null ? "—" : `${Math.round(summary.meanConfidence * 100)}%`],
     ["Review approval rate", summary.reviewApprovalRate === null ? "—" : `${Math.round(summary.reviewApprovalRate * 100)}%`]
   ].map(([label, value]) => tvStat(label, value)).join("");
@@ -216,18 +216,29 @@ async function loadTvMetadataMetrics() {
   const status = $("#tv-metadata-dashboard-status");
   try {
     const metrics = await api("/api/v1/tv/metadata/metrics");
+    const cacheTotal = metrics.cacheHits + metrics.cacheMisses;
     target.innerHTML = [
-      ["Active provider", metrics.activeProvider?.name || "Not active"],
-      ["Metadata searches", metrics.totalSearches],
-      ["Cache hit rate", metrics.cacheHitRate === null ? null : `${Math.round(metrics.cacheHitRate * 100)}%`],
-      ["Failed lookups", metrics.failedLookups],
-      ["Successful lookups", metrics.successfulLookups]
-    ].map(([label, value]) => tvStat(label, value === null || value === undefined ? "Unavailable" : value)).join("");
-    const preferred = metrics.configuredPreferredProvider?.name;
-    status.textContent = metrics.message + (preferred ? ` Preferred provider: ${preferred}.` : "");
+      ["Lookups attempted", metrics.lookupsAttempted],
+      ["Lookups successful", metrics.lookupsSuccessful],
+      ["Lookups failed", metrics.lookupsFailed],
+      ["Cache hits", metrics.cacheHits],
+      ["Cache misses", metrics.cacheMisses],
+      ["Cache hit rate", cacheTotal ? `${Math.round(metrics.cacheHits / cacheTotal * 100)}%` : "—"],
+      ["Average lookup time", metrics.averageLookupTimeMs === null ? "—" : `${metrics.averageLookupTimeMs} ms`]
+    ].map(([label, value]) => tvStat(label, value)).join("");
+    $("#tv-metadata-provider-activity").innerHTML = metrics.providers.length
+      ? metrics.providers.map((provider) => `<div class="provider-activity-row">
+          <b>${escapeHtml(provider.name)}</b>
+          <span class="provider-health ${escapeHtml(provider.status)}">${escapeHtml(provider.status.replaceAll("_", " "))}</span>
+          <span>Usage ${provider.usageCount}</span>
+          <span>Last success ${provider.lastSuccessfulLookup ? escapeHtml(new Date(provider.lastSuccessfulLookup).toLocaleString()) : "—"}</span>
+          <span>Last failure ${provider.lastFailure ? `${escapeHtml(provider.lastFailure)}${provider.lastFailureAt ? ` · ${escapeHtml(new Date(provider.lastFailureAt).toLocaleString())}` : ""}` : "—"}</span>
+        </div>`).join("")
+      : '<div class="empty-state">No TV metadata providers are registered.</div>';
+    status.textContent = `Preferred provider: ${metrics.activeProvider?.name || "None"}. Provider usage counts include live API lookups; cached results are counted separately.`;
   } catch (error) {
-    target.innerHTML = ["Active provider", "Metadata searches", "Cache hit rate", "Failed lookups", "Successful lookups"]
-      .map((label) => tvStat(label, "Unavailable")).join("");
+    target.innerHTML = "";
+    $("#tv-metadata-provider-activity").innerHTML = "";
     status.textContent = `Metadata metrics could not be loaded: ${error.message}`;
   }
 }
@@ -238,10 +249,20 @@ function renderTvMetadataProviders(providers) {
     const validation = provider.lastValidation
       ? `${provider.lastValidation.status === "success" ? "Success" : "Failure"} · ${provider.lastValidation.message} · ${new Date(provider.lastValidation.validatedAt).toLocaleString()}`
       : "Not tested";
+    const healthLabel = {
+      healthy: "Healthy",
+      unavailable: "Unavailable",
+      authentication_failure: "Authentication failure",
+      rate_limited: "Rate limited",
+      disabled: "Disabled",
+      not_configured: "Not configured",
+      unverified: "Unverified"
+    }[provider.health] || provider.health;
     return `<section class="tv-metadata-provider">
-      <div class="card-heading"><div><h3>${escapeHtml(provider.name)}</h3><span class="provider-health ${escapeHtml(provider.health)}">${escapeHtml(provider.health.replaceAll("_", " "))}</span></div><span class="muted">${provider.lookupImplemented ? "Lookup available" : "Planned · lookup not implemented"}</span></div>
+      <div class="card-heading"><div><h3>${escapeHtml(provider.name)}</h3><span class="provider-health ${escapeHtml(provider.health)}">${escapeHtml(healthLabel)}</span></div><span class="muted">${provider.lookupImplemented ? "TV lookup enabled" : "Lookup unavailable"}</span></div>
       <p class="hint">${escapeHtml(provider.healthMessage)}</p>
-      <label class="check"><input class="tv-metadata-provider-enabled" type="checkbox" data-provider-id="${escapeHtml(provider.id)}"${provider.enabled ? " checked" : ""}> Enable provider (configuration only)</label>
+      <p class="hint">Usage ${provider.usageCount} · Last successful lookup ${provider.lastSuccessfulLookup ? escapeHtml(new Date(provider.lastSuccessfulLookup).toLocaleString()) : "—"} · Last failure ${provider.lastFailure ? `${escapeHtml(provider.lastFailure)}${provider.lastFailureAt ? ` · ${escapeHtml(new Date(provider.lastFailureAt).toLocaleString())}` : ""}` : "—"}</p>
+      <label class="check"><input class="tv-metadata-provider-enabled" type="checkbox" data-provider-id="${escapeHtml(provider.id)}"${provider.enabled ? " checked" : ""}> Enable provider for lookup</label>
       ${provider.apiKeyRequired ? `<label>API key<input class="tv-metadata-provider-key" type="password" autocomplete="off" data-provider-id="${escapeHtml(provider.id)}" placeholder="${provider.apiKeyConfigured ? "Leave blank to keep saved key" : "Enter API key"}"></label>
       <label class="check"><input class="tv-metadata-provider-clear" type="checkbox" data-provider-id="${escapeHtml(provider.id)}"> Clear saved API key</label>
       <p class="hint">${provider.apiKeyConfigured ? "API key saved; its value is never displayed." : "No API key saved."}</p>` : ""}
@@ -252,7 +273,7 @@ function renderTvMetadataProviders(providers) {
   $("#tv-metadata-providers").innerHTML = providerMarkup;
 
   const options = providers.map((provider) =>
-    `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)}${provider.lookupImplemented ? "" : " (planned)"}</option>`
+    `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)}</option>`
   ).join("");
   const preferred = $("#settings-form").elements.namedItem("tvMetadataPreferredProviderId");
   const fallback = $("#settings-form").elements.namedItem("tvMetadataFallbackProviderId");
@@ -270,10 +291,6 @@ async function loadTvMetadataSettings() {
   form.elements.namedItem("tvMetadataFallbackProviderId").value = settings.fallbackProviderId;
   form.elements.namedItem("tvMetadataCacheEnabled").checked = settings.cacheEnabled;
   form.elements.namedItem("tvMetadataCacheDurationHours").value = settings.cacheDurationHours;
-  form.elements.namedItem("tvMetadataAutomaticRefresh").checked = settings.automaticRefresh;
-  form.elements.namedItem("tvMetadataIncludeSpecials").checked = settings.includeSpecials;
-  form.elements.namedItem("tvMetadataIncludeBonusContent").checked = settings.includeBonusContent;
-  form.elements.namedItem("tvMetadataIncludeMultipartEpisodes").checked = settings.includeMultipartEpisodes;
   const thresholds = data.matchingPolicy.confidenceThresholds;
   const matching = data.matchingPolicy.matchingThresholds;
   $("#tv-metadata-matching-policy").innerHTML = `
@@ -477,7 +494,7 @@ async function loadTvValidation() {
   const commonIssues = [...reviewIssues].sort((left, right) => right[1] - left[1]).slice(0, 4)
     .map(([reason, count]) => `${reason} (${count})`).join(" · ") || "No review issues recorded";
   $("#tv-validation-insights").innerHTML = [
-    ["Held-out accuracy", accuracy],
+    ["Labeled validation accuracy", accuracy],
     ["Correction rate", correctionRate],
     ["High-confidence tracks", matchBands.high],
     ["Medium-confidence tracks", matchBands.medium],
@@ -1017,10 +1034,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
     tvMetadataFallbackProviderId: values.get("tvMetadataFallbackProviderId"),
     tvMetadataCacheEnabled: form.elements.namedItem("tvMetadataCacheEnabled").checked,
     tvMetadataCacheDurationHours: Number(values.get("tvMetadataCacheDurationHours")),
-    tvMetadataAutomaticRefresh: form.elements.namedItem("tvMetadataAutomaticRefresh").checked,
-    tvMetadataIncludeSpecials: form.elements.namedItem("tvMetadataIncludeSpecials").checked,
-    tvMetadataIncludeBonusContent: form.elements.namedItem("tvMetadataIncludeBonusContent").checked,
-    tvMetadataIncludeMultipartEpisodes: form.elements.namedItem("tvMetadataIncludeMultipartEpisodes").checked,
     tvMetadataProviderEnabled: Object.fromEntries(
       [...form.querySelectorAll(".tv-metadata-provider-enabled")].map((input) =>
         [input.dataset.providerId, input.checked])
@@ -1139,10 +1152,43 @@ $("#refresh-tv-metadata-cache").addEventListener("click", async () => {
   button.disabled = true;
   status.textContent = "Requesting metadata cache refresh…";
   try {
-    await api("/api/v1/tv/metadata/cache/refresh", { method: "POST" });
-    status.textContent = "Metadata cache refreshed.";
+    const result = await api("/api/v1/tv/metadata/cache/refresh", { method: "POST" });
+    status.textContent = `${result.ok ? "Success" : "Failure"} · ${result.message} · ${new Date(result.refreshedAt).toLocaleString()}`;
+    if (result.errors?.length) status.textContent += ` · ${result.errors.join("; ")}`;
+    await Promise.all([loadTvMetadataMetrics(), loadTvMetadataSettings()]);
   } catch (error) {
     status.textContent = `Refresh unavailable: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#clear-tv-metadata-cache").addEventListener("click", async () => {
+  const button = $("#clear-tv-metadata-cache");
+  const status = $("#tv-metadata-cache-status");
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/tv/metadata/cache", { method: "DELETE" });
+    status.textContent = `Cleared ${result.cleared} cached entries · ${new Date(result.refreshedAt).toLocaleString()}`;
+  } catch (error) {
+    status.textContent = `Cache clear failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#refresh-tv-metadata-providers").addEventListener("click", async () => {
+  const button = $("#refresh-tv-metadata-providers");
+  const status = $("#tv-metadata-cache-status");
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/tv/metadata/providers/refresh", { method: "POST" });
+    status.textContent = `${result.ok ? "Success" : "Failure"} · Provider metadata refresh · ${new Date(result.refreshedAt).toLocaleString()} · ${result.metadata.refreshed} cached entries refreshed, ${result.metadata.failed} failed · ${
+      result.providers.map((provider) => `${provider.id}: ${provider.status} (${provider.message})`).join("; ")
+    }${result.metadata.errors.length ? ` · Errors: ${result.metadata.errors.join("; ")}` : ""}`;
+    await Promise.all([loadTvMetadataSettings(), loadTvMetadataMetrics()]);
+  } catch (error) {
+    status.textContent = `Provider status refresh failed: ${error.message}`;
   } finally {
     button.disabled = false;
   }

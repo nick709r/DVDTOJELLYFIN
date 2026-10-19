@@ -9,8 +9,8 @@ feedback and validation results.
 | Area | Status |
 |---|---|
 | Provider/workflow foundation | Implemented for the existing DVD and audio-CD sources, TMDB/MusicBrainz metadata providers, SQLite repositories, and shared job coordination. Provider-owned configuration and durable queue/event infrastructure remain future work. |
-| TV analysis and matching | Implemented as explainable, confidence-scored suggestions with correction history. Built-in TV metadata providers and broad real-disc validation remain outstanding. |
-| TV metadata configuration | Dashboard settings, provider credential checks, health reporting, and nullable/unavailable lookup metrics are implemented. TVDB/TMDB TV lookup and metadata caching remain disconnected from TV workflows. |
+| TV analysis and matching | Implemented as explainable, confidence-scored suggestions with correction history and TVDB/TMDB TV metadata candidates. Broad real-disc validation remains outstanding. |
+| TV metadata lookup | TVDB/TMDB TV series, season, and episode lookup is integrated with provider selection/fallback, health-aware failover, optional cache, refresh, audit history, and live metrics. |
 | TV workflow and review | TV plans are persisted and held for review; the dashboard exposes analysis, matching, plan approval/correction, and validation evidence. TV output execution remains disabled. |
 | Universal Review Centre | Implemented for TV/CD reviews, metadata issues, processing failures, folder failures, disc-read errors, validation warnings, configuration issues, and system warnings. |
 | Audio-CD publishing | Missing Music/artist directories are created; albums are atomically published under `Artist/Album`, with collision-safe naming and Review Centre recovery on destination failures. |
@@ -41,9 +41,11 @@ queue/event infrastructure remain future gates. See
 [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md) and
 [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md).
 
-AutoDisc v1.9.1 adds a separate, configuration-only TV metadata provider
-catalog, provider credential checks, and read-only matching policy details.
-No TV metadata search/cache implementation is connected to existing workflows.
+AutoDisc v1.9.1 adds provider-backed TV metadata lookups to the existing
+analysis workflow. Results remain suggestions only; episode assignment and TV
+output execution are not enabled. See
+[TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md) for provider, cache, and
+API behavior.
 
 Foundation & Core Improvements
 Codebase Cleanup
@@ -81,7 +83,7 @@ Smart Episode Detection
 
     [Implemented] Explainable analysis and episode-match suggestions
     [Implemented] Confidence, alternatives, duplicate/alternate and bonus analysis
-    [Remaining] Real-disc validation and built-in TV metadata providers
+    [Remaining] Real-disc validation and confidence calibration
 
 TV Library Organization
 
