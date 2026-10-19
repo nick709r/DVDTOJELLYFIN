@@ -190,6 +190,7 @@ Version 2 will focus on making TV series DVD archiving as automated and reliable
 - Architecture review, risks, proposed structure, and delivery gates:
   [`AUTODISC-ARCHITECTURE.md`](./AUTODISC-ARCHITECTURE.md).
 - One job at a time; repeated disc events are coalesced.
+- The dashboard supports a persistent light/dark appearance toggle.
 - Disc insertion is monitored through udev, with a lightweight two-second
   media-presence check to recover from missed insertion events. If the drive
   reports media before the disc is ready to read—or its media state is not

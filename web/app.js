@@ -1,6 +1,20 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null };
 const loginDialog = $("#login-dialog");
+const themeToggle = $("#theme-toggle");
+
+function setTheme(theme) {
+  const isLight = theme === "light";
+  document.documentElement.dataset.theme = isLight ? "light" : "dark";
+  themeToggle.textContent = isLight ? "Dark mode" : "Light mode";
+  themeToggle.setAttribute("aria-pressed", String(isLight));
+  localStorage.setItem("autodisc-theme", isLight ? "light" : "dark");
+}
+
+setTheme(localStorage.getItem("autodisc-theme") === "light" ? "light" : "dark");
+themeToggle.addEventListener("click", () => {
+  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+});
 
 function notify(message, isError = false) {
   const box = $("#notice");
