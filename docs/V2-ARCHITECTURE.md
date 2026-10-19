@@ -25,6 +25,9 @@ Migration 8 adds immutable TV validation evidence capture, local JSON
 import/export, and explainability reports. See
 [TV-VALIDATION.md](./TV-VALIDATION.md) for the evidence format, tooling, and
 known assumptions.
+Migration 9 adds the persistent universal Review Centre. Dashboard review
+actions expose review filtering and recovery, and the audio-CD publisher
+creates `Music/Artist/Album` destinations before atomic album publication.
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
 for the current diagram, gate status, extension points, and feature blockers.
 See [TV-ANALYSIS-ENGINE.md](./TV-ANALYSIS-ENGINE.md) for its input, scoring,
@@ -45,6 +48,8 @@ flowchart LR
   Workflows --> JobCoordinator[JobCoordinator]
   JobCoordinator --> RepositoryPorts[Repository contracts]
   RepositoryPorts --> SqliteAdapters[SQLite repositories]
+  SqliteAdapters --> ReviewItems[(Review item repository)]
+  ReviewItems --> ReviewCentre[Universal Review Centre]
   Workflows --> MetadataResolver[MetadataResolver]
   MetadataResolver --> MetadataRegistry[MetadataProviderRegistry]
   MetadataRegistry --> MetadataProviders[TMDB movie / MusicBrainz album]
@@ -68,6 +73,10 @@ flowchart LR
   TvWorkflow --> TvAnalysis
   TvWorkflow --> Plan[Persisted TV Processing Plan]
   Plan --> Review[Review state; execution disabled]
+  Review --> ReviewItems
+  AudioCD[Audio CD workflow] --> MusicFolders[Create Music / Artist directories]
+  MusicFolders --> AlbumPublish[Atomic Artist / Album publication]
+  AlbumPublish -. failure .-> ReviewItems
   TvWorkflow --> Evidence[TV validation evidence capture]
   Evidence --> ValidationStore[(SQLite evidence repository)]
   ValidationStore --> Dataset[Local JSON import/export + reports]
@@ -78,6 +87,26 @@ Source-specific selection and output handling belongs to registered workflow
 providers. Built-in providers and workflows are currently registered
 statically at the composition root; runtime package discovery, provider-owned
 configuration schemas, and dynamic administration UI are not implemented.
+
+## Universal Review Centre and Audio CD publishing
+
+Migration 9 stores TV and CD reviews, metadata issues, processing failures,
+folder-creation failures, disc-read errors, validation warnings, configuration
+issues, and system warnings. Review records retain severity, status,
+timestamps, job/disc/drive context, error details, the requested path, and
+suggested actions. Authenticated REST endpoints at `/api/v1/reviews` provide
+summary counts, category/severity/status/date filters, item details and job
+logs, resolve/dismiss operations, and safe retry requests. The dashboard keeps
+TV plan approvals while presenting these cross-workflow items in the Review
+Centre.
+
+Audio CD publishing recursively creates and verifies the configured Music
+root and sanitized artist directory. Tracks remain in a private staging
+directory until the completed album can be atomically renamed into a
+collision-safe `Artist/Album` destination. Destination and publication errors
+create a folder-creation review with filesystem error and parent permission
+details; retry checks the destination parent and asks the optical-disc monitor
+to rescan rather than leaving an empty album directory behind.
 
 ## 1. Architectural objective
 

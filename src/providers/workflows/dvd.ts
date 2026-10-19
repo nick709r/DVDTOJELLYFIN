@@ -54,7 +54,7 @@ export class DvdWorkflow implements MediaWorkflow {
     }
 
     const id = randomUUID();
-    const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal);
+    const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal, devicePath);
     if (this.tvWorkflow && settings.tvDetectionEnabled !== false) {
       try {
         const tvResult = await this.tvWorkflow.prepare({
@@ -80,7 +80,8 @@ export class DvdWorkflow implements MediaWorkflow {
         jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
           code: cancelled ? "cancelled" : interrupted ? "interrupted" : "tv_analysis_failed",
           message: error instanceof Error ? error.message : "TV analysis failed",
-          recoverable: interrupted
+          recoverable: interrupted,
+          reviewCategory: "tv_review"
         });
         setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
         notifyStatus();

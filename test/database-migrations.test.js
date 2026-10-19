@@ -46,7 +46,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
   db.close();
 });
 
@@ -64,6 +64,66 @@ test("SQLite repository adapters preserve settings, job, history, event and reco
   assert.equal(repositories.history.timeline("repo-job").at(-1).message, "Completed successfully");
   assert.equal(repositories.recovery.lastDiscFingerprint(), "fingerprint");
   assert.equal(repositories.history.stats().successful, 1);
+  repositories.close();
+});
+
+test("review item repository persists searchable lifecycle data and summary counts", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  const review = repositories.reviewItems.create({
+    category: "folder_creation_failure",
+    severity: "critical",
+    title: "Music folder is unavailable",
+    description: "AutoDisc could not create the artist folder",
+    relatedJobId: undefined,
+    relatedDisc: "Music CD 0123",
+    discFingerprint: "review-disc",
+    relatedDrive: "/dev/sr0",
+    requestedPath: "/music/Artist/Album",
+    errorDetails: { code: "EACCES" },
+    suggestedActions: [{ type: "retry", label: "Retry" }]
+  });
+  repositories.reviewItems.create({
+    category: "tv_review",
+    severity: "medium",
+    title: "TV plan needs review",
+    description: "Low confidence match",
+    suggestedActions: [{ type: "view-job", label: "View" }]
+  });
+
+  assert.equal(repositories.reviewItems.get(review.id).errorDetails.code, "EACCES");
+  assert.equal(repositories.reviewItems.list({
+    category: "folder_creation_failure",
+    severity: "critical",
+    status: "active"
+  }).length, 1);
+  assert.equal(repositories.reviewItems.summary().active, 2);
+  assert.equal(repositories.reviewItems.summary().critical, 1);
+
+  const retrying = repositories.reviewItems.updateStatus(review.id, "retrying", "Retry requested");
+  assert.equal(retrying.status, "retrying");
+  assert.equal(retrying.retryCount, 1);
+  const refreshedReview = repositories.reviewItems.create({
+    category: "folder_creation_failure",
+    severity: "high",
+    title: "Music folder still unavailable",
+    description: "Retry failed",
+    relatedDisc: "Music CD 0123",
+    discFingerprint: "review-disc",
+    relatedDrive: "/dev/sr0",
+    requestedPath: "/music/Artist/Album",
+    errorDetails: { code: "EACCES", stage: "publish" },
+    suggestedActions: [{ type: "retry", label: "Retry again" }]
+  });
+  assert.equal(refreshedReview.id, review.id);
+  assert.equal(refreshedReview.status, "active");
+  assert.equal(refreshedReview.retryCount, 1);
+  assert.equal(refreshedReview.severity, "high");
+  repositories.reviewItems.updateStatus(review.id, "resolved", "Folder is writable now");
+  assert.equal(repositories.reviewItems.get(review.id).status, "resolved");
+  assert.equal(repositories.reviewItems.resolveForDisc("review-disc", "Completed"), 0);
+  assert.equal(repositories.reviewItems.summary().active, 1);
   repositories.close();
 });
 

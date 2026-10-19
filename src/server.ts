@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { access, open, readdir, stat, statfs, unlink } from "node:fs/promises";
+import { access, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -24,6 +24,7 @@ import { repositories } from "./db.js";
 import { TvReviewService } from "./application/tv-review-service.js";
 import { TvValidationService } from "./application/tv-validation-service.js";
 import type { Episode, TvProcessingPlan } from "./domain/television.js";
+import type { ReviewCategory, ReviewSeverity, ReviewStatus } from "./domain/reviews.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
 const tvValidation = new TvValidationService(
@@ -273,6 +274,11 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/jobs/:id/music-meta
   if (!submitManualMusicMetadata(request.params.id, metadata)) {
     return reply.code(409).send({ error: "This job is no longer waiting for manual music metadata" });
   }
+  for (const review of repositories.reviewItems.list({ status: "active", limit: 1000 })) {
+    if (review.relatedJobId === request.params.id && review.category === "metadata_issue") {
+      repositories.reviewItems.updateStatus(review.id, "resolved", "Manual album and track metadata was supplied");
+    }
+  }
   events.emit("status");
   return { ok: true };
 });
@@ -287,6 +293,112 @@ app.get<{ Querystring: { range?: string } }>("/api/v1/stats", async (request) =>
   const days = request.query.range === "30d" ? 30 : 7;
   const series = dailyJobStats(days);
   return { range: `${days}d`, series };
+});
+
+const reviewCategories: readonly ReviewCategory[] = [
+  "tv_review", "cd_review", "metadata_issue", "processing_failure",
+  "folder_creation_failure", "disc_read_error", "validation_warning",
+  "configuration_issue", "system_warning"
+];
+const reviewSeverities: readonly ReviewSeverity[] = ["critical", "high", "medium", "low"];
+const reviewStatuses: readonly ReviewStatus[] = ["active", "retrying", "resolved", "dismissed"];
+
+app.get<{ Querystring: {
+  category?: string; severity?: string; status?: string; from?: string; to?: string;
+  limit?: string; offset?: string;
+} }>("/api/v1/reviews", async (request, reply) => {
+  const query = request.query;
+  if (query.category && !reviewCategories.includes(query.category as ReviewCategory)) {
+    return reply.code(400).send({ error: "Invalid review category" });
+  }
+  if (query.severity && !reviewSeverities.includes(query.severity as ReviewSeverity)) {
+    return reply.code(400).send({ error: "Invalid review severity" });
+  }
+  if (query.status && !reviewStatuses.includes(query.status as ReviewStatus)) {
+    return reply.code(400).send({ error: "Invalid review status" });
+  }
+  const limit = query.limit === undefined ? 100 : Number(query.limit);
+  const offset = query.offset === undefined ? 0 : Number(query.offset);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 250 ||
+    !Number.isInteger(offset) || offset < 0 || offset > 1000000) {
+    return reply.code(400).send({ error: "Review pagination is invalid" });
+  }
+  if ((query.from && !Number.isFinite(Date.parse(query.from))) ||
+    (query.to && !Number.isFinite(Date.parse(query.to)))) {
+    return reply.code(400).send({ error: "Review date filter is invalid" });
+  }
+  const filters = {
+    ...(query.category ? { category: query.category as ReviewCategory } : {}),
+    ...(query.severity ? { severity: query.severity as ReviewSeverity } : {}),
+    ...(query.status ? { status: query.status as ReviewStatus } : {}),
+    ...(query.from ? { from: query.from } : {}),
+    ...(query.to ? { to: query.to } : {}),
+    limit,
+    offset
+  };
+  return {
+    summary: repositories.reviewItems.summary(),
+    items: repositories.reviewItems.list(filters)
+  };
+});
+
+app.get<{ Params: { id: string } }>("/api/v1/reviews/:id", async (request, reply) => {
+  const item = repositories.reviewItems.get(request.params.id);
+  if (!item) return reply.code(404).send({ error: "Review item not found" });
+  const job = item.relatedJobId ? jobDetails(item.relatedJobId) : undefined;
+  return { item, job: job ?? null };
+});
+
+app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/resolve", async (request, reply) => {
+  const item = repositories.reviewItems.get(request.params.id);
+  if (!item) return reply.code(404).send({ error: "Review item not found" });
+  if (item.status === "resolved" || item.status === "dismissed") {
+    return reply.code(409).send({ error: `Review item is already ${item.status}` });
+  }
+  const resolved = repositories.reviewItems.updateStatus(item.id, "resolved", "Marked resolved by administrator");
+  return { item: resolved };
+});
+
+app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/dismiss", async (request, reply) => {
+  const item = repositories.reviewItems.get(request.params.id);
+  if (!item) return reply.code(404).send({ error: "Review item not found" });
+  if (item.status === "resolved" || item.status === "dismissed") {
+    return reply.code(409).send({ error: `Review item is already ${item.status}` });
+  }
+  return { item: repositories.reviewItems.updateStatus(item.id, "dismissed", "Dismissed by administrator") };
+});
+
+app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/retry", async (request, reply) => {
+  const item = repositories.reviewItems.get(request.params.id);
+  if (!item) return reply.code(404).send({ error: "Review item not found" });
+  if (item.status !== "active" && item.status !== "retrying") {
+    return reply.code(409).send({ error: `Cannot retry a ${item.status} review item` });
+  }
+  if (!item.suggestedActions.some((action) => action.type === "retry" || action.type === "retry-after-correction")) {
+    return reply.code(409).send({ error: "This review item does not support retry" });
+  }
+  if (item.requestedPath) {
+    try {
+      const requestedPath = item.category === "folder_creation_failure" && item.errorDetails?.stage === "publish"
+        ? dirname(item.requestedPath)
+        : item.requestedPath;
+      await mkdir(requestedPath, { recursive: true, mode: 0o755 });
+      await access(requestedPath, constants.R_OK | constants.W_OK | constants.X_OK);
+      const info = await stat(requestedPath);
+      if (!info.isDirectory()) throw new Error(`${requestedPath} is not a directory`);
+    } catch (error) {
+      app.log.error({ err: error, reviewId: item.id, requestedPath: item.requestedPath }, "Review recovery directory creation failed");
+      return reply.code(409).send({
+        error: `Could not create or access ${item.requestedPath}: ${error instanceof Error ? error.message : "unknown filesystem error"}`
+      });
+    }
+  }
+  if (item.relatedDrive && item.relatedDrive !== getSettings().opticalDevice) {
+    return reply.code(409).send({ error: "The related disc drive differs from the configured optical drive; update Settings before retrying" });
+  }
+  const retrying = repositories.reviewItems.updateStatus(item.id, "retrying", "Disc retry requested");
+  events.emit("review-retry", retrying);
+  return { item: retrying, message: "Retry requested. Keep the related disc in the configured drive." };
 });
 
 app.get<{ Querystring: { confidence?: string; state?: string; limit?: string; offset?: string } }>(

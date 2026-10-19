@@ -10,6 +10,7 @@ import type { JobCoordinator } from "./application/job-coordinator.js";
 import type { MediaWorkflowRegistry } from "./application/media-workflow-registry.js";
 import { discRemoved, getRuntimeStatus, setRuntimeStatus } from "./runtime-status.js";
 import { log as writeLog } from "./logger.js";
+import type { ReviewItem } from "./domain/reviews.js";
 
 let stopping = false;
 let seenInsertedDisc = false;
@@ -219,7 +220,15 @@ export function startDiscMonitor(
     if (presenceTimer) clearInterval(presenceTimer);
     presenceTimer = undefined;
     monitorChild?.kill("SIGTERM");
+    events.off("review-retry", onReviewRetry);
   };
+  const onReviewRetry = (review?: ReviewItem): void => {
+    if (signal.aborted || jobs.activeJob()) return;
+    if (review?.relatedDrive && review.relatedDrive !== jobs.getSettings().opticalDevice) return;
+    seenInsertedDisc = false;
+    scheduleInsert(signal, sources, workflows, metadata, jobs);
+  };
+  events.on("review-retry", onReviewRetry);
   signal.addEventListener("abort", onAbort, { once: true });
   scheduleInsert(signal, sources, workflows, metadata, jobs);
   void reconcileMediaPresence(signal, sources, workflows, metadata, jobs).catch((error: unknown) => {

@@ -133,6 +133,39 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (8, ?)")
     .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS review_items (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL CHECK (category IN (
+        'tv_review', 'cd_review', 'metadata_issue', 'processing_failure',
+        'folder_creation_failure', 'disc_read_error', 'validation_warning',
+        'configuration_issue', 'system_warning'
+      )),
+      severity TEXT NOT NULL CHECK (severity IN ('critical', 'high', 'medium', 'low')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retrying', 'resolved', 'dismissed')),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      related_job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+      related_disc TEXT,
+      disc_fingerprint TEXT,
+      related_drive TEXT,
+      error_details_json TEXT,
+      requested_path TEXT,
+      suggested_actions_json TEXT NOT NULL,
+      resolution_details TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS review_items_status_created
+      ON review_items(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS review_items_category_severity
+      ON review_items(category, severity, created_at DESC);
+    CREATE INDEX IF NOT EXISTS review_items_job ON review_items(related_job_id);
+    CREATE INDEX IF NOT EXISTS review_items_disc ON review_items(disc_fingerprint);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (9, ?)")
+    .run(new Date().toISOString());
   const recoveryTime = new Date().toISOString();
   const markInterrupted = db.transaction(() => {
     const jobs = db.prepare(`

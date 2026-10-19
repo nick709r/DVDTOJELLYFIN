@@ -296,6 +296,88 @@ async function loadTvReviews() {
     : '<div class="empty-state">No plans in this review state.</div>';
 }
 
+const reviewCategoryLabels = {
+  tv_review: "TV review",
+  cd_review: "CD review",
+  metadata_issue: "Metadata issue",
+  processing_failure: "Processing failure",
+  folder_creation_failure: "Folder creation",
+  disc_read_error: "Disc read error",
+  validation_warning: "Validation warning",
+  configuration_issue: "Configuration issue",
+  system_warning: "System warning"
+};
+
+function renderReviewItem(item) {
+  const actions = item.status === "active" || item.status === "retrying"
+    ? item.suggestedActions.map((action) => {
+      if (action.type === "retry" || action.type === "retry-after-correction") {
+        return `<button class="button primary review-action" data-action="retry" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "open-settings") {
+        return `<button class="button secondary review-action" data-action="open-settings">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "enter-metadata") {
+        return `<button class="button secondary review-action" data-action="enter-metadata" data-job-id="${escapeHtml(item.relatedJobId || "")}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "view-job") {
+        return `<button class="button secondary review-action" data-action="view-job" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "resolve") {
+        return `<button class="button secondary review-action" data-action="resolve" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "dismiss") {
+        return `<button class="button danger review-action" data-action="dismiss" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      return "";
+    }).join("")
+    : "";
+  const details = {
+    ...(item.relatedJobId ? { jobId: item.relatedJobId } : {}),
+    ...(item.relatedDisc ? { disc: item.relatedDisc } : {}),
+    ...(item.relatedDrive ? { drive: item.relatedDrive } : {}),
+    ...(item.requestedPath ? { requestedPath: item.requestedPath } : {}),
+    ...(item.errorDetails || {})
+  };
+  return `<article class="review-item ${escapeHtml(item.severity)}">
+    <div class="review-heading"><div><span class="review-category">${escapeHtml(reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
+      <h3>${escapeHtml(item.title)}</h3><span class="list-sub">${escapeHtml(item.relatedDisc || "Disc not identified")}${item.relatedDrive ? ` · ${escapeHtml(item.relatedDrive)}` : ""} · ${new Date(item.createdAt).toLocaleString()}</span></div>
+      <span class="review-status">${escapeHtml(item.status)}</span></div>
+    <p>${escapeHtml(item.description)}</p>
+    ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
+    ${item.resolutionDetails ? `<p class="list-sub">Resolution: ${escapeHtml(item.resolutionDetails)}${item.resolvedAt ? ` · ${escapeHtml(new Date(item.resolvedAt).toLocaleString())}` : ""}</p>` : ""}
+    ${item.retryCount ? `<p class="list-sub">Retry attempts: ${item.retryCount}</p>` : ""}
+    <div class="tv-actions">${actions}</div>
+    <div class="review-job-details" data-review-details="${escapeHtml(item.id)}"></div>
+  </article>`;
+}
+
+async function loadReviewCentre() {
+  const query = new URLSearchParams({ limit: "250" });
+  for (const [id, key] of [
+    ["review-category", "category"],
+    ["review-severity", "severity"],
+    ["review-status", "status"],
+    ["review-from", "from"],
+    ["review-to", "to"]
+  ]) {
+    const value = $(`#${id}`).value;
+    if (value) query.set(key, key === "to" ? `${value}T23:59:59.999Z` : key === "from" ? `${value}T00:00:00.000Z` : value);
+  }
+  const { summary, items } = await api(`/api/v1/reviews?${query}`);
+  $("#review-summary").innerHTML = [
+    ["Active reviews", summary.active],
+    ["Critical reviews", summary.critical],
+    ["TV reviews", summary.tv],
+    ["CD reviews", summary.cd],
+    ["Processing failures", summary.processingFailures],
+    ["Resolved today", summary.resolvedToday]
+  ].map(([label, value]) => tvStat(label, value)).join("");
+  $("#review-list").innerHTML = items.length
+    ? items.map(renderReviewItem).join("")
+    : '<div class="empty-state">No review items match the selected filters.</div>';
+}
+
 async function loadTvValidation() {
   const { summary, correctionCount, cases } = await api("/api/v1/tv/validation");
   $("#tv-validation-summary").innerHTML = [
@@ -549,7 +631,7 @@ function showPage(page) {
     history: "History",
     "tv-analysis": "TV Analysis",
     "episode-matching": "Episode Matching",
-    "tv-reviews": "TV Review Queue",
+    "tv-reviews": "Review Centre",
     "tv-validation": "TV Validation",
     statistics: "Statistics",
     settings: "Settings"
@@ -561,6 +643,7 @@ function showPage(page) {
   if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
   if (page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
   if (page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
+  if (page === "tv-reviews") loadReviewCentre().catch((error) => notify(error.message, true));
   if (page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
   if (page === "statistics") loadStatistics().catch((error) => notify(error.message, true));
   if (page === "settings") loadSettings().catch((error) => notify(error.message, true));
@@ -575,6 +658,43 @@ $("#refresh-history").addEventListener("click", () => refreshHistory().catch((er
 $("#tv-analysis-confidence").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-analysis-state").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-review-filter").addEventListener("change", () => loadTvReviews().catch((error) => notify(error.message, true)));
+$("#refresh-reviews").addEventListener("click", () => loadReviewCentre().catch((error) => notify(error.message, true)));
+["review-category", "review-severity", "review-status", "review-from", "review-to"].forEach((id) =>
+  $(`#${id}`).addEventListener("change", () => loadReviewCentre().catch((error) => notify(error.message, true))));
+
+$("#review-list").addEventListener("click", async (event) => {
+  const button = event.target.closest(".review-action");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const action = button.dataset.action;
+    if (action === "open-settings") {
+      showPage("settings");
+      return;
+    }
+    if (action === "enter-metadata") {
+      showPage("dashboard");
+      const status = await api("/api/v1/status");
+      renderManualMusicMetadata(status.manualMusicMetadata);
+      if (!status.manualMusicMetadata) notify("This CD is no longer waiting for manual metadata.", true);
+      return;
+    }
+    if (action === "view-job") {
+      const { job } = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}`);
+      const container = button.closest(".review-item").querySelector(".review-job-details");
+      container.innerHTML = `<details open><summary>Related job and logs</summary>${job ? `<p>${escapeHtml(job.job.title || job.job.discLabel || job.job.id)} · ${escapeHtml(job.job.status)}</p><pre>${escapeHtml(JSON.stringify(job.timeline, null, 2))}</pre>` : "<p>Related job is no longer available.</p>"}</details>`;
+      return;
+    }
+    const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" : "dismiss";
+    const result = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}/${endpoint}`, { method: "POST" });
+    notify(result.message || `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`);
+    await loadReviewCentre();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest(".tv-action, .close-tv-detail");

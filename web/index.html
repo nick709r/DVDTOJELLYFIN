@@ -15,7 +15,7 @@
         <button class="nav-link" data-page="history">History</button>
         <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
         <button class="nav-link" data-page="episode-matching">Episode Matching</button>
-        <button class="nav-link" data-page="tv-reviews">Review Queue</button>
+        <button class="nav-link" data-page="tv-reviews">Review Centre</button>
         <button class="nav-link" data-page="tv-validation">TV Validation</button>
         <button class="nav-link" data-page="statistics">Statistics</button>
         <button class="nav-link" data-page="settings">Settings</button>
@@ -92,7 +92,21 @@
         </article>
       </section>
       <section id="page-tv-reviews" class="page hidden">
-        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">HUMAN IN THE LOOP</p><h2>TV review queue</h2></div>
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">VERSION 2 OPERATIONS</p><h2>Review Centre</h2></div>
+            <button id="refresh-reviews" class="button secondary" type="button">Refresh</button>
+          </div>
+          <div id="review-summary" class="tv-stat-grid"></div>
+          <div class="review-filters">
+            <label>Category<select id="review-category"><option value="">All categories</option><option value="tv_review">TV review</option><option value="cd_review">CD review</option><option value="metadata_issue">Metadata</option><option value="processing_failure">Processing failure</option><option value="folder_creation_failure">Folder creation</option><option value="disc_read_error">Disc read error</option><option value="validation_warning">Validation warning</option><option value="configuration_issue">Configuration</option><option value="system_warning">System warning</option></select></label>
+            <label>Severity<select id="review-severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+            <label>Status<select id="review-status"><option value="active">Active</option><option value="retrying">Retrying</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option><option value="">All statuses</option></select></label>
+            <label>Created from<input id="review-from" type="date"></label>
+            <label>Created to<input id="review-to" type="date"></label>
+          </div>
+          <div id="review-list"></div>
+        </article>
+        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">TV WORKFLOW</p><h2>Episode plans awaiting review</h2></div>
           <label>Show<select id="tv-review-filter"><option value="awaiting-review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All plans</option></select></label>
         </div><div id="tv-review-list"></div></article>
       </section>

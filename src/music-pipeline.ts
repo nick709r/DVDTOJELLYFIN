@@ -1,8 +1,8 @@
 import { access, mkdir, readdir, rename, rm, stat, statfs } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { JobCoordinator } from "./application/job-coordinator.js";
+import type { JobContext, JobCoordinator } from "./application/job-coordinator.js";
 import type { AudioDisc } from "./audio-cd.js";
 import type { AudioTrackFile } from "./audio-cd.js";
 import type { MusicAlbumMetadata } from "./music-metadata.js";
@@ -20,9 +20,116 @@ const minimumWorkBytes = 2 * 1024 ** 3;
 const minimumMusicBytes = 256 * 1024 ** 2;
 const ffmpeg = process.env.FFMPEG_COMMAND ?? "ffmpeg";
 
+interface AudioDestinationFailure {
+  message: string;
+  details: Readonly<Record<string, unknown>>;
+}
+
+async function createDestinationDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o755 });
+  await access(path, constants.R_OK | constants.W_OK | constants.X_OK);
+  const info = await stat(path);
+  if (!info.isDirectory()) throw new Error(`${path} exists but is not a directory`);
+}
+
+async function audioDestinationFailure(path: string, error: unknown): Promise<AudioDestinationFailure> {
+  const fsError = error as NodeJS.ErrnoException;
+  let parent: { mode: number; uid: number; gid: number } | undefined;
+  try {
+    const info = await stat(dirname(path));
+    parent = { mode: info.mode & 0o777, uid: info.uid, gid: info.gid };
+  } catch {
+    parent = undefined;
+  }
+  const reason = error instanceof Error ? error.message : "Unknown destination directory error";
+  const message = `Could not create or access destination folder ${path}: ${reason}`;
+  return {
+    message,
+    details: {
+      requestedPath: path,
+      reason,
+      errorCode: fsError.code,
+      syscall: fsError.syscall,
+      errorPath: fsError.path,
+      parentDirectory: dirname(path),
+      parentPermissions: parent ? {
+        mode: `0${parent.mode.toString(8)}`,
+        ownerUid: parent.uid,
+        ownerGid: parent.gid
+      } : "parent directory is missing or inaccessible",
+      processUid: typeof process.getuid === "function" ? process.getuid() : null,
+      processGid: typeof process.getgid === "function" ? process.getgid() : null
+    }
+  };
+}
+
+async function recordFolderCreationReview(
+  jobs: JobCoordinator,
+  context: JobContext,
+  path: string,
+  disc: AudioDisc,
+  device: string,
+  error: unknown,
+  stage: "create" | "publish" = "create"
+): Promise<AudioDestinationFailure> {
+  const destinationFailure = await audioDestinationFailure(path, error);
+  const failure = { ...destinationFailure, details: { ...destinationFailure.details, stage } };
+  jobs.createReview({
+    category: "folder_creation_failure",
+    severity: "high",
+    title: "Could not create the Music destination folder",
+    description: failure.message,
+    relatedJobId: context.id,
+    relatedDisc: disc.discId ?? `Audio CD ${disc.fingerprint.slice(0, 12)}`,
+    discFingerprint: disc.fingerprint,
+    relatedDrive: device,
+    requestedPath: path,
+    errorDetails: failure.details,
+    suggestedActions: [
+      { type: "retry", label: "Retry folder creation and disc processing" },
+      { type: "open-settings", label: "Open storage settings" },
+      { type: "view-job", label: "View job logs" },
+      { type: "resolve", label: "Mark resolved" }
+    ]
+  });
+  return failure;
+}
+
+export async function ensureAudioAlbumFolders(
+  jobs: JobCoordinator,
+  context: JobContext,
+  outputDir: string,
+  artist: string,
+  disc: AudioDisc,
+  device: string,
+  createDirectory = createDestinationDirectory
+): Promise<string> {
+  const artistDirectory = join(outputDir, safeTitle(artist));
+  for (const path of [outputDir, artistDirectory]) {
+    try {
+      await createDirectory(path);
+    } catch (error) {
+      const failure = await recordFolderCreationReview(jobs, context, path, disc, device, error);
+      throw Object.assign(new Error(failure.message), {
+        code: "folder_creation_failed",
+        reviewDetails: failure.details
+      });
+    }
+  }
+  return artistDirectory;
+}
+
 async function assertWritableDirectory(path: string, reserveBytes: number): Promise<void> {
   await mkdir(path, { recursive: true });
   await access(path, constants.R_OK | constants.W_OK | constants.X_OK);
+  const space = await statfs(path);
+  const available = Number(space.bavail) * Number(space.bsize);
+  if (!Number.isFinite(available) || available < reserveBytes) {
+    throw new Error(`Insufficient free space at ${path}; at least ${Math.ceil(reserveBytes / 1024 ** 2)} MiB is required`);
+  }
+}
+
+async function assertAvailableSpace(path: string, reserveBytes: number): Promise<void> {
   const space = await statfs(path);
   const available = Number(space.bavail) * Number(space.bsize);
   if (!Number.isFinite(available) || available < reserveBytes) {
@@ -41,6 +148,30 @@ async function uniqueAlbumPath(directory: string, name: string): Promise<string>
     }
   }
   throw new Error("Could not generate a unique Music album folder");
+}
+
+export async function publishAudioAlbum(
+  jobs: JobCoordinator,
+  context: JobContext,
+  stagingDir: string,
+  artistDirectory: string,
+  albumFolder: string,
+  disc: AudioDisc,
+  device: string,
+  publish: typeof rename = rename
+): Promise<string> {
+  let finalPath = join(artistDirectory, albumFolder);
+  try {
+    finalPath = await uniqueAlbumPath(artistDirectory, albumFolder);
+    await publish(stagingDir, finalPath);
+  } catch (error) {
+    const destinationFailure = await recordFolderCreationReview(jobs, context, finalPath, disc, device, error, "publish");
+    throw Object.assign(new Error(destinationFailure.message), {
+      code: "folder_creation_failed",
+      reviewDetails: destinationFailure.details
+    });
+  }
+  return finalPath;
 }
 
 export async function processAudioCd(
@@ -67,12 +198,22 @@ export async function processAudioCd(
   let failure: string | null = null;
   let finalPath: string | null = null;
   let conversionStartedAt: number | undefined;
-  const context = jobs.begin(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", "audio_cd", disc.fingerprint, signal);
+  let failureCode: string | undefined;
+  let failureDetails: Readonly<Record<string, unknown>> | undefined;
+  const context = jobs.begin(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", "audio_cd", disc.fingerprint, signal, device);
 
   try {
     events.emit("status");
     await assertWritableDirectory(settings.workDir, minimumWorkBytes);
-    await assertWritableDirectory(outputDir, minimumMusicBytes);
+    try {
+      await createDestinationDirectory(outputDir);
+    } catch (error) {
+      const destinationFailure = await recordFolderCreationReview(jobs, context, outputDir, disc, device, error);
+      failureCode = "folder_creation_failed";
+      failureDetails = destinationFailure.details;
+      throw Object.assign(new Error(destinationFailure.message), { code: failureCode });
+    }
+    await assertAvailableSpace(outputDir, minimumMusicBytes);
     await mkdir(workDir, { recursive: true, mode: 0o750 });
     await mkdir(stagingDir, { mode: 0o750 });
 
@@ -109,10 +250,30 @@ export async function processAudioCd(
       jobs.step(context, { id: "resolve-metadata", status: "ripping", message: "Waiting for manual metadata in the dashboard" });
       events.emit("status");
       jobs.record(context, "metadata", "warn", "Automatic metadata matching failed; waiting for manual album and track metadata");
+      jobs.createReview({
+        category: "metadata_issue",
+        severity: "medium",
+        title: "Audio CD metadata needs attention",
+        description: "MusicBrainz did not provide an unambiguous album and track match. Enter metadata in the dashboard to continue.",
+        relatedJobId: id,
+        relatedDisc: disc.discId ?? `Audio CD ${disc.fingerprint.slice(0, 12)}`,
+        discFingerprint: disc.fingerprint,
+        relatedDrive: device,
+        errorDetails: { source: "musicbrainz", discId: disc.discId, trackNumbers: disc.trackNumbers },
+        suggestedActions: [
+          { type: "enter-metadata", label: "Enter album and track metadata" },
+          { type: "view-job", label: "View job" },
+          { type: "dismiss", label: "Dismiss" }
+        ]
+      });
       metadata = await waitForManualMusicMetadata(id, disc, signal);
       jobs.record(context, "metadata", "info", `Music details supplied ${metadata.source === "musicbrainz" ? "from a metadata provider" : "manually"}`);
     }
-    const albumFolder = safeTitle(`${metadata.artist} - ${metadata.album}${metadata.year ? ` (${metadata.year})` : ""}`);
+    const artistFolder = safeTitle(metadata.artist);
+    const albumFolder = safeTitle(`${metadata.album}${metadata.year ? ` (${metadata.year})` : ""}`);
+    const artistDirectory = await ensureAudioAlbumFolders(
+      jobs, context, outputDir, artistFolder, disc, device
+    );
     const albumTitle = metadata.album;
     jobs.update(context, { title: albumTitle });
     jobs.record(context, "metadata", "info", `Music details from ${metadata.source}`);
@@ -160,9 +321,18 @@ export async function processAudioCd(
       : "Publishing the complete album to Jellyfin Music" });
     events.emit("status");
     if (signal?.aborted) throw new Error("Audio CD processing cancelled");
-    finalPath = await uniqueAlbumPath(outputDir, albumFolder);
-    jobs.update(context, { outputPath: finalPath, outputBytes, encoder: "FLAC lossless", progress: settings.lidarrEnabled ? 99 : 100 });
-    await rename(stagingDir, finalPath);
+    jobs.update(context, { outputBytes, encoder: "FLAC lossless", progress: settings.lidarrEnabled ? 99 : 100 });
+    try {
+      finalPath = await publishAudioAlbum(jobs, context, stagingDir, artistDirectory, albumFolder, disc, device);
+      jobs.update(context, { outputPath: finalPath });
+    } catch (error) {
+      failureCode = "folder_creation_failed";
+      if (error && typeof error === "object" && "reviewDetails" in error &&
+        typeof error.reviewDetails === "object" && error.reviewDetails !== null) {
+        failureDetails = error.reviewDetails as Readonly<Record<string, unknown>>;
+      }
+      throw error;
+    }
     if (settings.lidarrEnabled) {
       jobs.step(context, { id: "library-import", status: "publishing", message: "Sending named and tagged tracks to Lidarr for categorization" });
       events.emit("status");
@@ -188,6 +358,12 @@ export async function processAudioCd(
     successful = true;
   } catch (error) {
     failure = error instanceof Error ? error.message : "Unknown audio CD processing failure";
+    if (error && typeof error === "object" && "code" in error && error.code === "folder_creation_failed") {
+      failureCode = "folder_creation_failed";
+      if ("reviewDetails" in error && typeof error.reviewDetails === "object" && error.reviewDetails !== null) {
+        failureDetails = error.reviewDetails as Readonly<Record<string, unknown>>;
+      }
+    }
     if (settings.lidarrEnabled && finalPath) {
       failure += `; check Lidarr and the staged album at ${finalPath} before retrying to avoid a duplicate import`;
     }
@@ -222,9 +398,11 @@ export async function processAudioCd(
     const cancelled = jobs.wasJobCancelled(context);
     const interrupted = Boolean(signal?.aborted && !cancelled);
     jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
-      code: cancelled ? "cancelled" : interrupted ? "interrupted" : "audio_processing_failed",
+      code: cancelled ? "cancelled" : interrupted ? "interrupted" : failureCode ?? "audio_processing_failed",
       message: cancelled ? `Cancelled by user${failure ? `; ${failure}` : ""}` : failure ?? "Audio CD processing failed",
-      recoverable: interrupted
+      recoverable: interrupted,
+      ...(failureCode ? { reviewCategory: "folder_creation_failure" as const } : {}),
+      ...(failureDetails ? { reviewDetails: failureDetails } : {})
     });
     setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
   }

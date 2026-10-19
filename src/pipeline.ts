@@ -39,6 +39,21 @@ async function processInsertedDiscCore(
     inspectedSource = await sources.inspect(devicePath, signal);
   } catch (error) {
     if (signal.aborted) throw error;
+    jobs.createReview({
+      category: "disc_read_error",
+      severity: "high",
+      title: "Optical disc could not be read",
+      description: error instanceof Error ? error.message : "Source inspection failed",
+      relatedDrive: devicePath,
+      errorDetails: {
+        message: error instanceof Error ? error.message : "Source inspection failed"
+      },
+      suggestedActions: [
+        { type: "retry", label: "Retry disc detection" },
+        { type: "open-settings", label: "Check optical drive settings" },
+        { type: "dismiss", label: "Dismiss" }
+      ]
+    });
     log("info", "disc", "No readable media source detected", {
       error: error instanceof Error ? error.message : "Source inspection failed"
     });

@@ -155,6 +155,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
 
     const unauthorized = await app.inject({ method: "GET", url: "/api/v1/settings" });
     assert.equal(unauthorized.statusCode, 401);
+    const unauthorizedReviews = await app.inject({ method: "GET", url: "/api/v1/reviews" });
+    assert.equal(unauthorizedReviews.statusCode, 401);
 
     const login = await app.inject({
       method: "POST",
@@ -165,6 +167,56 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const setCookie = login.headers["set-cookie"];
     assert.equal(typeof setCookie, "string");
     const cookie = setCookie.split(";")[0];
+
+    const reviewRetryPath = path.join(root, "review-retry", "Music", "Artist", "Album");
+    const reviewItem = jobs.repositories.reviewItems.create({
+      category: "folder_creation_failure",
+      severity: "high",
+      title: "Could not create the Music destination folder",
+      description: "Permission denied while creating the album folder",
+      relatedDisc: "Audio CD test",
+      discFingerprint: "review-api-disc",
+      relatedDrive: jobs.getSettings().opticalDevice,
+      requestedPath: reviewRetryPath,
+      errorDetails: { code: "EACCES", stage: "publish" },
+      suggestedActions: [{ type: "retry", label: "Retry folder and processing" }]
+    });
+    const filteredReviews = await app.inject({
+      method: "GET",
+      url: "/api/v1/reviews?category=folder_creation_failure&severity=high&status=active",
+      headers: { cookie }
+    });
+    assert.equal(filteredReviews.statusCode, 200);
+    assert.equal(filteredReviews.json().items.length, 1);
+    assert.equal(filteredReviews.json().summary.active, 1);
+    const reviewDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/reviews/${reviewItem.id}`,
+      headers: { cookie }
+    });
+    assert.equal(reviewDetail.json().item.requestedPath, reviewRetryPath);
+    const reviewRetry = await app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${reviewItem.id}/retry`,
+      headers: { cookie }
+    });
+    assert.equal(reviewRetry.statusCode, 200);
+    assert.equal(reviewRetry.json().item.status, "retrying");
+    assert.equal(reviewRetry.json().item.retryCount, 1);
+    await assert.rejects(access(reviewRetryPath), { code: "ENOENT" });
+    const reviewResolved = await app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${reviewItem.id}/resolve`,
+      headers: { cookie }
+    });
+    assert.equal(reviewResolved.statusCode, 200);
+    assert.equal(reviewResolved.json().item.status, "resolved");
+    const reviewDateFilter = await app.inject({
+      method: "GET",
+      url: "/api/v1/reviews?from=invalid-date",
+      headers: { cookie }
+    });
+    assert.equal(reviewDateFilter.statusCode, 400);
 
     const authenticated = await app.inject({
       method: "GET",
