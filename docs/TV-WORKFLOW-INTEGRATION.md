@@ -29,6 +29,12 @@ automatic processing cannot currently trigger ripping, conversion, renaming,
 folder creation, movement, or publication. The disc is held for future review
 or integration; it is not ejected by the TV branch.
 
+Settings include a validated TV root output path. Validation can create the
+root directory and reports write permissions and available disk space; path
+failures create a deduplicated Review Centre configuration issue. The root is
+not yet used for TV publishing, and no Series/Season subdirectories are
+created.
+
 ## Workflow diagram
 
 ```mermaid

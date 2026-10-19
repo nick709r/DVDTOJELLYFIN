@@ -16,6 +16,7 @@ Environment=PORT=8787
 Environment=DATABASE_PATH=/var/lib/autodisc/autodisc.sqlite
 Environment=WORK_DIR=/var/cache/autodisc
 Environment=MOVIES_DIR=/srv/jellyfin/Movies
+Environment=TV_DIR=/srv/jellyfin/TV
 Environment=OPTICAL_DEVICE=/dev/sr0
 WorkingDirectory=/opt/autodisc
 ExecStart=/usr/bin/node /opt/autodisc/dist/index.js

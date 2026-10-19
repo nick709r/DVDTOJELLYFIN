@@ -82,19 +82,25 @@ export class DvdWorkflow implements MediaWorkflow {
       reasons: tvAssessment.reasons,
       tvDetectionEnabled: tvEnabled
     });
+    jobs.record(context, "tv-classification", "info", JSON.stringify({
+      decision: tvAssessment.classification,
+      confidence: tvAssessment.confidence,
+      criteria: tvAssessment.criteria,
+      reasons: tvAssessment.reasons,
+      tvDetectionEnabled: tvEnabled
+    }));
 
     if (tvAssessment.classification !== "movie" && (!tvEnabled || !this.tvWorkflow)) {
       const message = !tvEnabled
         ? `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV detection is disabled; held for review instead of movie processing.`
         : `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV analysis is unavailable; held for review instead of movie processing.`;
-      jobs.record(context, "tv-classification", "warn", JSON.stringify({
+      jobs.holdForReview(context, message, {
         classification: tvAssessment.classification,
         confidence: tvAssessment.confidence,
         criteria: tvAssessment.criteria,
         reasons: tvAssessment.reasons,
         tvDetectionEnabled: tvEnabled
-      }));
-      jobs.holdForReview(context, message);
+      });
       setRuntimeStatus("idle");
       notifyStatus();
       return true;
@@ -114,20 +120,28 @@ export class DvdWorkflow implements MediaWorkflow {
           jobs.update(context, { title: tvResult.plan.series?.title ?? info.label ?? null });
           jobs.record(context, "tv-processing-plan", "info", message);
           jobs.record(context, "tv-review", "warn", tvResult.plan.executionBlocker);
-          jobs.record(context, "tv-classification", "info", JSON.stringify({
+          const classificationDetails = {
             classification: tvAssessment.classification,
             confidence: tvAssessment.confidence,
             criteria: tvAssessment.criteria,
             reasons: tvAssessment.reasons
-          }));
-          jobs.holdForReview(context, message);
+          };
+          jobs.record(context, "tv-classification", "info", JSON.stringify(classificationDetails));
+          jobs.holdForReview(context, message, classificationDetails);
           setRuntimeStatus("idle");
           notifyStatus();
           return true;
         }
+        const classificationDetails = {
+          classification: tvAssessment.classification,
+          confidence: tvAssessment.confidence,
+          criteria: tvAssessment.criteria,
+          reasons: tvAssessment.reasons,
+          analysisUnavailable: true
+        };
         jobs.record(context, "tv-classification", "warn",
           `TV ${tvAssessment.classification} classification (heuristic confidence ${tvAssessment.confidence.toFixed(2)}) was not analyzed; reasons: ${tvAssessment.reasons.join("; ") || "none"}.`);
-        jobs.holdForReview(context, "Disc matched TV-series criteria, but TV analysis did not create a report. Held for review instead of movie processing.");
+        jobs.holdForReview(context, "Disc matched TV-series criteria, but TV analysis did not create a report. Held for review instead of movie processing.", classificationDetails);
         setRuntimeStatus("idle");
         notifyStatus();
         return true;

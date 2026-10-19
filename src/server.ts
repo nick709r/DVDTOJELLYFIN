@@ -611,16 +611,25 @@ interface PathCheck {
   path: string;
   ok: boolean;
   message: string;
+  availableBytes?: number;
+  spaceError?: string;
 }
 
 async function checkDirectoryPermissions(name: string, path: string, writable: boolean): Promise<PathCheck> {
+  let space: Pick<PathCheck, "availableBytes" | "spaceError"> = {};
   try {
     if (!validAbsolutePath(path)) throw new Error("Path must be an absolute Linux path");
     const info = await stat(path);
     if (!info.isDirectory()) throw new Error("Path is not a directory");
+    try {
+      const stats = await statfs(path);
+      space = { availableBytes: Number(stats.bavail) * Number(stats.bsize) };
+    } catch (error) {
+      space = { spaceError: error instanceof Error ? error.message : "Free space could not be determined" };
+    }
     await access(path, constants.R_OK | constants.X_OK | (writable ? constants.W_OK : 0));
     await readdir(path);
-    if (!writable) return { name, path, ok: true, message: "Readable and searchable" };
+    if (!writable) return { name, path, ok: true, message: "Readable and searchable", ...space };
 
     const probePath = join(path, `.autodisc-permission-check-${randomUUID()}`);
     let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -652,15 +661,52 @@ async function checkDirectoryPermissions(name: string, path: string, writable: b
       }
       throw new Error(`Could not create and remove a temporary test file: ${reason}${cleanupErrors.length ? `; ${cleanupErrors.join("; ")}` : ""}`);
     }
-    return { name, path, ok: true, message: "Readable, searchable, and can create and remove files" };
+    return { name, path, ok: true, message: "Readable, searchable, and can create and remove files", ...space };
   } catch (error) {
     return {
       name,
       path,
       ok: false,
-      message: error instanceof Error ? error.message : "Path check failed"
+      message: error instanceof Error ? error.message : "Path check failed",
+      ...space
     };
   }
+}
+
+async function checkTvRootDirectory(path: string): Promise<PathCheck> {
+  try {
+    if (!validAbsolutePath(path)) throw new Error("TV root must be an absolute Linux path");
+    await mkdir(path, { recursive: true });
+    return await checkDirectoryPermissions("TV root folder", path, true);
+  } catch (error) {
+    return {
+      name: "TV root folder",
+      path,
+      ok: false,
+      message: error instanceof Error ? error.message : "TV root folder could not be created"
+    };
+  }
+}
+
+function createTvPathReview(path: string, failure: string): void {
+  repositories.reviewItems.create({
+    category: "configuration_issue",
+    severity: "high",
+    title: "TV output folder validation failed",
+    description: `TV root folder validation failed for ${path || "(empty path)"}: ${failure}`,
+    ...(path ? { requestedPath: path } : {}),
+    errorDetails: {
+      path,
+      validationFailure: failure,
+      suggestedResolution: "Choose a writable Linux directory for the TV library and verify its parent-folder permissions."
+    },
+    suggestedActions: [
+      { type: "open-settings", label: "Open TV output folder settings" },
+      { type: "resolve", label: "Mark resolved" },
+      { type: "dismiss", label: "Dismiss" }
+    ]
+  });
+  app.log.warn({ path, failure }, "TV root folder validation failed");
 }
 
 async function checkOpticalDevice(path: string): Promise<PathCheck> {
@@ -691,18 +737,22 @@ app.post<{ Body: unknown }>("/api/v1/paths/check", async (request, reply) => {
   }
   const body = request.body as Record<string, unknown>;
   if (typeof body.moviesDir !== "string" || typeof body.musicDir !== "string" ||
+    typeof body.tvRootDir !== "string" ||
     typeof body.workDir !== "string" || typeof body.opticalDevice !== "string" ||
     typeof body.lidarrImportDir !== "string" || typeof body.lidarrEnabled !== "boolean") {
-    return reply.code(400).send({ error: "Path check requires Movies, Music, work, optical drive, and Lidarr settings" });
+    return reply.code(400).send({ error: "Path check requires Movies, Music, TV root, work, optical drive, and Lidarr settings" });
   }
 
   const checks = await Promise.all([
     checkDirectoryPermissions("Movies folder", body.moviesDir, true),
     checkDirectoryPermissions("Music folder", body.musicDir, !body.lidarrEnabled),
+    checkTvRootDirectory(body.tvRootDir),
     checkDirectoryPermissions("Temporary work folder", body.workDir, true),
     ...(body.lidarrEnabled ? [checkDirectoryPermissions("Lidarr downloads/import folder", body.lidarrImportDir, true)] : []),
     checkOpticalDevice(body.opticalDevice)
   ]);
+  const tvCheck = checks.find((check) => check.name === "TV root folder");
+  if (tvCheck && !tvCheck.ok) createTvPathReview(tvCheck.path, tvCheck.message);
   return { ok: checks.every((check) => check.ok), checks };
 });
 
@@ -894,6 +944,25 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "Music path must exist and be readable by AutoDisc, and writable when Lidarr integration is disabled" });
     }
     patch.musicDir = body.musicDir;
+  }
+  if ("tvRootDir" in body) {
+    const tvRootDir = typeof body.tvRootDir === "string" ? body.tvRootDir : "";
+    if (!validAbsolutePath(tvRootDir)) {
+      const failure = "TV root must be an absolute Linux path";
+      createTvPathReview(tvRootDir, failure);
+      return reply.code(400).send({ error: failure });
+    }
+    try {
+      await mkdir(tvRootDir, { recursive: true });
+      await validateDirectory(tvRootDir);
+    } catch (error) {
+      const failure = error instanceof Error
+        ? error.message
+        : "TV root path must exist and be readable and writable by AutoDisc";
+      createTvPathReview(tvRootDir, failure);
+      return reply.code(400).send({ error: `TV root path must be creatable and readable and writable by AutoDisc: ${failure}` });
+    }
+    patch.tvRootDir = tvRootDir;
   }
   if ("lidarrImportDir" in body) {
     if (!validAbsolutePath(body.lidarrImportDir)) return reply.code(400).send({ error: "Lidarr import path must be an absolute Linux path" });
@@ -1164,7 +1233,12 @@ async function systemSnapshot(signal: AbortSignal): Promise<Record<string, unkno
     memory = null;
   }
   const disks: Record<string, number | null> = {};
-  for (const [name, path] of [["work", settings.workDir], ["movies", settings.moviesDir], ["music", settings.musicDir]] as const) {
+  for (const [name, path] of [
+    ["work", settings.workDir],
+    ["movies", settings.moviesDir],
+    ["music", settings.musicDir],
+    ["tv", settings.tvRootDir]
+  ] as const) {
     try {
       const space = await statfs(path);
       disks[name] = Number(space.bavail) * Number(space.bsize);

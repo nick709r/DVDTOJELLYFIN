@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { MetadataResolver } from "../dist/application/metadata-resolver.js";
 import {
@@ -108,7 +111,9 @@ function metadataCandidates() {
 test("TV workflow creates analysis, match report, and confidence-gated processing plan", async () => {
   const savedPlans = [];
   const service = createTvService({ candidates: metadataCandidates(), savedPlans });
-  const result = await service.prepare(tvSource(), "fingerprint-1");
+  const source = tvSource();
+  assert.equal(assessTvDisc(source).classification, "tv");
+  const result = await service.prepare(source, "fingerprint-1");
 
   assert.ok(result);
   assert.equal(result.analysis.detectedSeries.series.id, "series-1");
@@ -314,6 +319,17 @@ test("DVD workflow holds potential TV discs for review and never invokes movie a
   assert.equal(acquireCalls, 0);
   assert.ok(calls.some(([name]) => name === "review"));
   assert.ok(calls.some(([name, contextArg]) => name === "record" && contextArg === context));
+  const classificationEvent = calls.find(([name, contextArg, stage]) =>
+    name === "record" && contextArg === context && stage === "tv-classification"
+  );
+  assert.ok(classificationEvent);
+  const classificationDetails = JSON.parse(classificationEvent[4]);
+  assert.equal(classificationDetails.decision, "tv");
+  assert.deepEqual(classificationDetails.criteria.map(({ passed }) => passed), [true, true, false, true, true]);
+  const review = calls.find(([name]) => name === "review");
+  assert.ok(review);
+  assert.equal(review[3].classification, "tv");
+  assert.equal(review[3].confidence, classificationDetails.confidence);
 });
 
 test("DVD workflow routes an unlabeled two-episode disc to review instead of movie processing", async () => {
@@ -364,6 +380,63 @@ test("DVD workflow routes an unlabeled two-episode disc to review instead of mov
   assert.ok(review);
   assert.match(review[2], /TV review candidate/);
   assert.match(review[2], /0\.35/);
+  assert.equal(review[3].classification, "review");
+  assert.equal(review[3].confidence, 0.35);
+  assert.deepEqual(review[3].criteria.map(({ passed }) => passed), [false, true, false, true, true]);
+});
+
+test("DVD workflow classifies an ordinary feature as Movie and does not invoke TV analysis", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-dvd-movie-route-"));
+  const blockedWorkDir = path.join(root, "work-is-a-file");
+  await writeFile(blockedWorkDir, "block directory creation");
+  const calls = [];
+  let tvAnalysisCalls = 0;
+  const workflow = new DvdWorkflow({
+    prepare: async () => {
+      tvAnalysisCalls += 1;
+      throw new Error("Movie classification must not invoke TV analysis");
+    }
+  });
+  const jobs = {
+    getSettings: () => ({ tvDetectionEnabled: true, workDir: blockedWorkDir, moviesDir: root }),
+    lastDiscFingerprint: () => null,
+    begin: () => ({ id: "job-confirmed-movie" }),
+    record: (...args) => calls.push(["record", ...args]),
+    fail: (...args) => calls.push(["fail", ...args]),
+    wasJobCancelled: () => false
+  };
+  try {
+    const result = await workflow.process({
+      source: {
+        provider: {},
+        candidate: {
+          providerId: "source.video-dvd.makemkv",
+          sourceId: "drive-1",
+          mediaKind: "dvd",
+          label: "Movie Disc",
+          manifest: {
+            mediaKind: "dvd",
+            items: [{ id: "1", kind: "title", title: "Feature", durationSeconds: 7200 }]
+          }
+        }
+      },
+      sources: {},
+      jobs,
+      metadata: {},
+      signal: new AbortController().signal,
+      devicePath: "/dev/sr0"
+    });
+    assert.equal(result, true);
+    assert.equal(tvAnalysisCalls, 0);
+    const classificationEvent = calls.find(([name, , stage]) =>
+      name === "record" && stage === "tv-classification"
+    );
+    assert.ok(classificationEvent);
+    assert.equal(JSON.parse(classificationEvent[4]).decision, "movie");
+    assert.ok(calls.some(([name]) => name === "fail"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("TV review corrections persist and are consumed by a later matching run", async () => {

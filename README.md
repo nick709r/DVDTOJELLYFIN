@@ -35,7 +35,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
    - Find the server LAN IP with `hostname -I` and open `http://<server-lan-ip>:8787`.
    - The first-run dashboard has no password so you can get started quickly; set an administrator password in Settings after you confirm access is restricted to your trusted LAN.
 
-4. Configure your Movies and Music folders, work directory, and optical drive in Settings. Test with a known DVD and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
+4. Configure your Movies, Music, and TV root folders, work directory, and optical drive in Settings. TV output is currently only validated; TV publishing is not enabled. Test with a known DVD and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
 
 Quick commands:
 
@@ -56,6 +56,17 @@ sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
 That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
 
 ## Release history
+
+### Version 1.11.0
+
+- Add explainable DVD TV classification with a confidence scorecard and
+  per-criterion pass/fail details in job history and service logs.
+- Hold uncertain two-episode and other TV-shaped discs for TV analysis and
+  Review Centre review instead of publishing them as movies.
+- Add a configurable TV output root with recursive directory creation,
+  read/write permission checks, available-space reporting, and Review Centre
+  configuration items on validation failures. TV publishing and automatic
+  Series/Season directory creation remain disabled.
 
 ### Version 1.10.0
 

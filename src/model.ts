@@ -23,6 +23,7 @@ export interface TvMetadataValidationResult {
 export interface AppSettings {
   moviesDir: string;
   musicDir: string;
+  tvRootDir: string;
   workDir: string;
   opticalDevice: string;
   format: OutputFormat;

@@ -3,6 +3,7 @@ import type { AppSettings } from "../../model.js";
 export const defaultSettings: AppSettings = {
   moviesDir: process.env.MOVIES_DIR ?? "/srv/jellyfin/Movies",
   musicDir: process.env.MUSIC_DIR ?? "/srv/jellyfin/Music",
+  tvRootDir: process.env.TV_DIR ?? "/srv/jellyfin/TV",
   workDir: process.env.WORK_DIR ?? "/var/cache/autodisc",
   opticalDevice: process.env.OPTICAL_DEVICE ?? "/dev/sr0",
   format: "mp4",

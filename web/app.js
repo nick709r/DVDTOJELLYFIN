@@ -557,7 +557,7 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["moviesDir", "musicDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
+  for (const key of ["moviesDir", "musicDir", "tvRootDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
@@ -1016,6 +1016,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
   const patch = {
     moviesDir: values.get("moviesDir"),
     musicDir: values.get("musicDir"),
+    tvRootDir: values.get("tvRootDir"),
     workDir: values.get("workDir"),
     opticalDevice: values.get("opticalDevice"),
     format: values.get("format"),
@@ -1092,6 +1093,7 @@ $("#check-paths").addEventListener("click", async () => {
       body: JSON.stringify({
         moviesDir: values.get("moviesDir"),
         musicDir: values.get("musicDir"),
+        tvRootDir: values.get("tvRootDir"),
         workDir: values.get("workDir"),
         opticalDevice: values.get("opticalDevice"),
         lidarrImportDir: values.get("lidarrImportDir"),
@@ -1099,7 +1101,7 @@ $("#check-paths").addEventListener("click", async () => {
       })
     });
     status.innerHTML = `<strong>${result.ok ? "All configured paths passed." : "Some path checks failed."}</strong>${result.checks.map((check) =>
-      `<div class="path-check ${check.ok ? "passed" : "failed"}"><span>${check.ok ? "OK" : "FAIL"} · ${escapeHtml(check.name)}</span><span>${escapeHtml(check.message)}</span><small>${escapeHtml(check.path)}</small></div>`
+      `<div class="path-check ${check.ok ? "passed" : "failed"}"><span>${check.ok ? "OK" : "FAIL"} · ${escapeHtml(check.name)}</span><span>${escapeHtml(check.message)}</span><small>${escapeHtml(check.path)}</small>${check.name === "TV root folder" ? `<small>Permissions: ${escapeHtml(check.ok ? "Readable, searchable, and writable" : "Validation failed")} · Free space: ${check.availableBytes === undefined ? `Unavailable${check.spaceError ? ` (${escapeHtml(check.spaceError)})` : ""}` : escapeHtml(formatBytes(check.availableBytes))}</small>` : ""}</div>`
     ).join("")}`;
   } catch (error) {
     status.textContent = error.message;

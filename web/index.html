@@ -147,6 +147,8 @@
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
             <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
             <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
+            <label>TV Output Folder (TV Root)<input name="tvRootDir" required placeholder="/srv/jellyfin/TV"></label>
+            <p class="hint">The TV root is created and validated when checked or saved. TV publishing and automatic Series/Season folder creation are not enabled.</p>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
             <button id="check-paths" class="button secondary" type="button">Check paths and permissions</button>
@@ -187,7 +189,7 @@
           <article class="card settings-card"><p class="eyebrow">VERSION 2 · TELEVISION</p><h2>TV Processing</h2>
             <label class="check"><input name="tvDetectionEnabled" type="checkbox"> Enable TV detection and analysis</label>
             <label class="check"><input name="tvValidationLoggingEnabled" type="checkbox"> Capture complete analysis and matching evidence</label>
-            <p class="hint">Disabling TV detection restores DVD-only movie handling. Disabling evidence capture does not disable TV analysis or review plans.</p>
+            <p class="hint">Disabling TV detection prevents TV analysis. Discs matching confirmed or uncertain TV criteria remain held for review rather than entering movie publishing. Disabling evidence capture does not disable TV analysis or review plans.</p>
             <div class="policy-panel">
               <b>Current matching policy (read-only)</b>
               <p>TV sensitivity: conservative, fixed by the V2 policy.</p>

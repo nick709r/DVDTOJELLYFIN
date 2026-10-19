@@ -141,7 +141,11 @@ export class JobCoordinator {
     return { jobId: context.id, status: "completed" };
   }
 
-  holdForReview(context: JobContext, message: string): JobResult {
+  holdForReview(
+    context: JobContext,
+    message: string,
+    errorDetails?: Readonly<Record<string, unknown>>
+  ): JobResult {
     this.repositories.jobs.finish(context.id, "review", message);
     const job = this.repositories.history.get(context.id);
     this.createReview({
@@ -151,6 +155,7 @@ export class JobCoordinator {
       description: message,
       relatedJobId: context.id,
       ...(job?.discLabel ? { relatedDisc: job.discLabel } : {}),
+      ...(errorDetails ? { errorDetails } : {}),
       suggestedActions: [
         { type: "view-job", label: "View job" },
         { type: "resolve", label: "Mark resolved" },

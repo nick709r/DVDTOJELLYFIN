@@ -66,6 +66,28 @@ export class SqliteReviewItemRepository implements ReviewItemRepository {
       const item = fromRow(existing);
       if (item) return item;
     }
+    if (input.category === "configuration_issue") {
+      const existing = this.db.prepare(`
+        SELECT ${columns} FROM review_items
+        WHERE category = ? AND status IN ('active', 'retrying')
+          AND title = ? AND requested_path IS ?
+        ORDER BY created_at DESC LIMIT 1
+      `).get(input.category, input.title, input.requestedPath ?? null) as ReviewRow | undefined;
+      if (existing) {
+        this.db.prepare(`
+          UPDATE review_items SET status = 'active', resolved_at = NULL, resolution_details = NULL,
+            severity = ?, description = ?, related_job_id = ?, related_disc = ?,
+            related_drive = ?, error_details_json = ?, suggested_actions_json = ?
+          WHERE id = ?
+        `).run(input.severity, input.description, input.relatedJobId ?? null,
+          input.relatedDisc ?? null, input.relatedDrive ?? null,
+          input.errorDetails === undefined ? null : JSON.stringify(input.errorDetails),
+          JSON.stringify(input.suggestedActions), existing.id);
+        const refreshed = this.get(existing.id);
+        if (!refreshed) throw new Error(`Review item ${existing.id} could not be refreshed`);
+        return refreshed;
+      }
+    }
     if (input.category === "folder_creation_failure") {
       const existing = this.db.prepare(`
         SELECT ${columns} FROM review_items

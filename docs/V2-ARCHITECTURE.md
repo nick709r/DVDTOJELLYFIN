@@ -1,6 +1,6 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** Current as of AutoDisc v1.10.0 on `main`. The v2 provider foundation,
+**Status:** Current as of AutoDisc v1.11.0 on `main`. The v2 provider foundation,
 TV analysis/matching/workflow integration, TV dashboard and validation
 evidence, universal Review Centre, and audio-CD destination recovery are
 implemented. TVDB/TMDB TV metadata lookup, provider failover, provider-aware
@@ -31,7 +31,7 @@ Migration 9 adds the persistent universal Review Centre. Authenticated
 dashboard/API review actions expose filtering, details, and supported recovery;
 audio-CD publishing creates and verifies `Music/Artist/Album` destinations
 before atomic publication.
-AutoDisc 1.9.2 registers a `ConfiguredTvMetadataProvider` adapter with the
+AutoDisc 1.11.0 registers a `ConfiguredTvMetadataProvider` adapter with the
 production `MetadataResolver`. Provider selection, fallback, health-aware
 failover, optional provider-aware caching, and lookup metrics are handled
 outside the analysis and matching engines. Metadata results contribute
@@ -77,9 +77,9 @@ flowchart LR
   TvReport --> EpisodeMatcher[TvEpisodeMatchingEngine]
   EpisodeMatcher --> MatchReport[Conservative Episode Match Report]
   EpisodeMatcher -. correction feedback .-> FeedbackStore[TV episode feedback repository]
-  DVD --> TvPrefilter{Potential TV disc?}
-  TvPrefilter -- no --> MovieWorkflow[Existing movie workflow]
-  TvPrefilter -- yes --> TvWorkflow[TvWorkflowService]
+  DVD --> TvPrefilter{Explainable TV scorecard}
+  TvPrefilter -- confirmed movie --> MovieWorkflow[Existing movie workflow]
+  TvPrefilter -- confirmed or uncertain TV --> TvWorkflow[TV analysis or review hold]
   TvWorkflow --> TvAnalysis
   TvWorkflow --> Plan[Persisted TV Processing Plan]
   Plan --> Review[Review state; execution disabled]

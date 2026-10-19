@@ -6,6 +6,7 @@ import test from "node:test";
 
 test("settings endpoint redacts secrets and enforces configured admin authentication", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-test-"));
+  const linuxRoot = root.replace(/^[A-Za-z]:/, "").replace(/\\/g, "/");
   process.env.DATABASE_PATH = path.join(root, "state.sqlite");
   process.env.MOVIES_DIR = root;
   process.env.WORK_DIR = root;
@@ -26,6 +27,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.musicMetadataEnabled, false);
     assert.equal(initial.json().settings.lidarrEnabled, false);
     assert.equal(initial.json().settings.tvDetectionEnabled, true);
+    assert.equal(initial.json().settings.tvRootDir, "/srv/jellyfin/TV");
     assert.equal(initial.json().settings.tvValidationLoggingEnabled, true);
     assert.equal(initial.json().settings.musicBrainzContactEmail, "");
     assert.equal("adminPasswordHash" in initial.json().settings, false);
@@ -37,6 +39,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: {
         moviesDir: root,
         musicDir: root,
+        tvRootDir: path.posix.join(linuxRoot, "tv-library"),
         workDir: root,
         opticalDevice: path.join(root, "missing-device"),
         lidarrImportDir: path.join(root, "lidarr-import"),
@@ -45,10 +48,15 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     });
     assert.equal(pathCheck.statusCode, 200);
     assert.equal(pathCheck.json().ok, false);
-    assert.equal(pathCheck.json().checks.length, 4);
+    assert.equal(pathCheck.json().checks.length, 5);
     assert.deepEqual(pathCheck.json().checks.map((check) => check.name), [
-      "Movies folder", "Music folder", "Temporary work folder", "Optical drive"
+      "Movies folder", "Music folder", "TV root folder", "Temporary work folder", "Optical drive"
     ]);
+    const tvRootCheck = pathCheck.json().checks.find((check) => check.name === "TV root folder");
+    assert.equal(tvRootCheck.ok, true);
+    assert.equal(tvRootCheck.message, "Readable, searchable, and can create and remove files");
+    assert.ok(tvRootCheck.availableBytes > 0);
+    assert.equal((await readdir(root)).includes("tv-library"), true);
     assert.equal(pathCheck.json().checks.find((check) => check.name === "Optical drive").ok, false);
     assert.equal((await readdir(root)).some((name) => name.startsWith(".autodisc-permission-check-")), false);
     const lidarrPathCheck = await app.inject({
@@ -57,6 +65,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: {
         moviesDir: root,
         musicDir: root,
+        tvRootDir: path.posix.join(linuxRoot, "tv-library"),
         workDir: root,
         opticalDevice: path.join(root, "missing-device"),
         lidarrImportDir: root,
@@ -64,11 +73,62 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       }
     });
     assert.equal(lidarrPathCheck.statusCode, 200);
-    assert.equal(lidarrPathCheck.json().checks.length, 5);
+    assert.equal(lidarrPathCheck.json().checks.length, 6);
     assert.equal(
       lidarrPathCheck.json().checks.some((check) => check.name === "Lidarr downloads/import folder"),
       true
     );
+    const invalidTvPath = path.posix.join(linuxRoot, "not-a-directory");
+    await writeFile(path.join(root, "not-a-directory"), "not a directory");
+    const invalidTvPathCheck = await app.inject({
+      method: "POST",
+      url: "/api/v1/paths/check",
+      payload: {
+        moviesDir: root,
+        musicDir: root,
+        tvRootDir: invalidTvPath,
+        workDir: root,
+        opticalDevice: path.join(root, "missing-device"),
+        lidarrImportDir: root,
+        lidarrEnabled: false
+      }
+    });
+    assert.equal(invalidTvPathCheck.statusCode, 200);
+    const invalidTvCheck = invalidTvPathCheck.json().checks.find((check) => check.name === "TV root folder");
+    assert.equal(invalidTvCheck.ok, false);
+    const tvPathReviews = await app.inject({
+      method: "GET",
+      url: "/api/v1/reviews?category=configuration_issue"
+    });
+    assert.equal(tvPathReviews.json().items.length, 1);
+    assert.equal(tvPathReviews.json().items[0].requestedPath, invalidTvPath);
+    assert.equal(tvPathReviews.json().items[0].errorDetails.path, invalidTvPath);
+    assert.match(tvPathReviews.json().items[0].errorDetails.validationFailure, /exist|directory/i);
+    assert.equal(tvPathReviews.json().items[0].suggestedActions.some((action) => action.type === "open-settings"), true);
+    const invalidTvSettings = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { tvRootDir: invalidTvPath }
+    });
+    assert.equal(invalidTvSettings.statusCode, 400);
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/paths/check",
+      payload: {
+        moviesDir: root,
+        musicDir: root,
+        tvRootDir: invalidTvPath,
+        workDir: root,
+        opticalDevice: path.join(root, "missing-device"),
+        lidarrImportDir: root,
+        lidarrEnabled: false
+      }
+    });
+    const deduplicatedTvReviews = await app.inject({
+      method: "GET",
+      url: "/api/v1/reviews?category=configuration_issue"
+    });
+    assert.equal(deduplicatedTvReviews.json().items.length, 1);
 
     const lidarrWithoutKey = await app.inject({
       method: "PUT",
@@ -131,6 +191,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: {
         musicMetadataEnabled: true,
         musicBrainzContactEmail: "music-admin@example.com",
+        tvRootDir: path.posix.join(linuxRoot, "saved-tv-library"),
         lidarrApiKey: "lidarr-test-secret",
         tvDetectionEnabled: false,
         tvValidationLoggingEnabled: false
@@ -138,6 +199,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     });
     assert.equal(setMusicSettings.statusCode, 200);
     assert.equal(setMusicSettings.json().settings.musicDir, "/srv/jellyfin/Music");
+    assert.equal(setMusicSettings.json().settings.tvRootDir, path.posix.join(linuxRoot, "saved-tv-library"));
+    assert.equal((await readdir(root)).includes("saved-tv-library"), true);
     assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
     assert.equal(setMusicSettings.json().settings.musicBrainzContactEmail, "music-admin@example.com");
     assert.equal(setMusicSettings.json().settings.tvDetectionEnabled, false);
@@ -188,7 +251,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     });
     assert.equal(filteredReviews.statusCode, 200);
     assert.equal(filteredReviews.json().items.length, 1);
-    assert.equal(filteredReviews.json().summary.active, 1);
+    assert.equal(filteredReviews.json().summary.active, 2);
     const reviewDetail = await app.inject({
       method: "GET",
       url: `/api/v1/reviews/${reviewItem.id}`,
@@ -327,11 +390,12 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
           { name: "v1.5.0" },
           { name: "v1.10.0" },
           { name: "v1.11.0" },
+          { name: "v1.12.0" },
           { name: "main" }
         ]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.includes("/releases/tags/")) return new Response("", { status: 404 });
-      return new Response("### Version 1.11.0\n- Test release notes.", { status: 200 });
+      return new Response("### Version 1.12.0\n- Test release notes.", { status: 200 });
     };
     try {
       const updateCheck = await app.inject({
@@ -340,7 +404,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         headers: { cookie }
       });
       assert.equal(updateCheck.statusCode, 200);
-      assert.equal(updateCheck.json().latestVersion, "v1.11.0");
+      assert.equal(updateCheck.json().latestVersion, "v1.12.0");
       assert.equal(updateCheck.json().updateAvailable, true);
       assert.match(updateCheck.json().releaseNotes, /Test release notes/);
     } finally {
