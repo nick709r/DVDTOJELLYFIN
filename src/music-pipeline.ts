@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { activeJob, addEvent, addJob, addJobWarning, finishJob, getSettings, lastDiscFingerprint, setJobStatus, updateJob } from "./db.js";
 import type { AudioDisc } from "./audio-cd.js";
-import { ripAudioTracks } from "./audio-cd.js";
+import type { AudioTrackFile } from "./audio-cd.js";
 import { events } from "./events.js";
 import { log } from "./logger.js";
 import { resolveMusicMetadata } from "./music-metadata.js";
@@ -45,6 +45,7 @@ async function uniqueAlbumPath(directory: string, name: string): Promise<string>
 export async function processAudioCd(
   device: string,
   disc: AudioDisc,
+  acquireTracks: (workspacePath: string, signal?: AbortSignal) => Promise<AudioTrackFile[]>,
   signal?: AbortSignal
 ): Promise<boolean> {
   if (activeJob()) return true;
@@ -75,7 +76,7 @@ export async function processAudioCd(
 
     setJobStatus(id, "ripping", "Extracting audio CD tracks with cdparanoia");
     events.emit("status");
-    const audioTracks = await ripAudioTracks(device, workDir, signal);
+    const audioTracks = await acquireTracks(workDir, signal);
     const detected = disc.trackNumbers.join(",");
     const ripped = audioTracks.map((track) => track.number).join(",");
     if (detected !== ripped) {

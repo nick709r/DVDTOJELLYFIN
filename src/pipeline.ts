@@ -3,13 +3,13 @@ import { constants } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { activeJob, addEvent, addJob, addJobWarning, finishJob, getSettings, lastDiscFingerprint, setJobStatus, updateJob } from "./db.js";
+import type { MediaSourceCoordinator } from "./application/media-source-coordinator.js";
 import { events, notifyStatus } from "./events.js";
 import { convert } from "./encoding.js";
-import { ejectDisc, inspectDisc, ripTitle, safeTitle, selectMainFeature } from "./media.js";
+import { ejectDisc, safeTitle, selectMainFeature } from "./media.js";
 import { resolveTitle } from "./title.js";
 import { setRuntimeStatus } from "./runtime-status.js";
 import { log } from "./logger.js";
-import { inspectAudioCd } from "./audio-cd.js";
 import { processAudioCd } from "./music-pipeline.js";
 import { createMovieOutput } from "./movie-output.js";
 import { isUpdatePending } from "./updater.js";
@@ -28,38 +28,52 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
   }
 }
 
-export async function processInsertedDisc(signal?: AbortSignal): Promise<boolean> {
+export async function processInsertedDisc(sources: MediaSourceCoordinator, signal?: AbortSignal): Promise<boolean> {
   if (isUpdatePending()) return false;
   if (activeJob()) return true;
   const controller = new AbortController();
   beginDiscOperation(controller);
   const jobSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
-    return await processInsertedDiscCore(jobSignal);
+    return await processInsertedDiscCore(sources, jobSignal);
   } finally {
     endDiscOperation(controller);
   }
 }
 
-async function processInsertedDiscCore(signal: AbortSignal): Promise<boolean> {
+async function processInsertedDiscCore(sources: MediaSourceCoordinator, signal: AbortSignal): Promise<boolean> {
   if (isUpdatePending()) return false;
   if (activeJob()) return true;
   const settings = getSettings();
   const devicePath = settings.opticalDevice;
-  const audioDisc = await inspectAudioCd(devicePath, signal);
-  if (isUpdatePending()) return false;
-  if (audioDisc) return processAudioCd(devicePath, audioDisc, signal);
-  const makemkvDevice = `dev:${devicePath}`;
-  let info;
+  let inspectedSource;
   try {
-    info = await inspectDisc(makemkvDevice, signal);
+    inspectedSource = await sources.inspect(devicePath, signal);
   } catch (error) {
-    if (signal?.aborted) throw error;
-    log("info", "disc", "No readable video disc detected", {
-      error: error instanceof Error ? error.message : "MakeMKV inspection failed"
+    if (signal.aborted) throw error;
+    log("info", "disc", "No readable media source detected", {
+      error: error instanceof Error ? error.message : "Source inspection failed"
     });
     return false;
   }
+  if (isUpdatePending()) return false;
+  if (!inspectedSource) return false;
+  if (inspectedSource.candidate.mediaType === "audio_cd") {
+    const candidate = inspectedSource.candidate;
+    return processAudioCd(devicePath, {
+      trackNumbers: candidate.trackNumbers,
+      discId: candidate.discId,
+      fingerprint: candidate.fingerprint
+    }, async (workspacePath, jobSignal) => {
+      const acquired = await sources.acquire(inspectedSource, workspacePath, undefined, jobSignal);
+      if (acquired.mediaType !== "audio_cd") {
+        throw new Error(`Source provider ${candidate.providerId} returned incompatible acquired media`);
+      }
+      return acquired.tracks;
+    }, signal);
+  }
+  const info = inspectedSource.candidate;
+  if (info.mediaType !== "dvd") throw new Error(`Unsupported media source type: ${info.mediaType}`);
   if (isUpdatePending()) return false;
   const selectedTitle = selectMainFeature(info.titles);
   if (!selectedTitle) {
@@ -95,7 +109,11 @@ async function processInsertedDiscCore(signal: AbortSignal): Promise<boolean> {
 
     setJobStatus(id, "ripping", "Ripping the longest detected video title with MakeMKV");
     notifyStatus();
-    const input = await ripTitle(makemkvDevice, selectedTitle.id, workDir, signal);
+    const acquired = await sources.acquire(inspectedSource, workDir, { titleId: selectedTitle.id }, signal);
+    if (acquired.mediaType !== "dvd") {
+      throw new Error(`Source provider ${info.providerId} returned incompatible acquired media`);
+    }
+    const input = acquired.path;
     if (signal.aborted) throw new Error("DVD processing cancelled");
 
     const title = await resolveTitle(info.label || selectedTitle.name, settings, signal);

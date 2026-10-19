@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { activeJob, clearInsertedDisc, getSettings } from "./db.js";
 import { events } from "./events.js";
 import { processInsertedDisc } from "./pipeline.js";
+import type { MediaSourceCoordinator } from "./application/media-source-coordinator.js";
 import { discRemoved, getRuntimeStatus, setRuntimeStatus } from "./runtime-status.js";
 import { log as writeLog } from "./logger.js";
 
@@ -24,7 +25,7 @@ function log(level: "info" | "warn" | "error", message: string): void {
   writeLog(level, "disc-monitor", message);
 }
 
-async function handleInsert(signal: AbortSignal): Promise<void> {
+async function handleInsert(signal: AbortSignal, sources: MediaSourceCoordinator): Promise<void> {
   if (signal.aborted) return;
   if (checking) {
     scanRequested = true;
@@ -34,18 +35,18 @@ async function handleInsert(signal: AbortSignal): Promise<void> {
   checking = true;
   setRuntimeStatus("inspecting");
   try {
-    pendingJob = processInsertedDisc(signal);
+    pendingJob = processInsertedDisc(sources, signal);
     seenInsertedDisc = await pendingJob;
     if (seenInsertedDisc) retryDelayMs = 2000;
     else if (!signal.aborted) {
       log("warn", `Disc is not ready or could not be recognized; retrying in ${Math.round(retryDelayMs / 1000)} seconds`);
-      scheduleInsert(signal, retryDelayMs);
+      scheduleInsert(signal, sources, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } catch (error) {
     if (!signal.aborted) {
       log("error", `Disc processing could not start: ${error instanceof Error ? error.message : "unknown error"}`);
-      scheduleInsert(signal, retryDelayMs);
+      scheduleInsert(signal, sources, retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   } finally {
@@ -54,16 +55,16 @@ async function handleInsert(signal: AbortSignal): Promise<void> {
     checking = false;
     if (scanRequested && !signal.aborted) {
       scanRequested = false;
-      scheduleInsert(signal);
+      scheduleInsert(signal, sources);
     }
   }
 }
 
-function scheduleInsert(signal: AbortSignal, delayMs = 450): void {
+function scheduleInsert(signal: AbortSignal, sources: MediaSourceCoordinator, delayMs = 450): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     debounceTimer = undefined;
-    void handleInsert(signal);
+    void handleInsert(signal, sources);
   }, delayMs);
 }
 
@@ -81,7 +82,7 @@ async function mediaPresent(device: string): Promise<boolean | null> {
   }
 }
 
-async function reconcileMediaPresence(signal: AbortSignal): Promise<void> {
+async function reconcileMediaPresence(signal: AbortSignal, sources: MediaSourceCoordinator): Promise<void> {
   if (signal.aborted) return;
   const device = getSettings().opticalDevice;
   const present = await mediaPresent(device);
@@ -101,12 +102,12 @@ async function reconcileMediaPresence(signal: AbortSignal): Promise<void> {
     mediaWasPresent = true;
     if (newlyPresent) retryDelayMs = 2000;
     if (newlyPresent && !seenInsertedDisc && !activeJob()) {
-      scheduleInsert(signal);
+      scheduleInsert(signal, sources);
     }
   }
 }
 
-async function monitor(signal: AbortSignal): Promise<void> {
+async function monitor(signal: AbortSignal, sources: MediaSourceCoordinator): Promise<void> {
   while (!stopping && !signal.aborted) {
     try {
       const device = getSettings().opticalDevice;
@@ -135,7 +136,7 @@ async function monitor(signal: AbortSignal): Promise<void> {
             discRemoved();
           }
           if ((path === configuredDevice || path === `${configuredDevice}1`) &&
-            (action === "add" || action === "change")) scheduleInsert(signal);
+            (action === "add" || action === "change")) scheduleInsert(signal, sources);
           boundary = eventText.indexOf("\n\n");
         }
       });
@@ -147,7 +148,7 @@ async function monitor(signal: AbortSignal): Promise<void> {
         mediaWasPresent = undefined;
         retryDelayMs = 2000;
         clearInsertedDisc();
-        scheduleInsert(signal);
+        scheduleInsert(signal, sources);
       };
       events.on("settings", onSettings);
       child.once("close", () => events.off("settings", onSettings));
@@ -162,7 +163,7 @@ async function monitor(signal: AbortSignal): Promise<void> {
           else resolve();
         });
       });
-      if (!seenInsertedDisc) scheduleInsert(signal);
+      if (!seenInsertedDisc) scheduleInsert(signal, sources);
       await new Promise<void>((resolve) => child.once("close", () => resolve()));
       if (monitorChild === child) monitorChild = undefined;
     } catch (error) {
@@ -174,7 +175,7 @@ async function monitor(signal: AbortSignal): Promise<void> {
   }
 }
 
-export function startDiscMonitor(signal: AbortSignal): () => Promise<void> {
+export function startDiscMonitor(signal: AbortSignal, sources: MediaSourceCoordinator): () => Promise<void> {
   stopping = false;
   scanRequested = false;
   mediaWasPresent = undefined;
@@ -187,17 +188,17 @@ export function startDiscMonitor(signal: AbortSignal): () => Promise<void> {
     monitorChild?.kill("SIGTERM");
   };
   signal.addEventListener("abort", onAbort, { once: true });
-  scheduleInsert(signal);
-  void reconcileMediaPresence(signal).catch((error: unknown) => {
+  scheduleInsert(signal, sources);
+  void reconcileMediaPresence(signal, sources).catch((error: unknown) => {
     log("error", `Initial optical media state check failed: ${error instanceof Error ? error.message : "unknown error"}`);
   });
   presenceTimer = setInterval(() => {
-    void reconcileMediaPresence(signal).catch((error: unknown) => {
+    void reconcileMediaPresence(signal, sources).catch((error: unknown) => {
       log("error", `Optical media state reconciliation failed: ${error instanceof Error ? error.message : "unknown error"}`);
     });
   }, 2000);
   presenceTimer.unref();
-  const running = monitor(signal);
+  const running = monitor(signal, sources);
   return async () => {
     onAbort();
     await running;

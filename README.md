@@ -149,6 +149,19 @@ password in Settings when you first log in.
 
 Version 2 will focus on making TV series DVD archiving as automated and reliable as movie archiving. It will also broaden AutoDisc's scope: rather than being Jellyfin-first, AutoDisc v2 aims to be a general automated ripping and media-organization tool that supports Jellyfin, Sonarr, Radarr, Lidarr, and other tooling as optional integrations.
 
+Version 2 is also the long-term extensible platform foundation. Media sources,
+drive/platform adapters, metadata lookups, transforms, library destinations,
+and notification channels are planned as registered providers with versioned
+contracts, capability declarations, and injected dependencies. The core job
+and workflow services should remain provider-neutral as these integrations
+grow. See the [v2 architecture](./docs/V2-ARCHITECTURE.md) and
+[v2 roadmap](./docs/ROADMAP.md) for the proposed boundaries and staged
+acceptance gates. These extension contracts are a v2 design target and are not
+all implemented in the current release. Provider contracts and a lifecycle
+registry are in place, and DVD/audio-CD discovery and acquisition use the
+registered source providers. Downstream metadata, transform, publication,
+persistence, and platform services still need migration.
+
 ### Expanded scope (coming in v2)
 - General automated ripping and organization: use AutoDisc to rip and organize DVDs and CDs into folders, whether or not you run Jellyfin.
 - Optional integrations: Jellyfin, Sonarr, Radarr, Lidarr, and similar tools will be supported as optional post-processing/import targets.

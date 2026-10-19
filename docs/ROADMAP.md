@@ -4,13 +4,34 @@ This roadmap outlines planned features and improvements for upcoming releases. P
 Version 2
 
 Version 2 focuses on transforming AutoDisc from a Jellyfin-focused ripping workflow into a more complete media archiving platform.
+
+Architecture is a release requirement, not a later cleanup task. Version 2
+must establish provider contracts, dependency-injected composition, durable
+events, capability-based workflow planning, and migration gates before adding
+large feature families. See [V2-ARCHITECTURE.md](./V2-ARCHITECTURE.md) for the
+target boundaries, example contracts, safety model, and acceptance gates.
+The first implementation increment adds a contract-tested provider API and
+registry. DVD and audio-CD discovery/acquisition are now wired through source
+providers; migrating downstream metadata, transform, publication, persistence,
+and platform behavior remains part of Gate A.
+
 Foundation & Core Improvements
 Codebase Cleanup
 
-    Refactor core services and processing logic
-    Remove duplicate and unused code
-    Standardize project structure
-    Simplify future development and maintenance
+    Extract domain, application, ports, adapters, and the composition root
+    Add runtime-validated provider registration and API-version checks
+    Remove duplicate and unused code as behavior-preserving refactors
+    Establish provider contract tests and hardware-independent fakes
+    Require new providers to avoid vendor-specific branches in core workflows
+
+Extensible Platform Foundation
+
+    Normalize media sources, manifests, artifacts, and workflow steps
+    Add durable versioned events with a transactional outbox
+    Keep settings and secrets namespaced and provider-owned
+    Add capability declarations and a planner for compatible providers
+    Version public provider contracts and document extension trust boundaries
+    Keep built-in providers as the initial supported extension mechanism
 
 Reliability & Diagnostics
 
