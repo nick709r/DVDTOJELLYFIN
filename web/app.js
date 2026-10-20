@@ -660,7 +660,10 @@ function renderReviewJob(item) {
       <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">Approve &amp; Continue</button>
       <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
       <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
-    : "";
+    : ["completed", "dismissed"].includes(item.status)
+      ? `<button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
+        <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
+      : "";
   return `<article class="review-item">
     <div class="review-heading"><div><h3>${escapeHtml(title)}</h3>
       <span class="list-sub">${escapeHtml(item.discType)}${item.discLabel ? ` · ${escapeHtml(item.discLabel)}` : ""} · ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div>
@@ -668,10 +671,10 @@ function renderReviewJob(item) {
     <p>${escapeHtml(item.failureReason || "Processing requires review")} · Stage: ${escapeHtml(item.failureStage || "unknown")}</p>
     <p class="list-sub">Storage used: ${escapeHtml(formatBytes(item.mediaSize))} · Resume stage: ${escapeHtml(item.resumeStage)}</p>
     <div class="tv-actions">${actions}</div>
-    <div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
+    ${item.status === "pending" ? `<div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
       <label>Title<input type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : title)}"></label>
       <button class="button secondary review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">Save Metadata</button>
-    </div>
+    </div>` : ""}
   </article>`;
 }
 

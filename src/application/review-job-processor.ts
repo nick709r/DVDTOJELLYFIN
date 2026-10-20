@@ -4,6 +4,7 @@ import type { ReviewJobRepository } from "../domain/review-jobs.js";
 import type { ReviewWorkspaceService } from "./review-workspace-service.js";
 import type { AppSettings } from "../model.js";
 import type { MetadataResolver } from "./metadata-resolver.js";
+import type { JobContext } from "./job-coordinator.js";
 import { convert } from "../encoding.js";
 import { createMovieOutput } from "../movie-output.js";
 import { safeTitle } from "../media.js";
@@ -33,7 +34,13 @@ export class ReviewJobProcessor {
 
     const controller = new AbortController();
     this.jobs.beginOperation(controller);
-    const context = this.jobs.resume(review.originalJobId, review.discType, null, review.discLabel, controller.signal);
+    let context: JobContext;
+    try {
+      context = this.jobs.resume(review.originalJobId, review.discType, null, review.discLabel, controller.signal);
+    } catch (error) {
+      this.jobs.endOperation(controller);
+      throw error;
+    }
     this.reviewJobs.update(id, { status: "retrying" });
     setRuntimeStatus("inspecting");
     notifyStatus();
@@ -91,7 +98,7 @@ export class ReviewJobProcessor {
       this.jobs.complete(context);
       this.jobs.resolveJobReviews(context.id, "Preserved media was processed successfully");
       this.reviewJobs.update(id, { status: "completed", notificationActive: false });
-      await this.workspaces.remove(id);
+      await this.workspaces.remove(id).catch(() => undefined);
       setRuntimeStatus("completed");
     } catch (error) {
       if (outputPath) await rm(outputPath, { force: true }).catch(() => undefined);

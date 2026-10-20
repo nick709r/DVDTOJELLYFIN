@@ -51,7 +51,33 @@ const tvValidation = new TvValidationService(
 );
 const tvReview = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
 const sessions = new Map<string, number>();
+const reviewJobRequestWindows = new Map<string, { startedAt: number; count: number }>();
 const staticRoot = join(dirname(fileURLToPath(import.meta.url)), "../web");
+
+function allowReviewJobRequest(ip: string): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  let window = reviewJobRequestWindows.get(ip);
+  if (!window || now - window.startedAt >= 60_000) {
+    window = { startedAt: now, count: 0 };
+    reviewJobRequestWindows.set(ip, window);
+  }
+  if (window.count >= 120) {
+    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((60_000 - (now - window.startedAt)) / 1000)) };
+  }
+  window.count += 1;
+  if (reviewJobRequestWindows.size > 5000) {
+    for (const [key, value] of reviewJobRequestWindows) {
+      if (now - value.startedAt >= 60_000) reviewJobRequestWindows.delete(key);
+      if (reviewJobRequestWindows.size <= 5000) break;
+    }
+    while (reviewJobRequestWindows.size > 5000) {
+      const oldest = reviewJobRequestWindows.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      reviewJobRequestWindows.delete(oldest);
+    }
+  }
+  return { allowed: true, retryAfterSeconds: 0 };
+}
 
 function passwordConfigured(): boolean {
   return Boolean(getSettings().adminPasswordHash);
@@ -75,6 +101,13 @@ function isAuthenticated(request: FastifyRequest): boolean {
 }
 
 app.addHook("preHandler", async (request, reply) => {
+  if (request.url.startsWith("/api/v1/review-jobs")) {
+    const budget = allowReviewJobRequest(request.ip);
+    if (!budget.allowed) {
+      reply.header("Retry-After", String(budget.retryAfterSeconds));
+      return reply.code(429).send({ error: "Too many review queue requests; retry later" });
+    }
+  }
   if (!request.url.startsWith("/api/") || request.url === "/api/health" || request.url === "/api/v1/login") return;
   if (passwordConfigured() && !isAuthenticated(request)) {
     return reply.code(401).send({ error: "Authentication required" });
@@ -512,9 +545,11 @@ async function discardReviewJob(id: string, reply: FastifyReply) {
   }
   if (!reviewJobActions) return reply.code(503).send({ error: "Review workspace service is unavailable" });
   await reviewJobActions.remove(reviewJob.id);
-  for (const item of repositories.reviewItems.list({ status: "active", limit: 1000 })) {
-    if (item.relatedJobId === reviewJob.originalJobId) {
-      repositories.reviewItems.updateStatus(item.id, "dismissed", "Review notification cleared by administrator");
+  for (const status of ["active", "retrying"] as const) {
+    for (const item of repositories.reviewItems.list({ status, limit: 1000 })) {
+      if (item.relatedJobId === reviewJob.originalJobId) {
+        repositories.reviewItems.updateStatus(item.id, "dismissed", "Review notification cleared by administrator");
+      }
     }
   }
   events.emit("status");
