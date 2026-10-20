@@ -46,7 +46,12 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 14);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 15);
+  assert.deepEqual(
+    db.pragma("table_info(review_jobs)").map((column) => column.name),
+    ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",
+      "storage_path", "media_size", "created_at", "updated_at", "resume_stage", "metadata_json", "notification_active"]
+  );
   db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
     "tvStoreAnalysisEvidence", "true", "2026-01-01T00:00:00.000Z"
   );
@@ -130,6 +135,35 @@ test("review item repository persists searchable lifecycle data and summary coun
   assert.equal(repositories.reviewItems.get(review.id).status, "resolved");
   assert.equal(repositories.reviewItems.resolveForDisc("review-disc", "Completed"), 0);
   assert.equal(repositories.reviewItems.summary().active, 1);
+  repositories.close();
+});
+
+test("review job repository persists queue status, metadata, and cleanup notifications", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  repositories.jobs.add("review-job", "Preserved DVD", "review-fingerprint", "dvd");
+  const reviewJob = repositories.reviewJobs.create({
+    id: "review-job",
+    originalJobId: "review-job",
+    discType: "dvd",
+    discLabel: "Preserved DVD",
+    failureReason: "Metadata lookup failed",
+    failureStage: "metadata",
+    storagePath: "/working/reviews/review-job",
+    mediaSize: 1024,
+    resumeStage: "metadata",
+    metadata: { title: "Corrected title" }
+  });
+  assert.equal(reviewJob.status, "pending");
+  assert.equal(reviewJob.metadata.title, "Corrected title");
+  assert.equal(repositories.reviewJobs.list().length, 1);
+  assert.equal(repositories.reviewJobs.update("review-job", {
+    status: "retrying",
+    notificationActive: false
+  }).notificationActive, false);
+  assert.equal(repositories.reviewJobs.delete("review-job"), true);
+  assert.equal(repositories.reviewJobs.get("review-job"), undefined);
   repositories.close();
 });
 

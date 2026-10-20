@@ -241,4 +241,26 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     }
   });
   markInterrupted();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS review_jobs (
+      id TEXT PRIMARY KEY,
+      original_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('processing', 'pending', 'retrying', 'completed', 'dismissed')),
+      disc_type TEXT NOT NULL,
+      disc_label TEXT,
+      failure_reason TEXT NOT NULL,
+      failure_stage TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      media_size INTEGER NOT NULL DEFAULT 0 CHECK (media_size >= 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resume_stage TEXT NOT NULL CHECK (resume_stage IN ('metadata', 'artwork', 'naming', 'import')),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      notification_active INTEGER NOT NULL DEFAULT 1 CHECK (notification_active IN (0, 1))
+    );
+    CREATE INDEX IF NOT EXISTS review_jobs_status_created
+      ON review_jobs(status, created_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (15, ?)")
+    .run(new Date().toISOString());
 }

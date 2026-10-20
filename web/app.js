@@ -619,6 +619,9 @@ function renderReviewItem(item) {
       if (action.type === "view-job") {
         return `<button class="button secondary review-action" data-action="view-job" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
       }
+      if (action.type === "open-review") {
+        return `<button class="button secondary review-action" data-action="open-review">${escapeHtml(action.label)}</button>`;
+      }
       if (action.type === "resolve") {
         return `<button class="button secondary review-action" data-action="resolve" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
       }
@@ -648,6 +651,37 @@ function renderReviewItem(item) {
   </article>`;
 }
 
+function renderReviewJob(item) {
+  const title = typeof item.metadata?.title === "string" && item.metadata.title
+    ? item.metadata.title
+    : item.discLabel || item.originalJobId;
+  const actions = item.status === "pending"
+    ? `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Open Review</button>
+      <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">Approve &amp; Continue</button>
+      <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
+      <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
+    : "";
+  return `<article class="review-item">
+    <div class="review-heading"><div><h3>${escapeHtml(title)}</h3>
+      <span class="list-sub">${escapeHtml(item.discType)}${item.discLabel ? ` · ${escapeHtml(item.discLabel)}` : ""} · ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div>
+      <span class="review-status">${escapeHtml(item.status)}</span></div>
+    <p>${escapeHtml(item.failureReason || "Processing requires review")} · Stage: ${escapeHtml(item.failureStage || "unknown")}</p>
+    <p class="list-sub">Storage used: ${escapeHtml(formatBytes(item.mediaSize))} · Resume stage: ${escapeHtml(item.resumeStage)}</p>
+    <div class="tv-actions">${actions}</div>
+    <div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
+      <label>Title<input type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : title)}"></label>
+      <button class="button secondary review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">Save Metadata</button>
+    </div>
+  </article>`;
+}
+
+async function loadReviewJobs() {
+  const { reviewJobs } = await api("/api/v1/review-jobs");
+  $("#review-jobs-list").innerHTML = reviewJobs.length
+    ? reviewJobs.map(renderReviewJob).join("")
+    : '<div class="empty-state">No extracted media is waiting for review.</div>';
+}
+
 async function loadReviewCentre() {
   const query = new URLSearchParams({ limit: "250" });
   for (const [id, key] of [
@@ -672,6 +706,7 @@ async function loadReviewCentre() {
   $("#review-list").innerHTML = items.length
     ? items.map(renderReviewItem).join("")
     : '<div class="empty-state">No review items match the selected filters.</div>';
+  await loadReviewJobs();
 }
 
 async function loadTvValidation() {
@@ -985,6 +1020,11 @@ $("#review-list").addEventListener("click", async (event) => {
       showPage("settings");
       return;
     }
+    if (action === "open-review") {
+      showPage("tv-reviews");
+      $("#review-jobs-list").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     if (action === "enter-metadata") {
       showPage("dashboard");
       const status = await api("/api/v1/status");
@@ -1001,6 +1041,51 @@ $("#review-list").addEventListener("click", async (event) => {
     const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" : "dismiss";
     const result = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}/${endpoint}`, { method: "POST" });
     notify(result.message || `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`);
+    await loadReviewCentre();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#review-jobs-list").addEventListener("click", async (event) => {
+  const button = event.target.closest(".review-job-action");
+  if (!button) return;
+  const id = button.dataset.id;
+  const action = button.dataset.action;
+  const card = button.closest(".review-item");
+  button.disabled = true;
+  try {
+    if (action === "open") {
+      card.querySelector(".review-job-editor").classList.toggle("hidden");
+      return;
+    }
+    if (action === "save") {
+      const title = card.querySelector("input").value.trim();
+      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
+        method: "POST",
+        body: JSON.stringify({ title })
+      });
+      notify("Review metadata saved.");
+    } else if (action === "continue") {
+      const editor = card.querySelector(".review-job-editor");
+      if (!editor.classList.contains("hidden")) {
+        const title = card.querySelector("input").value.trim();
+        await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
+          method: "POST",
+          body: JSON.stringify({ title })
+        });
+      }
+      const result = await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/continue`, { method: "POST" });
+      notify(result.message);
+    } else if (action === "delete") {
+      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      notify("Review and preserved media deleted.");
+    } else if (action === "clear") {
+      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/clear-notification`, { method: "POST" });
+      notify("Review notification cleared and temporary files removed.");
+    }
     await loadReviewCentre();
   } catch (error) {
     notify(error.message, true);

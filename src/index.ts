@@ -1,12 +1,13 @@
 import { getSettings, repositories } from "./db.js";
 import { configureLogLevel, log } from "./logger.js";
 import { startDiscMonitor } from "./disc-monitor.js";
-import { startServer, stopServer } from "./server.js";
+import { setReviewJobActions, startServer, stopServer } from "./server.js";
 import { recoverTemporaryFiles } from "./recovery.js";
 import { createProviderRuntime } from "./bootstrap/providers.js";
 import { JobCoordinator } from "./application/job-coordinator.js";
 import { events } from "./events.js";
 import { jobControl } from "./job-control.js";
+import { ReviewJobProcessor } from "./application/review-job-processor.js";
 
 let providerRuntime: Awaited<ReturnType<typeof createProviderRuntime>> | undefined;
 
@@ -17,8 +18,21 @@ async function main(): Promise<void> {
     }
   }, jobControl);
   providerRuntime = await createProviderRuntime(getSettings, jobs, repositories);
+  const reviewProcessor = new ReviewJobProcessor(
+    repositories.reviewJobs,
+    providerRuntime.reviewWorkspaces,
+    jobs,
+    getSettings,
+    providerRuntime.metadata
+  );
+  setReviewJobActions({
+    continue: (id) => reviewProcessor.continue(id),
+    updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch),
+    remove: (id) => providerRuntime!.reviewWorkspaces.remove(id)
+  });
   configureLogLevel(getSettings().logLevel);
   await recoverTemporaryFiles(repositories);
+  await providerRuntime.reviewWorkspaces.recoverProcessing();
   await startServer();
   const shutdownController = new AbortController();
   const stopMonitor = startDiscMonitor(
