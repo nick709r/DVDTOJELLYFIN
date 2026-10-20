@@ -57,6 +57,7 @@
             <div class="resource"><span>Work free</span><b id="work-free">—</b></div>
             <div class="resource"><span>Movies free</span><b id="movies-free">—</b></div>
             <div class="resource"><span>Music free</span><b id="music-free">—</b></div>
+            <div id="library-dashboard-health" class="library-health-list"></div>
             <p class="hint">Metrics pause when this dashboard is closed.</p>
           </article>
         </div>
@@ -98,6 +99,26 @@
             <label>Operator notes<input name="notes" maxlength="2000"></label>
             <button class="button" type="submit">Save review</button>
           </form>
+          <form id="disc-recovery-form" class="hidden classification-override-form">
+            <h3>Media type recovery</h3>
+            <p id="disc-recovery-summary" class="classification-history-content">Detected and final classifications are stored separately.</p>
+            <label>Final disc type<select name="discType"></select></label>
+            <label>Final media type<select name="mediaType">
+              <option value="movie">Movie</option><option value="tv_series">TV Series</option><option value="music_album">Music Album</option>
+              <option value="audiobook">Audiobook</option><option value="music_video">Music Video</option><option value="concert">Concert</option>
+              <option value="documentary">Documentary</option><option value="mixed_content">Mixed Content</option><option value="other">Other</option>
+            </select></label>
+            <label>Metadata provider<select name="metadataProvider">
+              <option value="tvdb">TVDB</option><option value="tmdb">TMDB</option><option value="imdb">IMDb</option>
+              <option value="anidb">AniDB</option><option value="manual">Manual Entry</option>
+            </select></label>
+            <label>Provider ID<input name="providerId" maxlength="200"></label>
+            <label>Series name<input name="seriesName" maxlength="200"></label>
+            <label>Season number<input name="seasonNumber" type="number" min="0" max="100"></label>
+            <label>Notes<textarea name="notes" maxlength="2000"></textarea></label>
+            <button class="button secondary" type="submit">Save Media Recovery</button>
+            <p class="hint">Manual choices take precedence on the next disc detection. TV tracks can then be mapped in Review Centre.</p>
+          </form>
           <div id="classification-metrics"></div>
         </article>
         <div class="diagnostics-grid">
@@ -130,7 +151,7 @@
       <section id="page-tv-reviews" class="page hidden">
         <article class="card table-card">
           <div class="card-heading"><div><p class="eyebrow">VERSION 2 OPERATIONS</p><h2>Review Centre</h2></div>
-            <button id="refresh-reviews" class="button secondary" type="button">Refresh</button>
+            <div><button id="refresh-reviews" class="button secondary" type="button">Refresh</button></div>
           </div>
           <div id="review-summary" class="tv-stat-grid"></div>
           <div class="review-filters">
@@ -164,7 +185,7 @@
       <section id="page-statistics" class="page hidden">
         <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
         <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
-          <p class="hint">TV plans remain analysis-only. No files are assigned, renamed, moved, or published by these reports.</p>
+          <p class="hint">Automatic TV suggestions never publish files. Confirm series metadata and episode-to-track mappings in Review Centre to process TV episodes.</p>
         </article>
       </section>
       <section id="page-settings" class="page hidden">
@@ -179,6 +200,8 @@
             </section>
           </article>
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
+            <h3>Library Paths</h3>
+            <div id="library-settings-health" class="library-health-list"></div>
             <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
             <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
             <label>TV Output Folder (TV Root)<input name="tvRootDir" required placeholder="/srv/jellyfin/TV"></label>
@@ -259,7 +282,7 @@
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
-            <p class="hint">Username is <b>admin</b>. A password must be at least 12 characters. Without a password, anyone who can reach the service can administer it. Never expose it to the internet.</p>
+            <p class="hint">The administrator username is configured during first-run setup. Passwords must include lowercase, uppercase, a number, and a symbol.</p>
             <label>Logging level<select name="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
           </article>
           <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>
@@ -270,7 +293,7 @@
       <form id="login-form" method="dialog">
         <p class="eyebrow">ADMINISTRATION</p><h2>Sign in to AutoDisc</h2>
         <p class="muted">Use the admin account to manage the appliance.</p>
-        <label>Username<input name="username" value="admin" autocomplete="username" required></label>
+        <label>Username<input name="username" autocomplete="username" required></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
         <p id="login-error" class="error-text"></p>
         <button class="button primary" type="submit">Sign in</button>

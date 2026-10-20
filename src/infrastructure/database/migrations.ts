@@ -289,4 +289,57 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (16, ?)")
     .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS setup_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      setup_complete INTEGER NOT NULL CHECK (setup_complete IN (0, 1)),
+      admin_username TEXT,
+      admin_password_salt TEXT NOT NULL DEFAULT '',
+      admin_password_hash TEXT NOT NULL DEFAULT '',
+      setup_completed_at TEXT
+    );
+  `);
+  const savedAdminHash = db.prepare("SELECT value FROM settings WHERE key = 'adminPasswordHash'").get() as
+    { value: string } | undefined;
+  const savedAdminSalt = db.prepare("SELECT value FROM settings WHERE key = 'adminPasswordSalt'").get() as
+    { value: string } | undefined;
+  const legacyHash = savedAdminHash ? JSON.parse(savedAdminHash.value) as string : "";
+  const legacySalt = savedAdminSalt ? JSON.parse(savedAdminSalt.value) as string : "";
+  const setupComplete = Boolean(legacyHash);
+  db.prepare(`
+    INSERT OR IGNORE INTO setup_state
+      (id, setup_complete, admin_username, admin_password_salt, admin_password_hash, setup_completed_at)
+    VALUES (1, ?, ?, ?, ?, ?)
+  `).run(setupComplete ? 1 : 0, setupComplete ? "admin" : null, legacySalt, legacyHash,
+    setupComplete ? new Date().toISOString() : null);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (17, ?)")
+    .run(new Date().toISOString());
+  const classificationAuditColumns = db.pragma("table_info(disk_classification_audit)") as Array<{ name: string }>;
+  if (!classificationAuditColumns.some((column) => column.name === "reviewed_by")) {
+    db.exec("ALTER TABLE disk_classification_audit ADD COLUMN reviewed_by TEXT");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (18, ?)")
+    .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS disc_recovery (
+      fingerprint TEXT PRIMARY KEY,
+      detected_disc_type TEXT NOT NULL,
+      final_disc_type TEXT NOT NULL,
+      detected_media_type TEXT NOT NULL,
+      detected_confidence REAL CHECK (detected_confidence IS NULL OR detected_confidence BETWEEN 0 AND 1),
+      final_media_type TEXT NOT NULL,
+      disc_type_overridden INTEGER NOT NULL DEFAULT 0 CHECK (disc_type_overridden IN (0, 1)),
+      media_type_overridden INTEGER NOT NULL DEFAULT 0 CHECK (media_type_overridden IN (0, 1)),
+      metadata_provider TEXT NOT NULL DEFAULT 'manual',
+      provider_id TEXT,
+      series_name TEXT,
+      season_number INTEGER CHECK (season_number IS NULL OR season_number BETWEEN 0 AND 100),
+      mappings_json TEXT NOT NULL DEFAULT '[]',
+      notes TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS disc_recovery_updated ON disc_recovery(updated_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (19, ?)")
+    .run(new Date().toISOString());
 }

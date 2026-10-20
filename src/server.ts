@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyRateLimit from "@fastify/rate-limit";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, scryptSync } from "node:crypto";
 import { access, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -32,6 +32,17 @@ import { exportClassificationJson, exportClassificationText } from "./applicatio
 import { TvReviewService } from "./application/tv-review-service.js";
 import { TvValidationService } from "./application/tv-validation-service.js";
 import type { Episode, TvProcessingPlan } from "./domain/television.js";
+import {
+  discTypes,
+  isValidAirDate,
+  mediaTypes,
+  metadataProviderIds,
+  type DiscRecoveryUpdate,
+  type DiscType,
+  type EpisodeMapping,
+  type MediaType,
+  type MetadataProviderId
+} from "./domain/disc-recovery.js";
 import type { ReviewCategory, ReviewSeverity, ReviewStatus } from "./domain/reviews.js";
 import type { ReviewJob } from "./domain/review-jobs.js";
 
@@ -54,10 +65,11 @@ const tvValidation = new TvValidationService(
 );
 const tvReview = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
 const sessions = new Map<string, number>();
+const setupAttempts = new Map<string, { count: number; resetAt: number }>();
 const staticRoot = join(dirname(fileURLToPath(import.meta.url)), "../web");
 
 function passwordConfigured(): boolean {
-  return Boolean(getSettings().adminPasswordHash);
+  return repositories.setup.get().setupComplete;
 }
 
 function sessionToken(request: FastifyRequest): string | undefined {
@@ -77,6 +89,19 @@ function isAuthenticated(request: FastifyRequest): boolean {
   return true;
 }
 
+app.addHook("onRequest", async (request, reply) => {
+  const setupComplete = repositories.setup.get().setupComplete;
+  if (!setupComplete) {
+    if (request.url === "/" || request.url === "/setup" ||
+      request.url === "/api/v1/setup/status" || request.url === "/api/v1/setup") return;
+    if (request.url.startsWith("/api/")) {
+      return reply.code(503).send({ error: "Initial administrator setup is required", setupRequired: true });
+    }
+    return reply.redirect("/setup");
+  }
+  if (request.url === "/setup") return reply.redirect("/");
+});
+
 app.addHook("preHandler", async (request, reply) => {
   if (!request.url.startsWith("/api/") || request.url === "/api/health" || request.url === "/api/v1/login") return;
   if (passwordConfigured() && !isAuthenticated(request)) {
@@ -92,8 +117,69 @@ app.addHook("preHandler", async (request, reply) => {
   }
 });
 
-app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
+app.get("/", async (_request, reply) => repositories.setup.get().setupComplete
+  ? reply.sendFile("index.html")
+  : reply.redirect("/setup"));
+app.get("/setup", async (_request, reply) => reply.sendFile("setup.html"));
+app.register(fastifyStatic, { root: staticRoot, prefix: "/", index: false });
 app.register(fastifyRateLimit, { global: false });
+
+function validAdministratorPassword(password: string): boolean {
+  return password.length >= 12 && password.length <= 256 &&
+    /[a-z]/.test(password) && /[A-Z]/.test(password) &&
+    /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
+}
+
+app.get("/api/v1/setup/status", async () => ({
+  setupComplete: repositories.setup.get().setupComplete
+}));
+
+app.post<{ Body: unknown }>("/api/v1/setup", async (request, reply) => {
+  if (repositories.setup.get().setupComplete) {
+    return reply.code(409).send({ error: "Initial setup has already been completed" });
+  }
+  const now = Date.now();
+  const attempt = setupAttempts.get(request.ip);
+  if (attempt && attempt.resetAt > now && attempt.count >= 10) {
+    reply.header("Retry-After", String(Math.ceil((attempt.resetAt - now) / 1000)));
+    return reply.code(429).send({ error: "Too many setup attempts. Wait before trying again." });
+  }
+  setupAttempts.set(request.ip, {
+    count: attempt && attempt.resetAt > now ? attempt.count + 1 : 1,
+    resetAt: attempt && attempt.resetAt > now ? attempt.resetAt : now + 15 * 60 * 1000
+  });
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Setup request must be a JSON object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  if (typeof body.username !== "string" || !/^[A-Za-z0-9._-]{3,32}$/.test(body.username)) {
+    return reply.code(400).send({ error: "Username must be 3 to 32 letters, numbers, periods, underscores, or hyphens" });
+  }
+  if (typeof body.password !== "string" || !validAdministratorPassword(body.password)) {
+    return reply.code(400).send({ error: "Password must be 12 to 256 characters and include lowercase, uppercase, a number, and a symbol" });
+  }
+  if (body.password.toLocaleLowerCase().includes(body.username.toLocaleLowerCase())) {
+    return reply.code(400).send({ error: "Password must not contain the administrator username" });
+  }
+  if (body.confirmPassword !== body.password) {
+    return reply.code(400).send({ error: "Password confirmation does not match" });
+  }
+  const salt = randomBytes(16);
+  try {
+    repositories.setup.complete(body.username, salt.toString("hex"), scryptSync(body.password, salt, 64).toString("hex"));
+  } catch (error) {
+    if (error instanceof Error && error.message === "Initial setup has already been completed") {
+      return reply.code(409).send({ error: error.message });
+    }
+    app.log.error({ err: error }, "Initial administrator setup could not be completed");
+    return reply.code(500).send({ error: "Initial setup could not be completed" });
+  }
+  sessions.clear();
+  setupAttempts.clear();
+  events.emit("status");
+  events.emit("settings", { opticalDevice: getSettings().opticalDevice });
+  return reply.code(201).send({ ok: true, setupComplete: true });
+});
 
 function publicSettings(settings: AppSettings): Omit<AppSettings,
   "metadataApiKey" | "lidarrApiKey" | "adminPasswordSalt" | "adminPasswordHash" | "tvMetadataProviderApiKeys"> & {
@@ -118,7 +204,7 @@ function publicSettings(settings: AppSettings): Omit<AppSettings,
       tvMetadataProviderRegistry.list(settings).map((provider) =>
         [provider.id, Boolean(tvMetadataProviderApiKeys[provider.id])])
     ),
-    adminPasswordConfigured: Boolean(adminPasswordHash)
+    adminPasswordConfigured: passwordConfigured()
   };
 }
 
@@ -130,15 +216,10 @@ function setSessionCookie(reply: FastifyReply, token: string, maxAge: number): v
 }
 
 app.post<{ Body: { username?: string; password?: string } }>("/api/v1/login", async (request, reply) => {
-  const settings = getSettings();
-  if (!settings.adminPasswordHash) return reply.send({ ok: true, passwordRequired: false });
+  if (!passwordConfigured()) return reply.code(409).send({ error: "Initial administrator setup is required", setupRequired: true });
   const password = request.body?.password;
-  if (request.body?.username !== "admin" || typeof password !== "string") {
-    return reply.code(401).send({ error: "Invalid username or password" });
-  }
-  const candidate = scryptSync(password, Buffer.from(settings.adminPasswordSalt, "hex"), 64);
-  const expected = Buffer.from(settings.adminPasswordHash, "hex");
-  if (candidate.length !== expected.length || !timingSafeEqual(candidate, expected)) {
+  if (typeof request.body?.username !== "string" || typeof password !== "string" ||
+    !repositories.setup.authenticate(request.body.username, password)) {
     return reply.code(401).send({ error: "Invalid username or password" });
   }
   const token = randomBytes(32).toString("hex");
@@ -196,6 +277,7 @@ app.get("/api/v1/dashboard", async () => {
   return {
     stats: jobStats(),
     mediaStats: repositories.history.statsByMediaType(),
+    libraries: await libraryHealth(),
     recent: listJobs(10),
     active,
     manualMusicMetadata: active ? getManualMusicMetadataPrompt(active.id) : null,
@@ -392,11 +474,14 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/classification/audi
   for (const key of ["overrideReason", "notes"]) {
     if (input[key] !== undefined && typeof input[key] !== "string") return reply.code(400).send({ error: `${key} must be a string` });
   }
+  const reviewedBy = repositories.setup.get().adminUsername;
+  if (!reviewedBy) return reply.code(503).send({ error: "Administrator identity is unavailable" });
   try {
     return { record: repositories.classificationAudit.review(record.id, {
       finalType: input.finalType as string,
       overrideReason: input.overrideReason as string | undefined,
-      notes: input.notes as string | undefined
+      notes: input.notes as string | undefined,
+      reviewedBy
     }) };
   } catch (error) {
     return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid classification review" });
@@ -684,6 +769,238 @@ app.get<{ Querystring: { state?: string; limit?: string } }>("/api/v1/tv/reviews
   return { plans: plans.slice(0, limit), total: plans.length };
 });
 
+app.get<{ Params: { id: string } }>("/api/v1/tv/plans/:id/recovery", async (request, reply) => {
+  const plan = repositories.tvProcessingPlans.get(request.params.id);
+  if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
+  return { recovery: repositories.discRecovery.get(plan.fingerprint) ?? null };
+});
+
+function parseEpisodeMappings(value: unknown): EpisodeMapping[] {
+  if (!Array.isArray(value) || value.length > 100) throw new Error("Episode mappings must contain at most 100 tracks");
+  return value.map((entry): EpisodeMapping => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error("Episode mapping must be an object");
+    }
+    const mapping = entry as Record<string, unknown>;
+    if (typeof mapping.trackId !== "string" || !mapping.trackId.trim() ||
+      !Array.isArray(mapping.episodes) || mapping.episodes.length < 1 || mapping.episodes.length > 3) {
+      throw new Error("Each episode mapping requires a track and 1 to 3 episodes");
+    }
+    const episodes = mapping.episodes.map((entry): Episode => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new Error("Episode metadata must be an object");
+      }
+      const episode = entry as Record<string, unknown>;
+      if (typeof episode.seriesId !== "string" || !episode.seriesId.trim() || episode.seriesId.length > 200 ||
+        !Number.isInteger(episode.seasonNumber) || Number(episode.seasonNumber) < 0 || Number(episode.seasonNumber) > 100 ||
+        !Number.isInteger(episode.episodeNumber) || Number(episode.episodeNumber) < 0 || Number(episode.episodeNumber) > 1000 ||
+        (episode.title !== undefined && (typeof episode.title !== "string" || episode.title.length > 500)) ||
+        (episode.airDate !== undefined && (typeof episode.airDate !== "string" || !isValidAirDate(episode.airDate))) ||
+        (episode.notes !== undefined && (typeof episode.notes !== "string" || episode.notes.length > 1000))) {
+        throw new Error("Episode metadata is invalid");
+      }
+      return {
+        seriesId: episode.seriesId,
+        seasonNumber: Number(episode.seasonNumber),
+        episodeNumber: Number(episode.episodeNumber),
+        ...(typeof episode.title === "string" ? { title: episode.title } : {}),
+        ...(typeof episode.airDate === "string" ? { airDate: episode.airDate } : {}),
+        ...(typeof episode.notes === "string" ? { notes: episode.notes } : {})
+      };
+    });
+    return { trackId: mapping.trackId, episodes };
+  });
+}
+
+app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recovery", async (request, reply) => {
+  const plan = repositories.tvProcessingPlans.get(request.params.id);
+  if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
+  if (repositories.jobs.active()) return reply.code(409).send({ error: "Wait until disc processing finishes before changing recovery data" });
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Recovery metadata must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber", "mappings", "notes"];
+  if (Object.keys(body).some((key) => !allowed.includes(key))) {
+    return reply.code(400).send({ error: "Recovery metadata contains unsupported fields" });
+  }
+  if ((body.discType !== undefined && !discTypes.includes(body.discType as never)) ||
+    (body.mediaType !== undefined && !mediaTypes.includes(body.mediaType as never)) ||
+    (body.metadataProvider !== undefined && !metadataProviderIds.includes(body.metadataProvider as never)) ||
+    (body.providerId !== undefined && body.providerId !== null &&
+      (typeof body.providerId !== "string" || body.providerId.trim().length < 1 || body.providerId.length > 200)) ||
+    (body.seriesName !== undefined && body.seriesName !== null &&
+      (typeof body.seriesName !== "string" || body.seriesName.trim().length < 1 || body.seriesName.length > 200)) ||
+    (body.seasonNumber !== undefined && body.seasonNumber !== null &&
+      (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100)) ||
+    (body.notes !== undefined && body.notes !== null &&
+      (typeof body.notes !== "string" || body.notes.length > 2000)) ||
+    (body.mappings !== undefined && (!Array.isArray(body.mappings) || body.mappings.length > 100))) {
+    return reply.code(400).send({ error: "Recovery metadata contains invalid values" });
+  }
+  let mappings: EpisodeMapping[] | undefined;
+  let patch: DiscRecoveryUpdate;
+  try {
+    mappings = body.mappings === undefined ? undefined : parseEpisodeMappings(body.mappings);
+    patch = {
+      ...(body.discType === undefined ? {} : { finalDiscType: body.discType as DiscType }),
+      ...(body.mediaType === undefined ? {} : { finalMediaType: body.mediaType as MediaType }),
+      ...(body.metadataProvider === undefined ? {} : { metadataProvider: body.metadataProvider as MetadataProviderId }),
+      ...(body.providerId === undefined ? {} : { providerId: body.providerId as string | null }),
+      ...(body.seriesName === undefined ? {} : { seriesName: body.seriesName as string | null }),
+      ...(body.seasonNumber === undefined ? {} : { seasonNumber: body.seasonNumber as number | null }),
+      ...(mappings === undefined ? {} : { mappings }),
+      ...(body.notes === undefined ? {} : { notes: body.notes as string | null })
+    };
+    const recovery = repositories.discRecovery.update(plan.fingerprint, patch);
+    if (!recovery) return reply.code(409).send({ error: "Recovery data has not been initialized for this disc" });
+    repositories.recovery.clearInsertedDisc();
+    return { recovery };
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "Recovery metadata could not be saved" });
+  }
+});
+
+app.get<{ Querystring: { limit?: string } }>("/api/v1/discs/overridden", async (request, reply) => {
+  const limit = request.query.limit === undefined ? 100 : Number(request.query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    return reply.code(400).send({ error: "Disc recovery limit must be between 1 and 1000" });
+  }
+  return { discs: repositories.discRecovery.list(limit).filter((entry) =>
+    entry.discTypeOverridden || entry.mediaTypeOverridden) };
+});
+
+app.get<{ Params: { fingerprint: string } }>("/api/v1/discs/recovery/:fingerprint", async (request) => ({
+  recovery: repositories.discRecovery.get(request.params.fingerprint) ?? null
+}));
+
+app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/recovery/:fingerprint", async (request, reply) => {
+  if (repositories.jobs.active()) return reply.code(409).send({ error: "Wait until disc processing finishes before changing recovery data" });
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Recovery update must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber", "mappings", "notes"];
+  if (Object.keys(body).some((key) => !allowed.includes(key)) ||
+    (body.discType !== undefined && !discTypes.includes(body.discType as never)) ||
+    (body.mediaType !== undefined && !mediaTypes.includes(body.mediaType as never)) ||
+    (body.metadataProvider !== undefined && !metadataProviderIds.includes(body.metadataProvider as never)) ||
+    (body.providerId !== undefined && body.providerId !== null &&
+      (typeof body.providerId !== "string" || body.providerId.trim().length < 1 || body.providerId.length > 200)) ||
+    (body.seriesName !== undefined && body.seriesName !== null &&
+      (typeof body.seriesName !== "string" || body.seriesName.trim().length < 1 || body.seriesName.length > 200)) ||
+    (body.seasonNumber !== undefined && body.seasonNumber !== null &&
+      (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100)) ||
+    (body.notes !== undefined && body.notes !== null &&
+      (typeof body.notes !== "string" || body.notes.length > 2000))) {
+    return reply.code(400).send({ error: "Recovery update contains invalid values" });
+  }
+  try {
+    const recovery = repositories.discRecovery.update(request.params.fingerprint, {
+      ...(body.discType === undefined ? {} : { finalDiscType: body.discType as DiscType }),
+      ...(body.mediaType === undefined ? {} : { finalMediaType: body.mediaType as MediaType }),
+      ...(body.metadataProvider === undefined ? {} : { metadataProvider: body.metadataProvider as MetadataProviderId }),
+      ...(body.providerId === undefined ? {} : { providerId: body.providerId as string | null }),
+      ...(body.seriesName === undefined ? {} : { seriesName: body.seriesName as string | null }),
+      ...(body.seasonNumber === undefined ? {} : { seasonNumber: body.seasonNumber as number | null }),
+      ...(body.mappings === undefined ? {} : { mappings: parseEpisodeMappings(body.mappings) }),
+      ...(body.notes === undefined ? {} : { notes: body.notes as string | null })
+    });
+    if (!recovery) return reply.code(404).send({ error: "Disc recovery record not found" });
+    repositories.recovery.clearInsertedDisc();
+    return { recovery };
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "Recovery update could not be saved" });
+  }
+});
+
+app.post<{ Body: unknown }>("/api/v1/tv/metadata/series/lookup", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Series lookup request must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  const manualProvider = body.provider === "manual";
+  if (!["tvdb", "tmdb", "imdb", "anidb", "manual"].includes(String(body.provider)) ||
+    (!manualProvider && (typeof body.providerId !== "string" || !body.providerId.trim() || body.providerId.length > 200)) ||
+    (manualProvider && ((body.providerId !== undefined && typeof body.providerId !== "string") ||
+      typeof body.seriesName !== "string" || !body.seriesName.trim() || body.seriesName.length > 200))) {
+    return reply.code(400).send({ error: "Series provider and ID are required" });
+  }
+  const provider = body.provider as string;
+  const providerId = body.providerId as string;
+  if (provider === "anidb") return reply.code(501).send({ error: "AniDB direct lookup is not supported by this installation" });
+  if (provider === "manual") {
+    const title = (body.seriesName as string).trim();
+    const manualId = typeof body.providerId === "string" && body.providerId.trim()
+      ? body.providerId.trim() : `manual:${title}`;
+    return { series: {
+      id: manualId, entityType: "series", title, confidence: 1,
+      metadata: { seriesId: manualId, title }, identifiers: { manual: manualId }
+    } };
+  }
+  const settings = getSettings();
+  const configuredProviderId = provider === "imdb" || provider === "tmdb" ? "tmdb-tv" : "tvdb";
+  if (!settings.tvMetadataProviderEnabled[configuredProviderId]) {
+    return reply.code(400).send({ error: `${configuredProviderId} provider is disabled` });
+  }
+  const idValid = provider === "tvdb" ? /^\d{1,12}$/.test(providerId) :
+    provider === "tmdb" ? /^\d{1,12}$/.test(providerId) : /^tt\d{7,10}$/.test(providerId);
+  if (!idValid) return reply.code(400).send({ error: "Provider ID format is invalid" });
+  const apiKey = settings.tvMetadataProviderApiKeys[configuredProviderId] ?? "";
+  if (!apiKey) return reply.code(400).send({ error: `${configuredProviderId} API key is not configured` });
+  try {
+    const series = provider === "imdb"
+      ? await tvMetadataProviderRegistry.lookupImdbId(providerId.trim(), apiKey)
+      : await tvMetadataProviderRegistry.lookupById(configuredProviderId, providerId.trim(), apiKey);
+    if (!series) return reply.code(404).send({ error: "No series was found for that provider ID" });
+    return { series };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Series lookup failed";
+    app.log.warn({ err: error, provider, providerId }, "TV metadata ID lookup failed");
+    return reply.code(502).send({ error: message });
+  }
+});
+
+app.post<{ Body: unknown }>("/api/v1/tv/metadata/episodes/lookup", async (request, reply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Episode lookup request must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  if (!["tvdb", "tmdb", "imdb", "anidb"].includes(String(body.provider)) ||
+    typeof body.providerId !== "string" || !body.providerId.trim() || body.providerId.length > 200 ||
+    !Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100) {
+    return reply.code(400).send({ error: "Provider ID and valid season number are required" });
+  }
+  const provider = body.provider as string;
+  if (provider === "anidb") return reply.code(501).send({ error: "AniDB episode lookup is not supported by this installation" });
+  const configuredProviderId = provider === "tvdb" ? "tvdb" : "tmdb-tv";
+  const settings = getSettings();
+  if (!settings.tvMetadataProviderEnabled[configuredProviderId]) {
+    return reply.code(400).send({ error: `${configuredProviderId} provider is disabled` });
+  }
+  const idValid = provider === "tvdb" ? /^\d{1,12}$/.test(body.providerId) :
+    provider === "tmdb" ? /^\d{1,12}$/.test(body.providerId) : /^tt\d{7,10}$/.test(body.providerId);
+  if (!idValid) return reply.code(400).send({ error: "Provider ID format is invalid" });
+  const apiKey = settings.tvMetadataProviderApiKeys[configuredProviderId] ?? "";
+  if (!apiKey) return reply.code(400).send({ error: `${configuredProviderId} API key is not configured` });
+  try {
+    let seriesId = body.providerId.trim();
+    if (provider === "imdb") {
+      const series = await tvMetadataProviderRegistry.lookupImdbId(seriesId, apiKey);
+      seriesId = typeof series?.identifiers?.tmdbTvId === "string" ? series.identifiers.tmdbTvId : "";
+      if (!seriesId) return reply.code(404).send({ error: "No TV series was found for that IMDb ID" });
+    }
+    const episodes = await tvMetadataProviderRegistry.lookupEpisodesById(
+      configuredProviderId, seriesId, Number(body.seasonNumber), apiKey);
+    return { episodes, provider, providerSeriesId: seriesId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Episode metadata lookup failed";
+    app.log.warn({ err: error, provider, providerId: body.providerId, seasonNumber: body.seasonNumber },
+      "TV episode ID lookup failed");
+    return reply.code(502).send({ error: message });
+  }
+});
+
 app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/review", async (request, reply) => {
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
     return reply.code(400).send({ error: "TV review request must be an object" });
@@ -868,6 +1185,48 @@ async function checkTvRootDirectory(path: string): Promise<PathCheck> {
   }
 }
 
+type LibraryType = "movies" | "tv" | "music";
+
+function libraryPaths(settings: AppSettings): Record<LibraryType, string> {
+  return { movies: settings.moviesDir, tv: settings.tvRootDir, music: settings.musicDir };
+}
+
+async function libraryHealth(settings = getSettings()): Promise<Array<{
+  type: LibraryType;
+  path: string;
+  exists: boolean;
+  writable: boolean;
+  freeBytes: number | null;
+  error?: string;
+}>> {
+  return Promise.all((Object.entries(libraryPaths(settings)) as Array<[LibraryType, string]>).map(async ([type, path]) => {
+    try {
+      const info = await stat(path);
+      if (!info.isDirectory()) throw new Error("Configured library path is not a directory");
+      const writeCheck = await checkDirectoryPermissions(`${type} library`, path, true);
+      return {
+        type, path, exists: true, writable: writeCheck.ok,
+        freeBytes: writeCheck.availableBytes ?? null,
+        ...(writeCheck.ok ? {} : { error: writeCheck.message })
+      };
+    } catch (error) {
+      return {
+        type, path, exists: false, writable: false, freeBytes: null,
+        error: error instanceof Error ? error.message : "Library health check failed"
+      };
+    }
+  }));
+}
+
+async function ensureWritableDirectory(path: string): Promise<void> {
+  if (!validAbsolutePath(path) || resolve(path) === sep) {
+    throw new Error("Library path must be an absolute Linux path other than the filesystem root");
+  }
+  await mkdir(path, { recursive: true });
+  const check = await checkDirectoryPermissions("Library folder", path, true);
+  if (!check.ok) throw new Error(check.message);
+}
+
 function createTvPathReview(path: string, failure: string): void {
   repositories.reviewItems.create({
     category: "configuration_issue",
@@ -910,6 +1269,42 @@ async function checkOpticalDevice(path: string): Promise<PathCheck> {
     };
   }
 }
+
+app.get("/api/library/health", async () => ({ libraries: await libraryHealth() }));
+app.get("/api/v1/library/health", async () => ({ libraries: await libraryHealth() }));
+
+const createLibraryRoute = async (request: FastifyRequest<{ Body: unknown }>, reply: FastifyReply) => {
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ ok: false, error: "Library creation request must be an object" });
+  }
+  const type = (request.body as Record<string, unknown>).type;
+  if (type !== "movies" && type !== "tv" && type !== "music") {
+    return reply.code(400).send({ ok: false, error: "Library type must be movies, tv, or music" });
+  }
+  const path = libraryPaths(getSettings())[type];
+  try {
+    await ensureWritableDirectory(path);
+    const status = (await libraryHealth()).find((library) => library.type === type);
+    if (!status?.exists || !status.writable) throw new Error(status?.error ?? "Created library is not writable");
+    return { ok: true, type, path, status, message: "Library folder exists and is writable" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Library folder could not be created";
+    app.log.warn({ type, path, err: error }, "Library folder creation failed");
+    const status = (await libraryHealth()).find((library) => library.type === type);
+    return reply.code(400).send({
+      ok: false,
+      type,
+      path,
+      exists: status?.exists ?? false,
+      writable: status?.writable ?? false,
+      freeBytes: status?.freeBytes ?? null,
+      error: status?.error ?? message
+    });
+  }
+};
+
+app.post("/api/library/create", createLibraryRoute);
+app.post("/api/v1/library/create", createLibraryRoute);
 
 app.post<{ Body: unknown }>("/api/v1/paths/check", async (request, reply) => {
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
@@ -967,7 +1362,7 @@ app.get("/api/v1/tv/metadata", async () => {
         minimumConfidence: tvEpisodeMatchingPolicy.minimumConfidence,
         minimumMargin: tvEpisodeMatchingPolicy.minimumMargin
       },
-      reviewPolicy: "High confidence is at least 0.90; medium is at least 0.72; lower confidence requires review. Medium-confidence matches recommend review, and ambiguous or flagged matches require review at any confidence. TV media execution remains disabled.",
+      reviewPolicy: "High confidence is at least 0.90; medium is at least 0.72; lower confidence requires review. Medium-confidence matches recommend review, and ambiguous or flagged matches require review at any confidence. Automatic TV execution is disabled; explicitly saved manual recovery mappings can be processed.",
       matchingPolicy: "Conservative evidence ranking; unsupported assignments remain Unknown."
     }
   };
@@ -1107,21 +1502,18 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if ("moviesDir" in body) {
     if (!validAbsolutePath(body.moviesDir)) return reply.code(400).send({ error: "Movies path must be an absolute Linux path" });
     try {
-      await validateDirectory(body.moviesDir);
-    } catch {
-      return reply.code(400).send({ error: "Movies path must exist and be readable and writable by AutoDisc" });
+      await ensureWritableDirectory(body.moviesDir);
+    } catch (error) {
+      return reply.code(400).send({ error: `Movies path must be creatable and writable by AutoDisc: ${error instanceof Error ? error.message : "validation failed"}` });
     }
     patch.moviesDir = body.moviesDir;
   }
   if ("musicDir" in body) {
     if (!validAbsolutePath(body.musicDir)) return reply.code(400).send({ error: "Music path must be an absolute Linux path" });
     try {
-      const currentLidarrEnabled = getSettings().lidarrEnabled;
-      const lidarrWillManageLibrary = typeof body.lidarrEnabled === "boolean" ? body.lidarrEnabled : currentLidarrEnabled;
-      if (lidarrWillManageLibrary) await validateReadableDirectory(body.musicDir);
-      else await validateDirectory(body.musicDir);
-    } catch {
-      return reply.code(400).send({ error: "Music path must exist and be readable by AutoDisc, and writable when Lidarr integration is disabled" });
+      await ensureWritableDirectory(body.musicDir);
+    } catch (error) {
+      return reply.code(400).send({ error: `Music path must be creatable and writable by AutoDisc: ${error instanceof Error ? error.message : "validation failed"}` });
     }
     patch.musicDir = body.musicDir;
   }
@@ -1314,12 +1706,9 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     patch.lidarrApiKey = body.lidarrApiKey;
   }
   if ("adminPassword" in body) {
-    if (typeof body.adminPassword !== "string" || body.adminPassword.length < 12 || body.adminPassword.length > 256) {
-      return reply.code(400).send({ error: "Password must be 12 to 256 characters" });
+    if (typeof body.adminPassword !== "string" || !validAdministratorPassword(body.adminPassword)) {
+      return reply.code(400).send({ error: "Password must be 12 to 256 characters and include lowercase, uppercase, a number, and a symbol" });
     }
-    const salt = randomBytes(16);
-    patch.adminPasswordSalt = salt.toString("hex");
-    patch.adminPasswordHash = scryptSync(body.adminPassword, salt, 64).toString("hex");
   }
   if ("logLevel" in body) {
     if (!["debug", "info", "warn", "error"].includes(String(body.logLevel))) {
@@ -1343,7 +1732,11 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     }
   }
   const saved = saveSettings(patch);
-  if (patch.adminPasswordHash !== undefined) sessions.clear();
+  if (typeof body.adminPassword === "string") {
+    const salt = randomBytes(16);
+    repositories.setup.updatePassword(salt.toString("hex"), scryptSync(body.adminPassword, salt, 64).toString("hex"));
+    sessions.clear();
+  }
   app.log.level = saved.logLevel;
   configureLogLevel(saved.logLevel);
   events.emit("settings", { opticalDevice: patch.opticalDevice });

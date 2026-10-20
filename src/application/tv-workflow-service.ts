@@ -315,7 +315,7 @@ function planInput(analysis: TvDiscAnalysisReport, matches: TvEpisodeMatchReport
     analysis.probableAlternates.length === 0;
   const reviewRequirement = reviewFor(confidence,
     reviewReasons.length > 0 || matches.items.some((item) => item.manualReviewRequired));
-  const executionBlocker = "TV episode output processing is not implemented; no files will be ripped, converted, renamed, moved, or published.";
+  const executionBlocker = "Automatic execution is disabled for unverified TV matches; explicit manual recovery mappings can be published.";
   return {
     sourceId: analysis.sourceId,
     manifestId: analysis.manifestId,
@@ -485,7 +485,7 @@ export function summarizeTvPlan(plan: TvProcessingPlan): string {
   const processingDecision = plan.automaticProcessingSafe
     ? "episode mapping is high-confidence"
     : "manual review is required";
-  return `TV analysis plan ${plan.id}: ${series}, ${season}; confidence ${plan.confidenceBand}; ${suggestions} suggested track assignments; ${processingDecision}; execution disabled`;
+  return `TV analysis plan ${plan.id}: ${series}, ${season}; confidence ${plan.confidenceBand}; ${suggestions} suggested track assignments; ${processingDecision}; automatic execution disabled`;
 }
 
 export function tvPlanRecommendations(

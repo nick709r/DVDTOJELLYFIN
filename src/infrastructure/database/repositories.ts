@@ -12,11 +12,14 @@ import { SqliteTvValidationEvidenceRepository } from "./tv-validation-evidence-r
 import { SqliteReviewItemRepository } from "./review-item-repository.js";
 import { SqliteReviewJobRepository } from "./review-job-repository.js";
 import { SqliteClassificationAuditRepository } from "./classification-audit-repository.js";
+import { SqliteSetupRepository } from "./setup-repository.js";
+import { SqliteDiscRecoveryRepository } from "./disc-recovery-repository.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
   const events = new SqliteEventRepository(db);
   const classificationAudit = new SqliteClassificationAuditRepository(db);
   return {
+    setup: new SqliteSetupRepository(db),
     settings: new SqliteSettingsRepository(db, defaults),
     jobs: new SqliteJobRepository(db, events, classificationAudit),
     history: new SqliteHistoryRepository(db),
@@ -28,6 +31,7 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     reviewItems: new SqliteReviewItemRepository(db),
     reviewJobs: new SqliteReviewJobRepository(db),
     classificationAudit,
+    discRecovery: new SqliteDiscRecoveryRepository(db),
     close: () => db.close()
   };
 }

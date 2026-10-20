@@ -7,6 +7,20 @@ import type { TvValidationEvidenceRepository } from "../domain/tv-validation.js"
 import type { ReviewItemRepository } from "../domain/reviews.js";
 import type { ClassificationAuditRepository } from "../domain/classification.js";
 import type { ReviewJobRepository } from "../domain/review-jobs.js";
+import type { DiscRecovery, DiscRecoveryRepository } from "../domain/disc-recovery.js";
+
+export interface SetupState {
+  setupComplete: boolean;
+  adminUsername: string | null;
+  setupCompletedAt: string | null;
+}
+
+export interface SetupRepository {
+  get(): SetupState;
+  complete(username: string, salt: string, passwordHash: string): SetupState;
+  updatePassword(salt: string, passwordHash: string): void;
+  authenticate(username: string, password: string): boolean;
+}
 
 export interface SettingsRepository {
   get(): AppSettings;
@@ -45,6 +59,7 @@ export interface RecoveryRepository {
 }
 
 export interface AutoDiscRepositories {
+  setup: SetupRepository;
   settings: SettingsRepository;
   jobs: JobRepository;
   history: HistoryRepository;
@@ -56,5 +71,6 @@ export interface AutoDiscRepositories {
   reviewItems: ReviewItemRepository;
   reviewJobs: ReviewJobRepository;
   classificationAudit: ClassificationAuditRepository;
+  discRecovery: DiscRecoveryRepository;
   close(): void;
 }

@@ -9,11 +9,12 @@ import {
 interface Row {
   id: string; job_id: string | null; created_at: string; disk_name: string; detected_type: string;
   final_type: string; confidence: number | null; review_status: ClassificationReviewStatus;
-  processing_status: string; override_reason: OverrideReason | null; notes: string | null; reviewed_at: string | null;
+  processing_status: string; override_reason: OverrideReason | null; notes: string | null;
+  reviewed_by: string | null; reviewed_at: string | null;
 }
 
 const COLUMNS = `id, job_id, created_at, disk_name, detected_type, final_type, confidence,
-  review_status, processing_status, override_reason, notes, reviewed_at`;
+  review_status, processing_status, override_reason, notes, reviewed_by, reviewed_at`;
 const TYPE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export function normalizeDiskType(value: unknown, field: string): string {
@@ -27,7 +28,7 @@ function toRecord(row: Row): ClassificationAuditRecord {
     id: row.id, jobId: row.job_id, timestamp: row.created_at, diskName: row.disk_name,
     detectedType: row.detected_type, finalType: row.final_type, confidence: row.confidence,
     reviewStatus: row.review_status, processingStatus: row.processing_status,
-    overrideReason: row.override_reason, notes: row.notes, reviewedAt: row.reviewed_at
+    overrideReason: row.override_reason, notes: row.notes, reviewedBy: row.reviewed_by, reviewedAt: row.reviewed_at
   };
 }
 
@@ -76,9 +77,10 @@ export class SqliteClassificationAuditRepository implements ClassificationAuditR
     }
     this.db.prepare(`
       UPDATE disk_classification_audit
-      SET final_type = ?, review_status = ?, override_reason = ?, notes = ?, reviewed_at = ?
+      SET final_type = ?, review_status = ?, override_reason = ?, notes = ?, reviewed_by = ?, reviewed_at = ?
       WHERE id = ?
-    `).run(finalType, changed ? "manually_corrected" : "reviewed_no_change", reason, notes, new Date().toISOString(), id);
+    `).run(finalType, changed ? "manually_corrected" : "reviewed_no_change", reason, notes,
+      input.reviewedBy?.trim() || null, new Date().toISOString(), id);
     return this.get(id) as ClassificationAuditRecord;
   }
 

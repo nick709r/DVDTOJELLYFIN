@@ -68,7 +68,14 @@ can make NVENC work on hardware without an NVENC block.
 | Deployment | Native Node.js process managed by systemd | Direct access to host drive, media directories, tools, and GPU avoids container device passthrough complexity. |
 | Tests | Node test runner or the repository-standard runner; injectable process/device adapters | Fast unit tests without a real drive, GPU, or MakeMKV installation. |
 
-Pin supported Node.js and package versions in releases. Install MakeMKV/FFmpeg
+Pin supported Node.js and package versions in releases. AutoDisc currently uses
+`better-sqlite3` 13.0.3, which uses N-API and no longer depends on the deprecated
+`prebuild-install` package. If a prebuilt binary is unavailable for the target
+platform, a native compiler toolchain is required for a native build. The
+installer and in-app updater use npm's `--ignore-scripts` to avoid unnecessary
+native rebuilds, then explicitly rebuild `better-sqlite3` only when its
+platform-specific binary is absent. AutoDisc compiles its own TypeScript
+separately. Install MakeMKV/FFmpeg
 through host packages or their respective official distribution mechanisms, not
 on every service start. Record tool versions in startup diagnostics and jobs.
 
@@ -108,9 +115,9 @@ operator configuration on upgrades. MakeMKV remains a separately licensed
 manual prerequisite. The operator must grant the service account
 explicit read/write permissions for the selected work and Movies directories,
 and device access to the selected optical drive. The default bind is `0.0.0.0` on port 8787 for home-network access; `HOST` and
-`PORT` can override it. Passwordless first-run mode grants administration to
-anyone who can reach the port, so restrict it to the trusted LAN with the host
-firewall and configure a password. Do not
+`PORT` can override it. Before initial administrator setup, only the setup UI
+and setup endpoints are exposed; perform bootstrap on a trusted network or
+through an SSH tunnel. Do not
 run as root or grant broad capabilities. MakeMKV is separately licensed and is
 installed on the host; private/beta keys are never kept in this repository.
 
@@ -311,6 +318,23 @@ Never return MakeMKV credentials from settings endpoints.
 
 - `version` primary key, `applied_at`.
 
+### Release-hardening tables
+
+- `disk_classification_audit` stores the detected and final disk types,
+  confidence, review status, processing status, override reason and notes.
+  Detection is retained when the final type is corrected. Migration 16 creates
+  the audit table and backfills legacy jobs.
+- `setup_state` is a singleton row containing `setup_complete`,
+  `admin_username`, `admin_password_salt`, `admin_password_hash`, and
+  `setup_completed_at`. Passwords are scrypt-hashed; plaintext credentials are
+  never persisted. Migration 17 preserves an existing password hash as the
+  legacy `admin` account; installations without an existing password enter
+  Setup Mode.
+- Migration 18 adds `reviewed_by` to disk classification audit records. The
+  authenticated administrator name is captured with the review timestamp and
+  included in JSON and text exports; pre-existing audit rows remain valid with
+  a null reviewer.
+
 ### Derived statistics
 
 Compute total/success/failure counts, averages, and daily chart buckets from
@@ -333,6 +357,16 @@ under `/api/v1`; keep liveness/readiness at `/api/health`.
 | `DELETE /api/v1/history/:id` | Remove a finished job and its events from SQLite; never deletes media files. |
 | `POST /api/v1/jobs/:id/cancel` | Cancel a currently ripping/converting job without stopping disc monitoring or ejecting the disc. |
 | `POST /api/v1/paths/check` | Check service-account access and create/remove a temporary probe file in configured folders. |
+| `GET /api/v1/setup/status` | Return whether initial administrator setup is complete. |
+| `POST /api/v1/setup` | Create the one-time administrator account; available only before setup is complete. |
+| `GET /api/library/health` / `GET /api/v1/library/health` | Report each configured library path's existence, writability and free space. |
+| `POST /api/library/create` / `POST /api/v1/library/create` | Create and verify a configured `movies`, `tv` or `music` library folder. |
+| `GET /api/v1/classification/audit?limit=&offset=` | List detected/final classification audit records, including reviewer and review time. |
+| `GET /api/v1/classification/metrics` | Return aggregate review and correction counts. |
+| `GET /api/v1/classification/export/text` | Export the operator-facing disk processing log. |
+| `GET /api/v1/classification/export/json` | Export classification audit records as JSON. |
+| `GET /api/v1/classification/audit/:id` | Get a classification audit record by record or job ID. |
+| `POST /api/v1/classification/audit/:id/review` | Save a final type, review reason, and notes without changing the detected type. |
 | `GET /api/v1/stats?range=7d\|30d` | Daily success/failure counts and duration series. |
 | `GET /api/v1/settings` | Redacted effective settings and capability diagnostics. |
 | `PUT /api/v1/settings` | Validate and persist settings; active jobs retain their snapshot. |
@@ -352,16 +386,17 @@ parsed from its machine-readable progress pipe, not human-readable stderr text.
 
 ### Authentication and network boundary
 
-Honor the requested initial `admin` username and no-password setup, but treat it
-as an explicit insecure bootstrap mode. The service binds to all IPv4 interfaces
-by default for home-network access; clearly warn that anyone reaching port 8787
-can administer it until a password is configured, and recommend limiting
-access with the host firewall. Do not claim that LAN-only binding is
-authentication. Password-enabled mode uses a
-hashed password, short-lived HTTP-only SameSite cookies, session rotation, and
-CSRF protection for state-changing requests. Provide logout and password-change
-flows. Never log credentials or session tokens. Do not add public internet
-access, multi-user roles, or third-party analytics.
+On a fresh installation, Setup Mode allows only the setup page, setup status,
+and one-time account-creation endpoint; normal pages and APIs return a setup
+redirect or unavailable response, and disc processing is paused. The listener
+binding is unchanged for compatibility, so initial setup must be performed
+only on a trusted network (or through an SSH tunnel). The one-time endpoint
+validates credentials, applies an in-memory attempt limit, and cannot be reused
+after completion. Existing installations with a saved administrator hash are
+migrated as already configured. After setup, the administrator authenticates
+with an HTTP-only, SameSite session cookie; sessions are held in memory and
+expire after 12 hours. Reject cross-origin state-changing requests. Never log
+credentials or session tokens.
 
 ## 8. Resource monitoring
 
@@ -459,7 +494,7 @@ Do not expose detailed host information to unauthenticated callers.
 | DVD title data is poor/inconsistent | Fully automatic, correct movie naming is impossible without a catalog or user correction in some cases. |
 | DVD reads can fail or take a long time | Scratched discs, drive errors, and MakeMKV hangs need timeouts, cancellation, and recovery rules. |
 | Temporary disk demand is large | A full rip plus encode can exhaust disk space or interfere with Jellyfin if locations are poorly chosen. |
-| Passwordless bootstrap mode | Anyone with network reachability can administer the appliance until a password is configured. |
+| Network-reachable first-run setup | Before setup, only the setup page and one-time setup endpoints are exposed on the configured listener; perform bootstrap on a trusted network or through an SSH tunnel. |
 | FFmpeg option differences | Encoder and subtitle/audio options vary by build, driver, and source streams; static capability claims are unsafe. |
 | Crash at the publish/DB boundary | A final movie may exist while its job is not marked complete, or vice versa, without startup reconciliation. |
 | One service process runs UI and worker | A process failure temporarily stops both; persistent job records and systemd restart/recovery are essential. |
@@ -698,9 +733,11 @@ on the target Lubuntu server. Versioned application updates are checked only
 when requested from Settings and applied through the constrained systemd
 updater, with service/database rollback on failed startup.
 
-### Version 1.5 implementation boundary
+### Historical Version 1.5 implementation boundary
 
-Version 1.5 includes serial DVD and music-CD workflows: MakeMKV to FFmpeg for
+This section records the historical Version 1.5 implementation boundary;
+the current first-run behavior is documented in Section 7. Version 1.5
+included serial DVD and music-CD workflows: MakeMKV to FFmpeg for
 DVDs and cdparanoia to FLAC for audio CDs. Movie files are published into
 title-named folders. MusicBrainz lookup is optional and disabled by default;
 optional Lidarr import organizes named audio tracks. The application includes
@@ -709,12 +746,12 @@ file cleanup and startup reconciliation, udev monitoring, optional TMDB lookup,
 password setup, history/statistics, dashboard-only resource sampling, active
 job cancellation, and removal of finished history records without deleting
 published media. Cancellation is available during ripping and encoding, before
-the publication stage. The default web bind is `0.0.0.0:8787`; passwordless mode is
-available to any client that can reach the service, so the host firewall must
-limit it to the trusted network until a password is configured.
+the publication stage. At that historical release, the default web bind was
+`0.0.0.0:8787` and passwordless bootstrap was available to any client that
+could reach the service.
 TV show processing, Radarr integration, and Sonarr integration are planned for
 version 2.0 and are not part of this release. Retry controls, title editing,
 configurable disk reserves and failed-artifact retention, per-job
-rotating logs, and a full readiness report are not included in 1.5. Real
+rotating logs, and a full readiness report were not included in 1.5. Real
 optical-drive, MakeMKV, FFmpeg/NVENC, systemd-permission, eject, and restart
 acceptance must still be performed on the target Lubuntu server.

@@ -143,6 +143,114 @@ async function tmdbLookup(
   return episodeCandidates(first, episodes, input, "tmdbTvId");
 }
 
+async function tvdbLookupById(id: string, apiKey: string, fetcher: typeof fetch): Promise<MetadataProviderCandidate | undefined> {
+  const signal = AbortSignal.timeout(10000);
+  const login = await responseJson<{ data?: { token?: string } }>(await fetcher("https://api4.thetvdb.com/v4/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apikey: apiKey }),
+    signal
+  }), "TVDB");
+  if (!login.data?.token) throw new Error("TVDB authentication failure: response did not include a token");
+  const response = await responseJson<{ data?: { id?: number | string; name?: string; year?: string; overview?: string } }>(
+    await fetcher(`https://api4.thetvdb.com/v4/series/${encodeURIComponent(id)}/extended`, {
+      headers: { Authorization: `Bearer ${login.data.token}` },
+      signal
+    }), "TVDB"
+  );
+  const series = response.data;
+  if (!series?.name) return undefined;
+  const year = series.year?.match(/^\d{4}/) ? Number(series.year.slice(0, 4)) : undefined;
+  return candidate(String(series.id ?? id), "series", series.name, 1, {
+    seriesId: String(series.id ?? id),
+    title: series.name,
+    year: year ?? null,
+    overview: series.overview ?? null
+  }, { tvdbId: String(series.id ?? id) });
+}
+
+async function tmdbLookupById(id: string, apiKey: string, fetcher: typeof fetch): Promise<MetadataProviderCandidate | undefined> {
+  const url = new URL(`https://api.themoviedb.org/3/tv/${encodeURIComponent(id)}`);
+  url.searchParams.set("api_key", apiKey);
+  const response = await responseJson<{ id?: number; name?: string; first_air_date?: string; overview?: string }>(
+    await fetcher(url, { signal: AbortSignal.timeout(10000) }), "TMDB TV");
+  if (typeof response.id !== "number" || typeof response.name !== "string") return undefined;
+  const year = response.first_air_date?.match(/^\d{4}/) ? Number(response.first_air_date.slice(0, 4)) : undefined;
+  return candidate(String(response.id), "series", response.name, 1, {
+    seriesId: String(response.id), title: response.name, year: year ?? null, overview: response.overview ?? null
+  }, { tmdbTvId: String(response.id) });
+}
+
+async function imdbLookupById(id: string, apiKey: string, fetcher: typeof fetch): Promise<MetadataProviderCandidate | undefined> {
+  const url = new URL(`https://api.themoviedb.org/3/find/${encodeURIComponent(id)}`);
+  url.searchParams.set("api_key", apiKey);
+  url.searchParams.set("external_source", "imdb_id");
+  const response = await responseJson<{ tv_results?: Array<{ id?: number; name?: string; first_air_date?: string; overview?: string }> }>(
+    await fetcher(url, { signal: AbortSignal.timeout(10000) }), "TMDB IMDb ID lookup");
+  const result = response.tv_results?.find((item) => typeof item.id === "number" && typeof item.name === "string");
+  if (!result?.id || !result.name) return undefined;
+  const year = result.first_air_date?.match(/^\d{4}/) ? Number(result.first_air_date.slice(0, 4)) : undefined;
+  return candidate(id, "series", result.name, 1, {
+    seriesId: String(result.id), title: result.name, year: year ?? null, overview: result.overview ?? null
+  }, { imdbId: id, tmdbTvId: String(result.id) });
+}
+
+async function tmdbEpisodesById(
+  id: string,
+  seasonNumber: number,
+  apiKey: string,
+  fetcher: typeof fetch
+): Promise<readonly { seriesId: string; seasonNumber: number; episodeNumber: number; title: string }[]> {
+  const url = new URL(`https://api.themoviedb.org/3/tv/${encodeURIComponent(id)}/season/${seasonNumber}`);
+  url.searchParams.set("api_key", apiKey);
+  const response = await responseJson<{ episodes?: Array<{
+    name?: string; season_number?: number; episode_number?: number
+  }> }>(await fetcher(url, { signal: AbortSignal.timeout(10000) }), "TMDB TV");
+  return (response.episodes ?? []).flatMap((episode) =>
+    typeof episode.name === "string" && typeof episode.episode_number === "number"
+      ? [{
+        seriesId: id,
+        seasonNumber: episode.season_number ?? seasonNumber,
+        episodeNumber: episode.episode_number,
+        title: episode.name
+      }]
+      : []);
+}
+
+async function tvdbEpisodesById(
+  id: string,
+  seasonNumber: number,
+  apiKey: string,
+  fetcher: typeof fetch
+): Promise<readonly { seriesId: string; seasonNumber: number; episodeNumber: number; title: string }[]> {
+  const signal = AbortSignal.timeout(10000);
+  const login = await responseJson<{ data?: { token?: string } }>(await fetcher("https://api4.thetvdb.com/v4/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apikey: apiKey }),
+    signal
+  }), "TVDB");
+  if (!login.data?.token) throw new Error("TVDB authentication failure: response did not include a token");
+  const url = new URL(`https://api4.thetvdb.com/v4/series/${encodeURIComponent(id)}/episodes/default`);
+  url.searchParams.set("season", String(seasonNumber));
+  url.searchParams.set("page", "0");
+  const response = await responseJson<{ data?: { episodes?: Array<{
+    name?: string; seasonNumber?: number; number?: number
+  }> } }>(await fetcher(url, {
+    headers: { Authorization: `Bearer ${login.data.token}` },
+    signal
+  }), "TVDB");
+  return (response.data?.episodes ?? []).flatMap((episode) =>
+    typeof episode.name === "string" && typeof episode.number === "number"
+      ? [{
+        seriesId: id,
+        seasonNumber: episode.seasonNumber ?? seasonNumber,
+        episodeNumber: episode.number,
+        title: episode.name
+      }]
+      : []);
+}
+
 async function tvdbLookup(
   input: TvMetadataLookupInput,
   apiKey: string,
@@ -187,6 +295,7 @@ async function tvdbLookup(
       { tvdbId: first.id }
     )];
   }
+
   const episodeUrl = new URL(`https://api4.thetvdb.com/v4/series/${encodeURIComponent(first.id)}/episodes/default`);
   episodeUrl.searchParams.set("season", String(seasonNumber));
   episodeUrl.searchParams.set("page", "0");
@@ -226,7 +335,9 @@ tvMetadataProviderRegistry.register({
       throw new Error("TVDB authentication failure: response did not include an authentication token");
     }
   },
-  lookup(input, apiKey, fetcher) { return tvdbLookup(input, apiKey, fetcher); }
+  lookup(input, apiKey, fetcher) { return tvdbLookup(input, apiKey, fetcher); },
+  lookupById(id, apiKey, fetcher) { return tvdbLookupById(id, apiKey, fetcher); },
+  lookupEpisodesById(id, season, apiKey, fetcher) { return tvdbEpisodesById(id, season, apiKey, fetcher); }
 });
 
 tvMetadataProviderRegistry.register({
@@ -239,5 +350,8 @@ tvMetadataProviderRegistry.register({
     url.searchParams.set("api_key", apiKey);
     await responseJson<unknown>(await fetcher(url, { signal: AbortSignal.timeout(10000) }), "TMDB TV");
   },
-  lookup(input, apiKey, fetcher) { return tmdbLookup(input, apiKey, fetcher); }
+  lookup(input, apiKey, fetcher) { return tmdbLookup(input, apiKey, fetcher); },
+  lookupById(id, apiKey, fetcher) { return tmdbLookupById(id, apiKey, fetcher); },
+  lookupImdbId(id, apiKey, fetcher) { return imdbLookupById(id, apiKey, fetcher); },
+  lookupEpisodesById(id, season, apiKey, fetcher) { return tmdbEpisodesById(id, season, apiKey, fetcher); }
 });

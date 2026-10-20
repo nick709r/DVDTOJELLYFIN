@@ -30,6 +30,8 @@ export function exportClassificationText(records: readonly ClassificationAuditRe
     ];
     if (r.overrideReason) lines.push("Reason:", r.overrideReason, "");
     if (r.notes) lines.push("Notes:", r.notes, "");
+    if (r.reviewedBy) lines.push("Reviewed by:", r.reviewedBy, "");
+    if (r.reviewedAt) lines.push("Reviewed at:", stamp(r.reviewedAt), "");
     lines.push("Processing Result:", r.processingStatus, "", RULE, "");
     return lines.join("\n");
   }).join("\n");
@@ -53,7 +55,9 @@ export function exportClassificationJson(records: readonly ClassificationAuditRe
       reviewStatus: r.reviewStatus,
       overrideReason: r.overrideReason ?? "",
       processingStatus: r.processingStatus,
-      notes: r.notes ?? ""
+      notes: r.notes ?? "",
+      reviewedBy: r.reviewedBy ?? "",
+      reviewedAt: r.reviewedAt ?? ""
     }))
   };
 }

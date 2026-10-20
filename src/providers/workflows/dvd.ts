@@ -1,4 +1,4 @@
-import { access, mkdir, rm, rmdir, stat, statfs } from "node:fs/promises";
+import { access, mkdir, rm, rmdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -19,6 +19,8 @@ import {
 import type { ReviewJob } from "../../domain/review-jobs.js";
 import type { ReviewResumeStage } from "../../domain/review-jobs.js";
 import type { ReviewWorkspaceService } from "../../application/review-workspace-service.js";
+import type { JobContext } from "../../application/job-coordinator.js";
+import type { DiscRecovery, EpisodeMapping } from "../../domain/disc-recovery.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -33,12 +35,162 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
   }
 }
 
-export class DvdWorkflow implements MediaWorkflow {
+function episodeOutputName(seriesName: string, mapping: EpisodeMapping): string {
+    const episodes = [...mapping.episodes].sort((left, right) =>
+      left.seasonNumber - right.seasonNumber || left.episodeNumber - right.episodeNumber);
+    const first = episodes[0];
+    if (!first || episodes.some((episode) => episode.seasonNumber !== first.seasonNumber)) {
+      throw new Error(`Track ${mapping.trackId} must map to episodes from one season`);
+    }
+    const season = String(first.seasonNumber).padStart(2, "0");
+    const episodeNumbers = episodes.map((episode) => String(episode.episodeNumber).padStart(2, "0"));
+    const episodePart = episodeNumbers.length === 1 ? `E${episodeNumbers[0]}` :
+      `E${episodeNumbers[0]}-${episodeNumbers.slice(1).join("-")}`;
+    const title = episodes.map((episode) => episode.title?.trim()).find(Boolean);
+    return safeTitle(`${seriesName} - S${season}${episodePart}${title ? ` - ${title}` : ""}`);
+  }
+
+async function processMappedTvEpisodes(
+    workflow: MediaWorkflowContext,
+    job: JobContext,
+    fingerprint: string,
+    recovery: DiscRecovery,
+    converter: typeof convert,
+    ensureWritable: typeof assertWritableDirectory
+  ): Promise<void> {
+    const { source, sources, jobs, signal, devicePath } = workflow;
+    const settings = jobs.getSettings();
+    const info = source.candidate;
+    const mappingByTrack = new Map(recovery.mappings.map((mapping) => [mapping.trackId, mapping]));
+    const titleItems = info.manifest.items.filter((item) => item.kind === "title" && item.durationSeconds !== undefined);
+    const unknownTrack = recovery.mappings.find((mapping) =>
+      !titleItems.some((item) => item.id === mapping.trackId));
+    if (unknownTrack) throw new Error(`Episode mapping references missing disc track ${unknownTrack.trackId}`);
+    const missingEpisodes = titleItems.filter((item) =>
+      (item.durationSeconds ?? 0) >= 600 &&
+      !/\b(?:bonus|extra|featurette|trailer|commentary|interview)\b/i.test(item.title ?? "") &&
+      !mappingByTrack.has(item.id));
+    if (missingEpisodes.length) {
+      throw new Error(`Episode mappings are missing for disc tracks: ${missingEpisodes.map((item) => item.id).join(", ")}`);
+    }
+    const selected = recovery.mappings.flatMap((mapping) => {
+      const item = titleItems.find((candidate) => candidate.id === mapping.trackId);
+      return item ? [{ item, mapping }] : [];
+    });
+    if (!selected.length) throw new Error("No valid episode mappings are available for this disc");
+    const seriesName = recovery.seriesName?.trim();
+    if (!seriesName) throw new Error("TV series name is required before episode processing");
+
+    const workDir = join(settings.workDir, job.id);
+    const seriesDir = join(settings.tvRootDir, safeTitle(seriesName));
+    const createdOutputs: string[] = [];
+    let totalOutputBytes = 0;
+    let failureMessage: string | undefined;
+    try {
+      await ensureWritable(settings.workDir, minimumWorkBytes);
+      await ensureWritable(settings.tvRootDir, minimumOutputBytes);
+      await mkdir(workDir, { recursive: true, mode: 0o750 });
+      await mkdir(seriesDir, { recursive: true, mode: 0o750 });
+      for (const [index, { item, mapping }] of selected.entries()) {
+        job.throwIfCancelled();
+        const baseName = episodeOutputName(seriesName, mapping);
+        const seasonNumber = mapping.episodes[0]?.seasonNumber;
+        if (seasonNumber === undefined) throw new Error(`Track ${item.id} has no season assignment`);
+        const seasonDir = join(seriesDir, `Season ${String(seasonNumber).padStart(2, "0")}`);
+        await mkdir(seasonDir, { recursive: true, mode: 0o750 });
+        const targetPath = join(seasonDir, `${baseName}.${settings.format}`);
+        const collision = await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        });
+        if (collision) throw new Error(`Episode output already exists and was not overwritten: ${targetPath}`);
+
+        jobs.step(job, {
+          id: `acquire-tv-${item.id}`,
+          status: "ripping",
+          message: `Ripping TV disc track ${item.id} (${index + 1} of ${selected.length})`
+        });
+        const trackWorkDir = join(workDir, `track-${safeTitle(item.id)}`);
+        await mkdir(trackWorkDir, { recursive: true, mode: 0o750 });
+        const acquired = await sources.acquire(source, trackWorkDir, {
+          selection: { manifestItemId: item.id }
+        }, signal);
+        const input = acquired.artifacts.find((artifact) => artifact.kind === "video")?.path;
+        if (!input) throw new Error(`Source provider ${info.providerId} returned no video artifact for track ${item.id}`);
+        const conversionStart = Date.now();
+        const encoded = await converter(input, targetPath, baseName, settings, (encoder) => {
+          jobs.step(job, {
+            id: `publish-tv-${item.id}`,
+            status: "publishing",
+            message: `Validating and publishing episode track ${item.id}`
+          });
+          jobs.update(job, { outputPath: targetPath, encoder: encoder.name,
+            conversionSeconds: (Date.now() - conversionStart) / 1000 });
+        }, (progress) => {
+          const overallProgress = ((index + Math.min(progress, 0.99)) / selected.length) * 100;
+          jobs.update(job, { progress: Math.min(99, Math.round(overallProgress)) });
+          events.emit("status");
+        }, signal);
+        createdOutputs.push(targetPath);
+        const output = await stat(targetPath);
+        if (output.size < 1024) throw new Error(`Published TV episode failed size validation: ${targetPath}`);
+        totalOutputBytes += encoded.outputBytes;
+        jobs.update(job, {
+          title: seriesName,
+          outputPath: targetPath,
+          outputBytes: totalOutputBytes,
+          encoder: encoded.encoder.name,
+          conversionSeconds: (Date.now() - conversionStart) / 1000,
+          progress: Math.round(((index + 1) / selected.length) * 100)
+        });
+        jobs.record(job, "tv-episode-published", "info",
+          `Published ${baseName}.${settings.format} for disc track ${item.id}`);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "TV episode processing failed";
+      const cleanupFailures: string[] = [];
+      for (const path of createdOutputs) {
+        try {
+          await unlink(path);
+        } catch (cleanupError) {
+          cleanupFailures.push(`${path}: ${cleanupError instanceof Error ? cleanupError.message : "cleanup failed"}`);
+        }
+      }
+      const message = cleanupFailures.length
+        ? `${reason}; could not roll back published episodes: ${cleanupFailures.join("; ")}`
+        : reason;
+      failureMessage = message;
+    } finally {
+      try {
+        await rm(workDir, { recursive: true, force: true });
+      } catch (error) {
+        const cleanupMessage = `TV temporary-file cleanup failed: ${error instanceof Error ? error.message : "unknown error"}`;
+        if (failureMessage) failureMessage += `; ${cleanupMessage}`;
+        else jobs.warn(job, cleanupMessage);
+      }
+    }
+    if (failureMessage) throw new Error(failureMessage);
+    jobs.complete(job, fingerprint);
+    if (settings.autoEject) {
+      try {
+        await ejectDisc(devicePath);
+        jobs.record(job, "eject", "info", "Disc ejected");
+      } catch (error) {
+        const message = `Eject failed: ${error instanceof Error ? error.message : "unknown error"}`;
+        jobs.warn(job, message);
+        log("warn", "eject", message, { jobId: job.id });
+      }
+    }
+  }
+
+  export class DvdWorkflow implements MediaWorkflow {
   readonly mediaKind = "dvd";
 
   constructor(
     private readonly tvWorkflow?: TvWorkflowService,
-    private readonly reviewWorkspaces?: ReviewWorkspaceService
+    private readonly reviewWorkspaces?: ReviewWorkspaceService,
+    private readonly converter: typeof convert = convert,
+    private readonly ensureWritable: typeof assertWritableDirectory = assertWritableDirectory
   ) {}
 
   async process({ source, sources, jobs, metadata, signal, devicePath }: MediaWorkflowContext): Promise<boolean> {
@@ -67,7 +219,6 @@ export class DvdWorkflow implements MediaWorkflow {
       setRuntimeStatus("completed");
       return true;
     }
-
     const id = randomUUID();
     const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal, devicePath);
     jobs.record(context, "disc-detected", "info", JSON.stringify({
@@ -94,17 +245,33 @@ export class DvdWorkflow implements MediaWorkflow {
       label: info.label,
       manifest: info.manifest
     });
-    const tvEnabled = settings.tvDetectionEnabled !== false;
+    const detectedMediaType = tvAssessment.classification === "movie" ? "movie" :
+      tvAssessment.classification === "tv" ? "tv_series" : "mixed_content";
+    const recovery = jobs.recordDiscDetection(fingerprint, "dvd", detectedMediaType, tvAssessment.confidence);
+    const finalMediaType = recovery.mediaTypeOverridden ? recovery.finalMediaType : detectedMediaType;
+    const isTvWorkflow = finalMediaType === "tv_series" ||
+      (!recovery.mediaTypeOverridden && tvAssessment.classification !== "movie");
+    const unsupportedOverride = (recovery.mediaTypeOverridden &&
+      !["movie", "tv_series"].includes(recovery.finalMediaType)) ||
+      (recovery.discTypeOverridden && recovery.finalDiscType !== "dvd");
+    const tvAnalysisUnavailable = isTvWorkflow && !this.tvWorkflow &&
+      !(recovery.seriesName && recovery.mappings.length > 0);
+    const tvEnabled = settings.tvDetectionEnabled !== false || recovery.mediaTypeOverridden ||
+      Boolean(recovery.seriesName && recovery.mappings.length);
     updateDiscDiagnostics({
       status: "Classification complete",
-      classification: tvAssessment.classification === "movie" ? "Movie" : tvAssessment.classification === "tv" ? "TV" : "Review required"
+      classification: recovery.mediaTypeOverridden
+        ? `${finalMediaType.replaceAll("_", " ")} (manual override)`
+        : tvAssessment.classification === "movie" ? "Movie" : tvAssessment.classification === "tv" ? "TV" : "Review required"
     });
-    log("info", "disc", `Disc classified as ${tvAssessment.classification === "movie" ? "Movie" : tvAssessment.classification === "tv" ? "TV" : "TV review required"}`, {
+    log("info", "disc", `Disc classified as ${recovery.mediaTypeOverridden ? finalMediaType : detectedMediaType}`, {
       jobId: id,
       sourceId: info.sourceId,
       providerId: info.providerId,
       discLabel: info.label || undefined,
       classification: tvAssessment.classification,
+      finalMediaType,
+      mediaTypeOverridden: recovery.mediaTypeOverridden,
       tvConfidence: tvAssessment.confidence,
       criteria: tvAssessment.criteria,
       reasons: tvAssessment.reasons,
@@ -113,6 +280,8 @@ export class DvdWorkflow implements MediaWorkflow {
     const scoreWeights = [0.55, 0.2, 0.1, 0.1, 0.05];
     jobs.record(context, "tv-classification", "info", JSON.stringify({
       decision: tvAssessment.classification,
+      finalMediaType,
+      mediaTypeOverridden: recovery.mediaTypeOverridden,
       confidence: tvAssessment.confidence,
       criteria: tvAssessment.criteria.map((criterion, index) => ({
         ...criterion,
@@ -123,12 +292,17 @@ export class DvdWorkflow implements MediaWorkflow {
       tvDetectionEnabled: tvEnabled
     }));
 
-    if (tvAssessment.classification !== "movie" && (!tvEnabled || !this.tvWorkflow)) {
-      const message = !tvEnabled
-        ? `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV detection is disabled; held for review instead of movie processing.`
-        : `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV analysis is unavailable; held for review instead of movie processing.`;
+    if (unsupportedOverride || (isTvWorkflow && !tvEnabled) || tvAnalysisUnavailable) {
+      const message = unsupportedOverride
+        ? `The manually selected ${recovery.discTypeOverridden && recovery.finalDiscType !== "dvd"
+          ? `disc type ${recovery.finalDiscType}` : `media type ${finalMediaType}`} is not supported by the DVD processing workflow; held for review.`
+        : !tvEnabled
+          ? `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV detection is disabled; held for review instead of movie processing.`
+          : `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV analysis is unavailable; held for review instead of movie processing.`;
       jobs.holdForReview(context, message, {
         classification: tvAssessment.classification,
+        finalMediaType,
+        mediaTypeOverridden: recovery.mediaTypeOverridden,
         confidence: tvAssessment.confidence,
         criteria: tvAssessment.criteria,
         reasons: tvAssessment.reasons,
@@ -139,7 +313,28 @@ export class DvdWorkflow implements MediaWorkflow {
       return true;
     }
 
-    if (tvAssessment.classification !== "movie" && this.tvWorkflow && tvEnabled) {
+    if (isTvWorkflow && recovery.seriesName && recovery.mappings.length > 0) {
+      try {
+        await processMappedTvEpisodes({
+          source, sources, jobs, metadata, signal, devicePath
+        }, context, fingerprint, recovery, this.converter, this.ensureWritable);
+        setRuntimeStatus("completed");
+      } catch (error) {
+        const cancelled = jobs.wasJobCancelled(context);
+        const interrupted = Boolean(signal.aborted && !cancelled);
+        jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
+          code: cancelled ? "cancelled" : interrupted ? "interrupted" : "tv_processing_failed",
+          message: error instanceof Error ? error.message : "TV episode processing failed",
+          recoverable: interrupted,
+          reviewCategory: "tv_review"
+        });
+        setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
+      }
+      notifyStatus();
+      return true;
+    }
+
+    if (isTvWorkflow && this.tvWorkflow && tvEnabled) {
       try {
         const tvResult = await this.tvWorkflow.prepare({
           sourceId: info.sourceId,
@@ -164,6 +359,8 @@ export class DvdWorkflow implements MediaWorkflow {
           }));
           const classificationDetails = {
             classification: tvAssessment.classification,
+            finalMediaType,
+            mediaTypeOverridden: recovery.mediaTypeOverridden,
             confidence: tvAssessment.confidence,
             criteria: tvAssessment.criteria,
             reasons: tvAssessment.reasons
@@ -176,6 +373,8 @@ export class DvdWorkflow implements MediaWorkflow {
         }
         const classificationDetails = {
           classification: tvAssessment.classification,
+          finalMediaType,
+          mediaTypeOverridden: recovery.mediaTypeOverridden,
           confidence: tvAssessment.confidence,
           criteria: tvAssessment.criteria,
           reasons: tvAssessment.reasons,
@@ -213,8 +412,8 @@ export class DvdWorkflow implements MediaWorkflow {
 
     try {
       notifyStatus();
-      await assertWritableDirectory(settings.workDir, minimumWorkBytes);
-      await assertWritableDirectory(settings.moviesDir, minimumOutputBytes);
+      await this.ensureWritable(settings.workDir, minimumWorkBytes);
+      await this.ensureWritable(settings.moviesDir, minimumOutputBytes);
       await mkdir(workDir, { recursive: true, mode: 0o750 });
 
       jobs.step(context, {
@@ -267,7 +466,7 @@ export class DvdWorkflow implements MediaWorkflow {
       conversionStartedAt = Date.now();
       failureStage = "conversion";
       const conversionStart = conversionStartedAt;
-      const encoded = await convert(input, targetPath, cleanTitle, settings, (encoder) => {
+      const encoded = await this.converter(input, targetPath, cleanTitle, settings, (encoder) => {
         jobs.step(context, {
           id: "publish-media",
           status: "publishing",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import test from "node:test";
+import { scryptSync } from "node:crypto";
 import { defaultSettings } from "../dist/infrastructure/database/default-settings.js";
 import { migrateDatabase } from "../dist/infrastructure/database/migrations.js";
 import { createSqliteRepositories } from "../dist/infrastructure/database/repositories.js";
@@ -46,12 +47,38 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 16);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 19);
   assert.deepEqual(
     db.pragma("table_info(review_jobs)").map((column) => column.name),
     ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",
       "storage_path", "media_size", "created_at", "updated_at", "resume_stage", "metadata_json", "notification_active"]
   );
+  assert.equal(db.prepare("SELECT setup_complete FROM setup_state WHERE id = 1").get().setup_complete, 0);
+  assert.ok(db.pragma("table_info(disk_classification_audit)").some((column) => column.name === "reviewed_by"));
+  assert.deepEqual(
+    db.pragma("table_info(disc_recovery)").map((column) => column.name),
+    ["fingerprint", "detected_disc_type", "final_disc_type", "detected_media_type", "detected_confidence",
+      "final_media_type", "disc_type_overridden", "media_type_overridden", "metadata_provider", "provider_id", "series_name",
+      "season_number", "mappings_json", "notes", "updated_at"]
+  );
+  const recovery = createSqliteRepositories(db, defaultSettings).discRecovery;
+  recovery.recordDetection("recovery-disc", "dvd", "movie");
+  const updatedRecovery = recovery.update("recovery-disc", {
+    finalDiscType: "dvd",
+    finalMediaType: "tv_series",
+    metadataProvider: "manual",
+    seriesName: "Example Show",
+    seasonNumber: 1,
+    mappings: [{
+      trackId: "1",
+      episodes: [{ seriesId: "manual:Example Show", seasonNumber: 1, episodeNumber: 1, title: "Pilot" }]
+    }]
+  });
+  assert.equal(updatedRecovery.detectedMediaType, "movie");
+  assert.equal(updatedRecovery.finalMediaType, "tv_series");
+  assert.equal(updatedRecovery.mediaTypeOverridden, true);
+  assert.equal(updatedRecovery.mappings[0].episodes[0].title, "Pilot");
+  assert.throws(() => recovery.update("recovery-disc", { seasonNumber: 101 }), /Season number/);
   db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
     "tvStoreAnalysisEvidence", "true", "2026-01-01T00:00:00.000Z"
   );
@@ -59,6 +86,25 @@ test("database migrations preserve legacy job history and add current columns", 
   migrateDatabase(db, defaultSettings);
   assert.equal(db.prepare("SELECT 1 FROM settings WHERE key = ?").get("tvStoreAnalysisEvidence"), undefined);
   db.close();
+});
+
+test("setup state repository completes once and migrates legacy administrator credentials", () => {
+  const db = new Database(":memory:");
+  const salt = Buffer.from("legacy salt");
+  const password = "LegacyStrongPassword123!";
+  db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)");
+  const now = new Date().toISOString();
+  const insert = db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)");
+  insert.run("adminPasswordSalt", JSON.stringify(salt.toString("hex")), now);
+  insert.run("adminPasswordHash", JSON.stringify(scryptSync(password, salt, 64).toString("hex")), now);
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  assert.equal(repositories.setup.get().setupComplete, true);
+  assert.equal(repositories.setup.get().adminUsername, "admin");
+  assert.equal(repositories.setup.authenticate("admin", password), true);
+  assert.equal(repositories.setup.authenticate("admin", "wrong password"), false);
+  assert.throws(() => repositories.setup.complete("other-admin", "salt", "hash"), /already been completed/);
+  repositories.close();
 });
 
 test("SQLite repository adapters preserve settings, job, history, event and recovery contracts", () => {

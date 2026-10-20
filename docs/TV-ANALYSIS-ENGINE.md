@@ -9,7 +9,9 @@ and user corrections. It remains a pure analysis component: it does no disc
 ripping, persistence, episode assignment, renaming, or UI/API work itself.
 Subsequent Version 2 work integrated it into the DVD workflow and exposed
 reports, corrections, and review through authenticated APIs and the dashboard.
-TV output execution remains disabled.
+The analysis engine itself still does not publish media. In v1.15.2, a
+separate fingerprint-keyed manual recovery workflow allows explicitly mapped
+DVD TV titles to be published; automatic analysis results remain suggestions.
 
 ```mermaid
 flowchart LR

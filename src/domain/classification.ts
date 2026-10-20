@@ -32,6 +32,7 @@ export interface ClassificationAuditRecord {
   processingStatus: string;
   overrideReason: OverrideReason | null;
   notes: string | null;
+  reviewedBy: string | null;
   reviewedAt: string | null;
 }
 
@@ -46,6 +47,7 @@ export interface ClassificationReviewInput {
   finalType: string;
   overrideReason?: string | undefined;
   notes?: string | undefined;
+  reviewedBy?: string | undefined;
 }
 
 export interface ClassificationMetrics {

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>Set up AutoDisc</title>
+    <style>
+      :root{font-family:system-ui,sans-serif;color:#edf1f8;background:#10151d}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:20px;box-sizing:border-box}.wizard{width:min(480px,100%);padding:30px;background:#171e28;border:1px solid #303b4b;border-radius:14px;box-shadow:0 18px 60px #0006}h1{margin:5px 0 12px;font-size:25px}.eyebrow{color:#93c85e;font-size:11px;font-weight:800;letter-spacing:.14em}.hint{color:#aab4c4;font-size:13px;line-height:1.5}label{display:grid;gap:7px;margin:16px 0;font-size:13px}input{padding:11px;background:#0c1118;border:1px solid #344052;border-radius:7px;color:inherit;font:inherit}button{width:100%;padding:11px;border:0;border-radius:7px;background:#9acb64;color:#17200f;font-weight:800;cursor:pointer}.error{min-height:20px;color:#ff9393;font-size:13px}
+    </style>
+  </head>
+  <body>
+    <main class="wizard">
+      <p id="setup-step-label" class="eyebrow">FIRST-RUN SETUP · STEP 1 OF 2</p>
+      <h1>Create administrator account</h1>
+      <p class="hint">AutoDisc is in Setup Mode. Dashboard and processing APIs are unavailable until this account is created.</p>
+      <form id="setup-form">
+        <section id="setup-account-step">
+          <label>Username<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" autocomplete="username" required></label>
+          <label>Password<input name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+          <p class="hint">Use 12–256 characters with lowercase, uppercase, a number, and a symbol. Do not include your username.</p>
+          <button id="setup-continue" type="button">Continue</button>
+        </section>
+        <section id="setup-confirm-step" hidden>
+          <p class="hint">Confirm the administrator password to save your account and complete setup.</p>
+          <label>Confirm password<input name="confirmPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password"></label>
+          <button id="setup-back" class="secondary" type="button">Back</button>
+          <button id="setup-submit" type="submit">Save credentials</button>
+        </section>
+        <p id="setup-error" class="error" role="alert"></p>
+      </form>
+    </main>
+    <script>
+      const form=document.querySelector("#setup-form"), error=document.querySelector("#setup-error"), submit=document.querySelector("#setup-submit");
+      const accountStep=document.querySelector("#setup-account-step"), confirmStep=document.querySelector("#setup-confirm-step");
+      const stepLabel=document.querySelector("#setup-step-label"), usernameField=form.elements.username;
+      const passwordField=form.elements.namedItem("password"), confirmationField=form.elements.confirmPassword;
+      document.querySelector("#setup-continue").addEventListener("click",()=>{error.textContent="";usernameField.required=true;passwordField.required=true;
+        if(!form.reportValidity())return;
+        if(!/[a-z]/.test(passwordField.value)||!/[A-Z]/.test(passwordField.value)||!/\d/.test(passwordField.value)||!/[^A-Za-z0-9]/.test(passwordField.value)||passwordField.value.toLowerCase().includes(usernameField.value.toLowerCase())){
+          error.textContent="Use a password with lowercase, uppercase, a number, and a symbol; do not include your username.";return;
+        }
+        accountStep.hidden=true;confirmStep.hidden=false;confirmationField.required=true;stepLabel.textContent="FIRST-RUN SETUP · STEP 2 OF 2";confirmationField.focus();
+      });
+      document.querySelector("#setup-back").addEventListener("click",()=>{error.textContent="";confirmStep.hidden=true;accountStep.hidden=false;confirmationField.required=false;stepLabel.textContent="FIRST-RUN SETUP · STEP 1 OF 2";});
+      form.addEventListener("submit",async event=>{event.preventDefault();error.textContent="";if(passwordField.value!==confirmationField.value){error.textContent="Password confirmation does not match.";return;}const values=new FormData(form);submit.disabled=true;
+        try{const response=await fetch("/api/v1/setup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:values.get("username"),password:values.get("password"),confirmPassword:values.get("confirmPassword")})});
+          const result=await response.json();if(!response.ok)throw new Error(result.error||"Setup could not be completed");
+          location.assign("/");
+        }catch(reason){error.textContent=reason.message;}finally{submit.disabled=false;}
+      });
+    </script>
+  </body>
+</html>

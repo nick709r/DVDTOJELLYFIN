@@ -19,6 +19,8 @@ export interface Episode {
   seasonNumber: number;
   episodeNumber: number;
   title?: string;
+  airDate?: string;
+  notes?: string;
   identifiers?: Readonly<Record<string, string>>;
 }
 

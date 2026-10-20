@@ -5,7 +5,7 @@ AutoDisc is an easy-to-use DVD and music CD ingestion appliance for Linux and Je
 - As a friendly web dashboard you can open from your browser to watch progress, tweak settings, and manage jobs.
 - Headless as a lightweight systemd service for fully automated ripping and conversion.
 
-AutoDisc watches a configured optical drive, uses MakeMKV and FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to your Movies library and lossless FLAC albums to Music.
+AutoDisc watches a configured optical drive, uses MakeMKV and FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to Movies, explicitly mapped TV episodes to TV, and lossless FLAC albums to Music.
 
 ## Dashboard preview
 
@@ -25,17 +25,22 @@ Get AutoDisc up and running in a few minutes:
 ```sh
 sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
   curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --output autodisc.tar.gz && \
-  tar xzf autodisc.tar.gz && cd DVDTOJELLYFIN-main && sudo ./installer.sh
+  tar xzf autodisc.tar.gz && cd DVDTOJELLYFIN-main && sudo ./scripts/install.sh
 ```
 
 2. (Optional) Install MakeMKV separately to enable DVD ripping — AutoDisc does not bundle MakeMKV. When MakeMKV is installed and `makemkvcon` is on the service PATH, DVD ripping is enabled.
 
-3. Open the web dashboard from another device on your LAN:
+3. Open AutoDisc for first-run setup. Until the administrator account is created, only the setup page and setup API are available; disc processing is disabled. Setup requires a strong username and password. For a headless server, use an SSH tunnel:
 
-   - Find the server LAN IP with `hostname -I` and open `http://<server-lan-ip>:8787`.
-   - The first-run dashboard has no password so you can get started quickly; set an administrator password in Settings after you confirm access is restricted to your trusted LAN.
+```sh
+ssh -L 8787:127.0.0.1:8787 user@server
+```
 
-4. Configure your Movies, Music, and TV root folders, work directory, and optical drive in Settings. TV output is currently only validated; TV publishing is not enabled. Test with a known DVD and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
+   Then open `http://127.0.0.1:8787` on the client. Setup Mode exposes only the setup endpoints; after setup, sign in with the account created in the wizard. Normal dashboard/API access requires authentication.
+
+4. The installer creates the configured Movies, TV, and Music folders when they are missing. Configure those paths, the work directory, and the optical drive in Settings. Use **Create Folder** to create or verify a library path; health status displays writability and free space, and invalid paths cannot be saved. TV publishing is limited to DVD tracks with explicitly saved manual episode mappings; automatic matches never publish. Test with known movie and TV DVDs and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
+
+Disc classifications retain the original detection alongside an operator-reviewed final type and audit notes. Blu-ray and other media labels do not imply that an ingestion workflow is available.
 
 Quick commands:
 
@@ -56,6 +61,30 @@ sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
 That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
 
 ## Release history
+
+### Version 1.15.2
+
+- Consolidate the first-run setup, library/classification improvements, and
+  SQLite installation hardening with the TV recovery workflow in this release.
+- Require a one-time first-run administrator setup flow, persist credentials
+  using scrypt hashes, and gate dashboard APIs and disc processing until setup
+  is complete.
+- Add Movies, TV, and Music library health reporting and folder creation, and
+  create configured library roots during installation.
+- Record the authenticated administrator and review time on manual disc
+  classification corrections and include those fields in audit exports.
+- Add fingerprint-persisted physical-disc and media-type overrides, direct
+  TVDB/TMDB ID lookup, IMDb lookup through TMDB, and manual series/episode
+  metadata and track-to-episode mapping. Explicitly mapped DVD TV tracks can be
+  published into Jellyfin-style season folders; automatic suggestions remain
+  review-only.
+- Add migration 19 for recovery metadata; existing history and classification
+  detections remain intact. No migration is needed solely for the SQLite
+  dependency update.
+- Upgrade `better-sqlite3` to 13.0.3, removing the deprecated
+  `prebuild-install` dependency. Installation and update skip dependency
+  lifecycle hooks and rebuild the SQLite native module only when no matching
+  prebuilt binary is available.
 
 ### Version 1.14.0
 
@@ -254,11 +283,14 @@ coordinator. The dashboard exposes TV analysis, episode-match explanations,
 validation evidence, corrections, and the universal Review Centre.
 
 TV analysis and episode matching produce explainable suggestions and
-confidence-gated plans; they do **not** rip, rename, or publish TV episodes.
-TVDB and TMDB TV metadata are now available as analysis candidates; safe TV
-output execution remains future work. Review the [Version 2 architecture](./docs/V2-ARCHITECTURE.md),
+confidence-gated plans. Manual disc/media overrides, provider-ID series
+recovery, persisted episode mappings, and explicitly confirmed DVD TV episode
+publishing are available; automatic suggestions never trigger publishing.
+Review the [Version 2 architecture](./docs/V2-ARCHITECTURE.md),
 [migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md),
 [TV workflow integration](./docs/TV-WORKFLOW-INTEGRATION.md), and
+[TV manual recovery guide](./docs/TV-MANUAL-RECOVERY.md) for current behavior,
+supported providers, APIs, and deployment limitations, and
 [Version 2 roadmap](./docs/ROADMAP.md) for current implementation details and
 remaining blockers.
 
@@ -266,8 +298,8 @@ remaining blockers.
 
 - Validate TV detection, metadata results, and matching against a broad,
   manually reviewed collection of real discs; calibrate confidence behavior.
-- Implement safe TV title acquisition, episode output naming, atomic
-  publication, cleanup, and recovery before enabling TV processing.
+- Validate manual TV publication, rollback behavior, output naming, and
+  provider-ID lookups against real DVD titles and Jellyfin libraries.
 - Add multi-drive scheduling only after per-drive identity, job state,
   cancellation, recovery, and resource ownership are designed.
 - Consider additional media-library providers, platform support, notifications,
@@ -490,6 +522,17 @@ download source archives for versioned tags over HTTPS; untagged commits on
 use the manual installer procedure instead. In-app updates replace the
 application and its systemd units but do not install new operating-system
 packages; use the installer manually if a release adds system dependencies.
+The npm “no longer maintained” notice previously came from the transitive
+`prebuild-install` dependency of `better-sqlite3`; v1.15.2 upgrades the SQLite
+binding and removes that dependency. npm warnings alone do not establish why an
+update failed. For an update error, the updater journal contains the failing
+command and rollback details:
+
+```sh
+sudo journalctl -u autodisc-update.service -b --no-pager -n 150
+sudo systemctl status autodisc-update.service --no-pager
+sudo cat /var/lib/autodisc/updater/status
+```
 
 For a manual update or a recovery copy, first wait for the dashboard to show
 **Idle**. Stopping the service during a disc job interrupts that job. Back up

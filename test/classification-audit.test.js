@@ -34,10 +34,17 @@ test("manual correction preserves detection and validates input", () => {
   assert.throws(() => audit.review(id, { finalType: "bluray" }), /overrideReason/);
   assert.throws(() => audit.review(id, { finalType: "bluray", overrideReason: "custom" }), /notes/);
   assert.throws(() => audit.review(id, { finalType: "Bad Type!", overrideReason: "damaged_disc" }), /finalType/);
-  const fixed = audit.review(id, { finalType: "bluray", overrideReason: "filesystem_detection_incorrect", notes: "UHD" });
+  const fixed = audit.review(id, {
+    finalType: "bluray",
+    overrideReason: "filesystem_detection_incorrect",
+    notes: "UHD",
+    reviewedBy: "admin"
+  });
   assert.equal(fixed.detectedType, "dvd");
   assert.equal(fixed.finalType, "bluray");
   assert.equal(fixed.reviewStatus, "manually_corrected");
+  assert.equal(fixed.reviewedBy, "admin");
+  assert.ok(fixed.reviewedAt);
   assert.equal(audit.review(id, { finalType: "dvd" }).reviewStatus, "reviewed_no_change");
   audit.review(id, { finalType: "bluray", overrideReason: "mixed_media" });
   repos.history.delete("j1");
@@ -54,7 +61,11 @@ test("metrics and exports derive from audit records", () => {
     repos.jobs.add(id, id.toUpperCase(), null, type);
     repos.jobs.finish(id, "completed", null);
   }
-  audit.review(audit.getByJob("b").id, { finalType: "audio_cd", overrideReason: "damaged_disc" });
+  audit.review(audit.getByJob("b").id, {
+    finalType: "audio_cd",
+    overrideReason: "damaged_disc",
+    reviewedBy: "admin"
+  });
   audit.review(audit.getByJob("a").id, { finalType: "dvd" });
   const m = audit.metrics();
   assert.deepEqual({ ...m, corrections: undefined }, {
@@ -65,9 +76,13 @@ test("metrics and exports derive from audit records", () => {
   assert.match(text, /DISK PROCESSING LOG/);
   assert.match(text, /Detected Type:\nCD-ROM\n\nFinal Type:\nCD Audio/);
   assert.match(text, /Reason:\ndamaged_disc/);
+  assert.match(text, /Reviewed by:\nadmin/);
   const json = exportClassificationJson(audit.list());
   assert.equal(json.count, 3);
   assert.equal(json.records[0].confidence, null);
+  assert.equal(json.records[1].reviewedBy, "admin");
+  assert.equal(json.records[1].reviewedAt !== "", true);
+  assert.equal(json.records[2].reviewedBy, "");
 });
 
 test("legacy jobs are backfilled into the audit table", () => {

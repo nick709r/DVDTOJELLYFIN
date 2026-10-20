@@ -15,7 +15,34 @@ test("TV metadata settings, provider lookup, caching, auditing, and metrics work
   const { app } = await import("../dist/server.js");
   const { db } = await import("../dist/db.js");
   const originalFetch = globalThis.fetch;
+  const setup = await app.inject({
+    method: "POST",
+    url: "/api/v1/setup",
+    payload: {
+      username: "metadata-admin",
+      password: "MetadataSecurePassword123!",
+      confirmPassword: "MetadataSecurePassword123!"
+    }
+  });
+  assert.equal(setup.statusCode, 201);
+  let sessionCookie = "";
+  const originalInject = app.inject.bind(app);
+  app.inject = async (options) => {
+    const response = await originalInject({
+      ...options,
+      headers: { ...(sessionCookie ? { cookie: sessionCookie } : {}), ...(options.headers || {}) }
+    });
+    const setCookie = response.headers["set-cookie"];
+    if (typeof setCookie === "string") sessionCookie = setCookie.split(";")[0];
+    return response;
+  };
   try {
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/login",
+      payload: { username: "metadata-admin", password: "MetadataSecurePassword123!" }
+    });
+    assert.equal(login.statusCode, 200);
     const initial = await app.inject({ method: "GET", url: "/api/v1/tv/metadata" });
     assert.equal(initial.statusCode, 200);
     assert.deepEqual(initial.json().providers.map((provider) => provider.id), ["tvdb", "tmdb-tv"]);

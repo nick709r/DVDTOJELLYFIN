@@ -16,16 +16,75 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
   const jobs = await import("../dist/db.js");
   const jobControl = await import("../dist/job-control.js");
   const manualMetadata = await import("../dist/manual-music-metadata.js");
+  let sessionCookie = "";
+  const originalInject = app.inject.bind(app);
+  app.inject = async (options) => {
+    const response = await originalInject({
+      ...options,
+      headers: { ...(sessionCookie ? { cookie: sessionCookie } : {}), ...(options.headers || {}) }
+    });
+    const setCookie = response.headers["set-cookie"];
+    if (typeof setCookie === "string") sessionCookie = setCookie.split(";")[0];
+    return response;
+  };
   try {
     const home = await app.inject({ method: "GET", url: "/" });
-    assert.equal(home.statusCode, 200);
-    assert.match(home.body, /AutoDisc/);
-    assert.match(home.body, /Disc Diagnostics/);
-    assert.match(home.body, /page-diagnostics/);
+    assert.equal(home.statusCode, 302);
+    assert.equal(home.headers.location, "/setup");
+    const setupPage = await app.inject({ method: "GET", url: "/setup" });
+    assert.equal(setupPage.statusCode, 200);
+    assert.match(setupPage.body, /Create administrator account/);
+    assert.match(setupPage.body, /Confirm password/);
+    assert.match(setupPage.body, /setup-account-step/);
+    assert.match(setupPage.body, /setup-confirm-step/);
+    assert.equal((await app.inject({ method: "GET", url: "/api/v1/setup/status" })).json().setupComplete, false);
+
+    const blockedSettings = await app.inject({ method: "GET", url: "/api/v1/settings" });
+    assert.equal(blockedSettings.statusCode, 503);
+    assert.equal(blockedSettings.json().setupRequired, true);
+    const blockedDashboard = await app.inject({ method: "GET", url: "/api/v1/dashboard" });
+    assert.equal(blockedDashboard.statusCode, 503);
+    const invalidSetup = await app.inject({
+      method: "POST",
+      url: "/api/v1/setup",
+      payload: { username: "admin", password: "VeryStrongPassword123!", confirmPassword: "different" }
+    });
+    assert.equal(invalidSetup.statusCode, 400);
+    const setup = await app.inject({
+      method: "POST",
+      url: "/api/v1/setup",
+      payload: { username: "admin", password: "VeryStrongPassword123!", confirmPassword: "VeryStrongPassword123!" }
+    });
+    assert.equal(setup.statusCode, 201);
+    assert.equal(setup.json().setupComplete, true);
+    const setupState = db.prepare("SELECT setup_complete, admin_username, admin_password_hash FROM setup_state WHERE id = 1").get();
+    assert.equal(setupState.setup_complete, 1);
+    assert.equal(setupState.admin_username, "admin");
+    assert.notEqual(setupState.admin_password_hash, "VeryStrongPassword123!");
+    assert.equal((await app.inject({ method: "POST", url: "/api/v1/setup", payload: {} })).statusCode, 401);
+    const homeAfterSetup = await app.inject({ method: "GET", url: "/" });
+    assert.equal(homeAfterSetup.statusCode, 200);
+    assert.match(homeAfterSetup.body, /Disc Diagnostics/);
+    assert.match(homeAfterSetup.body, /library-settings-health/);
+    assert.match(homeAfterSetup.body, /classification-form/);
+    const unauthenticatedSettings = await app.inject({ method: "GET", url: "/api/v1/settings" });
+    assert.equal(unauthenticatedSettings.statusCode, 401);
+    const initialLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/login",
+      payload: { username: "admin", password: "VeryStrongPassword123!" }
+    });
+    assert.equal(initialLogin.statusCode, 200);
+    const setupRerun = await app.inject({
+      method: "POST",
+      url: "/api/v1/setup",
+      payload: { username: "admin", password: "AnotherStrongPassword123!", confirmPassword: "AnotherStrongPassword123!" }
+    });
+    assert.equal(setupRerun.statusCode, 409);
 
     const initial = await app.inject({ method: "GET", url: "/api/v1/settings" });
     assert.equal(initial.statusCode, 200);
-    assert.equal(initial.json().settings.adminPasswordConfigured, false);
+    assert.equal(initial.json().settings.adminPasswordConfigured, true);
     assert.equal(initial.json().settings.musicMetadataEnabled, false);
     assert.equal(initial.json().settings.lidarrEnabled, false);
     assert.equal(initial.json().settings.tvDetectionEnabled, true);
@@ -117,6 +176,17 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: { tvRootDir: invalidTvPath }
     });
     assert.equal(invalidTvSettings.statusCode, 400);
+    jobs.saveSettings({ tvRootDir: invalidTvPath });
+    const failedLibraryCreation = await app.inject({
+      method: "POST",
+      url: "/api/library/create",
+      payload: { type: "tv" }
+    });
+    assert.equal(failedLibraryCreation.statusCode, 400);
+    assert.equal(failedLibraryCreation.json().exists, false);
+    assert.equal(failedLibraryCreation.json().writable, false);
+    assert.match(failedLibraryCreation.json().error, /directory/i);
+    jobs.saveSettings({ tvRootDir: "/srv/jellyfin/TV" });
     await app.inject({
       method: "POST",
       url: "/api/v1/paths/check",
@@ -197,6 +267,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       payload: {
         musicMetadataEnabled: true,
         musicBrainzContactEmail: "music-admin@example.com",
+        musicDir: path.posix.join(linuxRoot, "music-library"),
         tvRootDir: path.posix.join(linuxRoot, "saved-tv-library"),
         lidarrApiKey: "lidarr-test-secret",
         tvDetectionEnabled: false,
@@ -204,9 +275,10 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       }
     });
     assert.equal(setMusicSettings.statusCode, 200);
-    assert.equal(setMusicSettings.json().settings.musicDir, "/srv/jellyfin/Music");
+    assert.equal(setMusicSettings.json().settings.musicDir, path.posix.join(linuxRoot, "music-library"));
     assert.equal(setMusicSettings.json().settings.tvRootDir, path.posix.join(linuxRoot, "saved-tv-library"));
     assert.equal((await readdir(root)).includes("saved-tv-library"), true);
+    assert.equal((await readdir(root)).includes("music-library"), true);
     assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
     assert.equal(setMusicSettings.json().settings.musicBrainzContactEmail, "music-admin@example.com");
     assert.equal(setMusicSettings.json().settings.tvDetectionEnabled, false);
@@ -214,10 +286,33 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(setMusicSettings.json().settings.lidarrApiKeyConfigured, true);
     assert.equal("lidarrApiKey" in setMusicSettings.json().settings, false);
 
+    const libraryPath = path.posix.join(linuxRoot, "library-created-by-api");
+    jobs.saveSettings({ tvRootDir: libraryPath });
+    const createLibrary = await app.inject({
+      method: "POST",
+      url: "/api/library/create",
+      payload: { type: "tv" }
+    });
+    assert.equal(createLibrary.statusCode, 200);
+    assert.equal(createLibrary.json().ok, true);
+    assert.equal(createLibrary.json().status.exists, true);
+    assert.equal(createLibrary.json().status.writable, true);
+    assert.equal((await readdir(root)).includes("library-created-by-api"), true);
+    const libraryHealth = await app.inject({ method: "GET", url: "/api/library/health" });
+    assert.equal(libraryHealth.statusCode, 200);
+    assert.equal(libraryHealth.json().libraries.find((library) => library.type === "tv").exists, true);
+    const invalidLibrary = await app.inject({
+      method: "POST",
+      url: "/api/library/create",
+      payload: { type: "invalid" }
+    });
+    assert.equal(invalidLibrary.statusCode, 400);
+    jobs.saveSettings({ tvRootDir: path.posix.join(linuxRoot, "saved-tv-library") });
+
     const setPassword = await app.inject({
       method: "PUT",
       url: "/api/v1/settings",
-      payload: { adminPassword: "a-test-password-long-enough", logLevel: "error" }
+      payload: { adminPassword: "NewStrongPassword123!", logLevel: "error" }
     });
     assert.equal(setPassword.statusCode, 200);
     assert.equal(setPassword.json().settings.logLevel, "error");
@@ -230,7 +325,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const login = await app.inject({
       method: "POST",
       url: "/api/v1/login",
-      payload: { username: "admin", password: "a-test-password-long-enough" }
+      payload: { username: "admin", password: "NewStrongPassword123!" }
     });
     assert.equal(login.statusCode, 200);
     const setCookie = login.headers["set-cookie"];
@@ -399,12 +494,12 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
           { name: "v1.12.0" },
           { name: "v1.13.0" },
           { name: "v1.14.0" },
-          { name: "v1.15.0" },
+          { name: "v1.15.2" },
           { name: "main" }
         ]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.includes("/releases/tags/")) return new Response("", { status: 404 });
-      return new Response("### Version 1.15.0\n- Test release notes.", { status: 200 });
+      return new Response("### Version 1.15.2\n- Test release notes.", { status: 200 });
     };
     try {
       const updateCheck = await app.inject({
@@ -413,8 +508,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         headers: { cookie }
       });
       assert.equal(updateCheck.statusCode, 200);
-      assert.equal(updateCheck.json().latestVersion, "v1.15.0");
-      assert.equal(updateCheck.json().updateAvailable, true);
+      assert.equal(updateCheck.json().latestVersion, "v1.15.2");
+      assert.equal(updateCheck.json().updateAvailable, false);
       assert.match(updateCheck.json().releaseNotes, /Test release notes/);
     } finally {
       globalThis.fetch = originalFetch;

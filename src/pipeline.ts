@@ -13,6 +13,14 @@ export async function processInsertedDisc(
   metadata: MetadataResolver,
   signal?: AbortSignal
 ): Promise<boolean> {
+  if (!jobs.setupComplete()) {
+    updateDiscDiagnostics({
+      status: "Administrator setup required",
+      reason: "Disc processing is disabled until the first-run administrator account has been created."
+    });
+    log("info", "disc", "Disc processing is disabled until initial administrator setup is complete");
+    return true;
+  }
   if (isUpdatePending()) {
     log("info", "disc", "Disc inspection deferred because an application update is pending");
     return false;

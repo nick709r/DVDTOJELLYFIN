@@ -2,6 +2,7 @@ import type { AutoDiscRepositories } from "../contracts/repositories.js";
 import type { JobCancellationControl } from "../contracts/job-control.js";
 import type { Job, JobStatus } from "../model.js";
 import type { ReviewItemInput, ReviewItem } from "../domain/reviews.js";
+import type { DiscRecovery, DiscRecoveryUpdate, DiscType, MediaType } from "../domain/disc-recovery.js";
 
 export interface JobStep {
   id: string;
@@ -64,12 +65,32 @@ export class JobCoordinator {
     return this.repositories.settings.get();
   }
 
+  setupComplete(): boolean {
+    return this.repositories.setup.get().setupComplete;
+  }
+
   activeJob(): Job | null {
     return this.repositories.jobs.active();
   }
 
   lastDiscFingerprint(): string | null {
     return this.repositories.recovery.lastDiscFingerprint();
+  }
+
+  getDiscRecovery(fingerprint: string): DiscRecovery | undefined {
+    return this.repositories.discRecovery.get(fingerprint);
+  }
+
+  recordDiscDetection(fingerprint: string, discType: DiscType, mediaType: MediaType, confidence?: number): DiscRecovery {
+    return this.repositories.discRecovery.recordDetection(fingerprint, discType, mediaType, confidence);
+  }
+
+  updateDiscRecovery(fingerprint: string, patch: DiscRecoveryUpdate): DiscRecovery | undefined {
+    return this.repositories.discRecovery.update(fingerprint, patch);
+  }
+
+  listDiscRecoveries(limit = 100): DiscRecovery[] {
+    return this.repositories.discRecovery.list(limit);
   }
 
   clearInsertedDisc(): void {
