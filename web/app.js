@@ -181,6 +181,57 @@ function diagnosticPairs(entries) {
   ).join("")}</dl>`;
 }
 
+const DISK_TYPE_LABELS = { dvd: "DVD", bluray: "Blu-ray", audio_cd: "CD Audio", cdrom: "CD-ROM", mixed_mode: "Mixed Mode", unknown: "Unknown" };
+const diskTypeLabel = (type) => DISK_TYPE_LABELS[type] || type;
+state.classification = null;
+
+async function renderClassification(record) {
+  state.classification = record || null;
+  const meta = await api("/api/v1/classification/audit?limit=1");
+  const form = $("#classification-form");
+  const m = (await api("/api/v1/classification/metrics")).metrics;
+  const corrections = m.corrections.map((c) => `${escapeHtml(diskTypeLabel(c.from))} → ${escapeHtml(diskTypeLabel(c.to))}: ${c.count}`).join(" · ") || "none";
+  $("#classification-metrics").innerHTML = diagnosticPairs([
+    ["Total processed", m.totalProcessed], ["Auto accepted", m.autoAccepted], ["Reviewed", m.reviewed],
+    ["Manual corrections", m.manualCorrections], ["Review required", m.reviewRequired]
+  ]) + `<p class="hint">Common corrections: ${corrections}</p>`;
+  if (!record) {
+    $("#classification-summary").textContent = "No disc selected.";
+    form.classList.add("hidden");
+    return;
+  }
+  const overridden = record.detectedType !== record.finalType;
+  $("#classification-summary").innerHTML = diagnosticPairs([
+    ["Original detection", diskTypeLabel(record.detectedType)],
+    ["Final type", diskTypeLabel(record.finalType) + (overridden ? " (manual override)" : "")],
+    ["Confidence", record.confidence === null ? "Not available" : record.confidence.toFixed(2)],
+    ["Review status", record.reviewStatus],
+    ["Override reason", record.overrideReason || "—"]
+  ]);
+  const types = [...new Set([...meta.diskTypes, record.detectedType, record.finalType])];
+  $("#classification-final").innerHTML = types.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(diskTypeLabel(t))}</option>`).join("");
+  $("#classification-final").value = record.finalType;
+  $("#classification-reason").innerHTML = '<option value="">Not needed (no change)</option>' +
+    meta.overrideReasons.map((r) => `<option value="${r}">${r}</option>`).join("");
+  $("#classification-reason").value = record.overrideReason || "";
+  form.elements.namedItem("notes").value = record.notes || "";
+  form.classList.remove("hidden");
+}
+
+$("#classification-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    const record = (await api(`/api/v1/classification/audit/${encodeURIComponent(state.classification.id)}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ finalType: form.finalType.value, overrideReason: form.overrideReason.value || undefined, notes: form.notes.value || undefined })
+    })).record;
+    await renderClassification(record);
+    notify("Classification review saved.");
+  } catch (error) { notify(error.message, true); }
+});
+
 function renderDiagnostics(payload) {
   const select = $("#diagnostics-job");
   const selectedId = payload.job?.id || (payload.liveOnly ? "" : state.diagnosticsJobId);
@@ -343,6 +394,7 @@ async function loadDiagnostics(jobId = "", liveOnly = false) {
   const query = liveOnly ? "?live=1" : jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
   const payload = await api(`/api/v1/diagnostics${query}`);
   renderDiagnostics(payload);
+  renderClassification(payload.classification).catch((error) => notify(error.message, true));
 }
 
 async function refreshDashboard() {

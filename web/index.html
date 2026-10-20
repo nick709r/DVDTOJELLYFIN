@@ -88,6 +88,18 @@
           <div id="diagnostics-live" class="diagnostics-grid"></div>
           <p id="diagnostics-live-status" class="hint" role="status">Waiting for disc detection data.</p>
         </article>
+        <article class="card" id="classification-review">
+          <div class="card-heading"><div><p class="eyebrow">DISK MONITOR</p><h2>Classification review</h2></div>
+            <div class="diagnostics-controls"><a class="button secondary" href="/api/v1/classification/export/text" download>Export log (text)</a><a class="button secondary" href="/api/v1/classification/export/json" download>Export JSON (LLM)</a></div></div>
+          <div id="classification-summary" class="hint">No disc selected.</div>
+          <form id="classification-form" class="hidden">
+            <label>Final type<select name="finalType" id="classification-final"></select></label>
+            <label>Override reason<select name="overrideReason" id="classification-reason"><option value="">Not needed (no change)</option></select></label>
+            <label>Operator notes<input name="notes" maxlength="2000"></label>
+            <button class="button" type="submit">Save review</button>
+          </form>
+          <div id="classification-metrics"></div>
+        </article>
         <div class="diagnostics-grid">
           <article class="card"><p class="eyebrow">CLASSIFICATION</p><h2>Scorecard</h2><div id="diagnostics-classification"></div></article>
           <article class="card"><p class="eyebrow">DISC STRUCTURE</p><h2>Inspected contents</h2><div id="diagnostics-structure"></div></article>
