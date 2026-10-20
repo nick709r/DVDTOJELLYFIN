@@ -263,4 +263,30 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (15, ?)")
     .run(new Date().toISOString());
+  // Disk classification audit: append-only, intentionally no FK to jobs so history cleanup never deletes audit data.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS disk_classification_audit (
+      id TEXT PRIMARY KEY,
+      job_id TEXT UNIQUE,
+      created_at TEXT NOT NULL,
+      disk_name TEXT NOT NULL,
+      detected_type TEXT NOT NULL,
+      final_type TEXT NOT NULL,
+      confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+      review_status TEXT NOT NULL CHECK (review_status IN
+        ('auto_accepted', 'reviewed_no_change', 'manually_corrected', 'review_required')),
+      processing_status TEXT NOT NULL,
+      override_reason TEXT,
+      notes TEXT,
+      reviewed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS disk_classification_audit_created
+      ON disk_classification_audit(created_at);
+    INSERT OR IGNORE INTO disk_classification_audit
+      (id, job_id, created_at, disk_name, detected_type, final_type, review_status, processing_status)
+    SELECT 'legacy-' || id, id, started_at, COALESCE(title, disc_label, 'Unknown disc'), media_type, media_type,
+      'auto_accepted', status FROM jobs;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (16, ?)")
+    .run(new Date().toISOString());
 }

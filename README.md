@@ -57,6 +57,18 @@ That's it — the dashboard gives you live job progress and simple controls, or 
 
 ## Release history
 
+### Version 1.14.0
+
+- Add a disk classification review and audit system for every media type
+  (DVD, Blu-ray, CD Audio, CD-ROM, Mixed Mode, Unknown and future types).
+  Disk Monitor shows the original detection, nullable confidence and review
+  status, and lets operators override the type with a structured reason and
+  notes. The original detection is never overwritten.
+- Add an append-only audit table (migration 16, never auto-deleted), a
+  plain-text operator log export (`/api/v1/classification/export/text`), a JSON
+  export for classifier/LLM analysis (`/api/v1/classification/export/json`) and
+  metrics (`/api/v1/classification/metrics`) derived from audit records.
+
 ### Version 1.13.0
 
 - Fix optical-drive monitoring so a media-change event after an earlier

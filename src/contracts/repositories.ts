@@ -5,6 +5,7 @@ import type {
 } from "../domain/television.js";
 import type { TvValidationEvidenceRepository } from "../domain/tv-validation.js";
 import type { ReviewItemRepository } from "../domain/reviews.js";
+import type { ClassificationAuditRepository } from "../domain/classification.js";
 import type { ReviewJobRepository } from "../domain/review-jobs.js";
 
 export interface SettingsRepository {
@@ -54,5 +55,6 @@ export interface AutoDiscRepositories {
   tvValidationEvidence: TvValidationEvidenceRepository;
   reviewItems: ReviewItemRepository;
   reviewJobs: ReviewJobRepository;
+  classificationAudit: ClassificationAuditRepository;
   close(): void;
 }

@@ -46,7 +46,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 15);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 16);
   assert.deepEqual(
     db.pragma("table_info(review_jobs)").map((column) => column.name),
     ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",

@@ -27,6 +27,8 @@ import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
 import { tvWorkflowPolicy } from "./application/tv-workflow-service.js";
 import { repositories } from "./db.js";
+import { KNOWN_DISK_TYPES, OVERRIDE_REASONS, CLASSIFICATION_REVIEW_STATUSES } from "./domain/classification.js";
+import { exportClassificationJson, exportClassificationText } from "./application/classification-export.js";
 import { TvReviewService } from "./application/tv-review-service.js";
 import { TvValidationService } from "./application/tv-validation-service.js";
 import type { Episode, TvProcessingPlan } from "./domain/television.js";
@@ -339,12 +341,66 @@ app.get<{ Querystring: { jobId?: string; live?: string } }>("/api/v1/diagnostics
   return {
     live: getLiveDiscDiagnostics(),
     job: details.job,
+    classification: repositories.classificationAudit.getByJob(jobId) ?? null,
     timeline: details.timeline,
     jobs: listJobs(50),
     liveOnly: false,
     configuredDevice: getSettings().opticalDevice,
     active: active?.id === jobId
   };
+});
+
+const classificationLimit = { rateLimit: { max: 120, timeWindow: "1 minute" } };
+
+app.get<{ Querystring: { limit?: string; offset?: string } }>("/api/v1/classification/audit", { config: classificationLimit }, async (request) => {
+  const limit = Math.max(1, Math.min(1000, Number(request.query.limit ?? 100) || 100));
+  const offset = Math.max(0, Number(request.query.offset ?? 0) || 0);
+  return {
+    records: repositories.classificationAudit.list({ limit, offset, newestFirst: true }),
+    diskTypes: KNOWN_DISK_TYPES,
+    overrideReasons: OVERRIDE_REASONS,
+    reviewStatuses: CLASSIFICATION_REVIEW_STATUSES
+  };
+});
+
+app.get("/api/v1/classification/metrics", { config: classificationLimit }, async () =>
+  ({ metrics: repositories.classificationAudit.metrics() }));
+
+app.get("/api/v1/classification/export/text", { config: classificationLimit }, async (_request, reply) =>
+  reply.type("text/plain; charset=utf-8")
+    .header("Content-Disposition", 'attachment; filename="disk-processing-log.txt"')
+    .send(exportClassificationText(repositories.classificationAudit.list({ limit: 100000 }))));
+
+app.get("/api/v1/classification/export/json", { config: classificationLimit }, async (_request, reply) =>
+  reply.header("Content-Disposition", 'attachment; filename="disk-classification-audit.json"')
+    .send(exportClassificationJson(repositories.classificationAudit.list({ limit: 100000 }))));
+
+app.get<{ Params: { id: string } }>("/api/v1/classification/audit/:id", { config: classificationLimit }, async (request, reply) => {
+  const record = repositories.classificationAudit.get(request.params.id) ??
+    repositories.classificationAudit.getByJob(request.params.id);
+  if (!record) return reply.code(404).send({ error: "Classification audit record not found" });
+  return { record };
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/classification/audit/:id/review", { config: classificationLimit }, async (request, reply) => {
+  const record = repositories.classificationAudit.get(request.params.id) ??
+    repositories.classificationAudit.getByJob(request.params.id);
+  if (!record) return reply.code(404).send({ error: "Classification audit record not found" });
+  const body = request.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return reply.code(400).send({ error: "A JSON object is required" });
+  const input = body as Record<string, unknown>;
+  for (const key of ["overrideReason", "notes"]) {
+    if (input[key] !== undefined && typeof input[key] !== "string") return reply.code(400).send({ error: `${key} must be a string` });
+  }
+  try {
+    return { record: repositories.classificationAudit.review(record.id, {
+      finalType: input.finalType as string,
+      overrideReason: input.overrideReason as string | undefined,
+      notes: input.notes as string | undefined
+    }) };
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid classification review" });
+  }
 });
 
 app.get<{ Querystring: { range?: string } }>("/api/v1/stats", async (request) => {

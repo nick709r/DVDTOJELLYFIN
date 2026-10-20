@@ -2,17 +2,22 @@ import type Database from "better-sqlite3";
 import type { Job, JobStatus } from "../../model.js";
 import type { JobRepository } from "../../contracts/repositories.js";
 import type { SqliteEventRepository } from "./event-repository.js";
+import type { ClassificationAuditRepository } from "../../domain/classification.js";
 
 export class SqliteJobRepository implements JobRepository {
-  constructor(private readonly db: Database.Database, private readonly events: SqliteEventRepository) {}
+  constructor(private readonly db: Database.Database, private readonly events: SqliteEventRepository,
+    private readonly audit?: ClassificationAuditRepository
+  ) {}
 
   add(id: string, label: string | null, fingerprint: string | null = null, mediaKind = "dvd"): void {
     this.db.prepare("INSERT INTO jobs (id, status, media_type, disc_label, disc_fingerprint, started_at) VALUES (?, 'inspecting', ?, ?, ?, ?)")
       .run(id, mediaKind, label, fingerprint, new Date().toISOString());
+    this.audit?.recordDetection({ jobId: id, diskName: label ?? "Unknown disc", detectedType: mediaKind });
     this.events.add(id, "inspecting", "info", `Media accepted (${mediaKind})`);
   }
 
   setStatus(id: string, status: JobStatus, message: string): void {
+    this.audit?.setProcessingStatus(id, status);
     this.db.prepare("UPDATE jobs SET status = ?, progress = CASE WHEN ? = 'completed' THEN 100 ELSE progress END WHERE id = ?")
       .run(status, status, id);
     this.events.add(id, status, status === "failed" ? "error" : "info", message);
@@ -49,6 +54,7 @@ export class SqliteJobRepository implements JobRepository {
           progress = CASE WHEN ? = 'completed' THEN 100 ELSE progress END
         WHERE id = ?
       `).run(status, error, now, now, status, id);
+      this.audit?.setProcessingStatus(id, status);
       if (status === "completed" && fingerprint) {
         this.db.prepare("UPDATE drive_state SET last_fingerprint = ?, processed_at = ? WHERE id = 1")
           .run(fingerprint, now);
