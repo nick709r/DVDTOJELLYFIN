@@ -17,6 +17,7 @@ export type ReviewActionType =
   | "open-settings"
   | "enter-metadata"
   | "view-job"
+  | "open-review"
   | "resolve"
   | "dismiss";
 

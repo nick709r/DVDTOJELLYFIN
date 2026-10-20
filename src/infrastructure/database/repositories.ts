@@ -10,6 +10,7 @@ import { SqliteTvEpisodeFeedbackRepository } from "./tv-episode-feedback-reposit
 import { SqliteTvProcessingPlanRepository } from "./tv-processing-plan-repository.js";
 import { SqliteTvValidationEvidenceRepository } from "./tv-validation-evidence-repository.js";
 import { SqliteReviewItemRepository } from "./review-item-repository.js";
+import { SqliteReviewJobRepository } from "./review-job-repository.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
   const events = new SqliteEventRepository(db);
@@ -23,6 +24,7 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     tvProcessingPlans: new SqliteTvProcessingPlanRepository(db),
     tvValidationEvidence: new SqliteTvValidationEvidenceRepository(db),
     reviewItems: new SqliteReviewItemRepository(db),
+    reviewJobs: new SqliteReviewJobRepository(db),
     close: () => db.close()
   };
 }

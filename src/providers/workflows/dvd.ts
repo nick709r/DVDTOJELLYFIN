@@ -16,6 +16,9 @@ import {
   summarizeTvPlan,
   TvWorkflowService
 } from "../../application/tv-workflow-service.js";
+import type { ReviewJob } from "../../domain/review-jobs.js";
+import type { ReviewResumeStage } from "../../domain/review-jobs.js";
+import type { ReviewWorkspaceService } from "../../application/review-workspace-service.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -33,7 +36,10 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
 export class DvdWorkflow implements MediaWorkflow {
   readonly mediaKind = "dvd";
 
-  constructor(private readonly tvWorkflow?: TvWorkflowService) {}
+  constructor(
+    private readonly tvWorkflow?: TvWorkflowService,
+    private readonly reviewWorkspaces?: ReviewWorkspaceService
+  ) {}
 
   async process({ source, sources, jobs, metadata, signal, devicePath }: MediaWorkflowContext): Promise<boolean> {
     const info = source.candidate;
@@ -201,6 +207,9 @@ export class DvdWorkflow implements MediaWorkflow {
     let successful = false;
     let failure: string | null = null;
     let conversionStartedAt: number | undefined;
+    let reviewWorkspace: { job: ReviewJob; mediaPath: string } | undefined;
+    let failureStage = "metadata";
+    let resumeStage: ReviewResumeStage = "metadata";
 
     try {
       notifyStatus();
@@ -217,20 +226,38 @@ export class DvdWorkflow implements MediaWorkflow {
       const acquired = await sources.acquire(source, workDir, {
         selection: { manifestItemId: String(selectedTitle.id) }
       }, signal);
-      const input = acquired.artifacts.find((artifact) => artifact.kind === "video")?.path;
+      let input = acquired.artifacts.find((artifact) => artifact.kind === "video")?.path;
       if (!input) throw new Error(`Source provider ${info.providerId} returned no video artifact`);
       context.throwIfCancelled();
+      if (this.reviewWorkspaces) {
+        reviewWorkspace = await this.reviewWorkspaces.create({
+          id,
+          originalJobId: id,
+          discType: info.mediaKind,
+          discLabel: info.label || null,
+          metadata: { title: null, selectedTitle: selectedTitle.name, providerId: info.providerId },
+          workDir: settings.workDir,
+          mediaSource: input
+        });
+        input = reviewWorkspace.mediaPath;
+      }
 
       const title = await metadata.resolve({ entityType: "movie", query: info.label || selectedTitle.name }, signal);
       for (const providerFailure of title.providerFailures) {
         log("warn", "metadata", providerFailure.message, { providerId: providerFailure.providerId });
       }
+      if (settings.metadataEnabled && !title.selected && title.providerFailures.length > 0) {
+        throw new Error(`Metadata lookup failed: ${title.providerFailures.map((item) => item.message).join("; ")}`);
+      }
       const resolvedTitle = title.selected?.title ??
         (info.label.trim() || selectedTitle.name || `Unknown Title ${new Date().toISOString().slice(0, 10)}`);
       const cleanTitle = safeTitle(resolvedTitle);
+      if (reviewWorkspace) await this.reviewWorkspaces?.updateMetadata(id, { title: cleanTitle });
       jobs.update(context, { title: cleanTitle });
       jobs.record(context, "title", "info", `Title selected from ${title.selected?.providerId ?? "disc-label"}`);
 
+      failureStage = "naming";
+      resumeStage = "naming";
       jobs.step(context, { id: "convert-media", status: "converting", message: "Converting with FFmpeg" });
       notifyStatus();
       const movieOutput = await createMovieOutput(settings.moviesDir, cleanTitle, settings.format);
@@ -238,6 +265,7 @@ export class DvdWorkflow implements MediaWorkflow {
       const targetPath = movieOutput.path;
       finalPath = targetPath;
       conversionStartedAt = Date.now();
+      failureStage = "conversion";
       const conversionStart = conversionStartedAt;
       const encoded = await convert(input, targetPath, cleanTitle, settings, (encoder) => {
         jobs.step(context, {
@@ -301,6 +329,10 @@ export class DvdWorkflow implements MediaWorkflow {
 
     if (successful) {
       jobs.complete(context, fingerprint);
+      if (reviewWorkspace) {
+        jobs.resolveJobReviews(id, "Processing completed successfully");
+        await this.reviewWorkspaces?.remove(id);
+      }
       setRuntimeStatus("completed");
       if (settings.autoEject) {
         try {
@@ -315,11 +347,18 @@ export class DvdWorkflow implements MediaWorkflow {
     } else {
       const cancelled = jobs.wasJobCancelled(context);
       const interrupted = Boolean(signal.aborted && !cancelled);
-      jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
-        code: cancelled ? "cancelled" : interrupted ? "interrupted" : "processing_failed",
-        message: cancelled ? `Cancelled by user${failure ? `; ${failure}` : ""}` : failure ?? "Processing failed",
-        recoverable: interrupted
-      });
+      const message = cancelled ? `Cancelled by user${failure ? `; ${failure}` : ""}` : failure ?? "Processing failed";
+      if (reviewWorkspace && !cancelled && !interrupted) {
+        await this.reviewWorkspaces?.markPending(id, { reason: message, stage: failureStage, resumeStage });
+        jobs.holdForProcessingReview(context, message, failureStage, { resumeStage });
+      } else {
+        if (reviewWorkspace) await this.reviewWorkspaces?.remove(id);
+        jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
+          code: cancelled ? "cancelled" : interrupted ? "interrupted" : "processing_failed",
+          message,
+          recoverable: interrupted
+        });
+      }
       setRuntimeStatus(cancelled || interrupted ? "idle" : "failed");
     }
     notifyStatus();

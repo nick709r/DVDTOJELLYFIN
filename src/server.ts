@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
+import fastifyRateLimit from "@fastify/rate-limit";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { access, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -30,8 +31,19 @@ import { TvReviewService } from "./application/tv-review-service.js";
 import { TvValidationService } from "./application/tv-validation-service.js";
 import type { Episode, TvProcessingPlan } from "./domain/television.js";
 import type { ReviewCategory, ReviewSeverity, ReviewStatus } from "./domain/reviews.js";
+import type { ReviewJob } from "./domain/review-jobs.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
+interface ReviewJobActions {
+  continue(id: string): Promise<void>;
+  updateMetadata(id: string, patch: Readonly<Record<string, unknown>>): Promise<ReviewJob>;
+  remove(id: string): Promise<void>;
+}
+let reviewJobActions: ReviewJobActions | undefined;
+
+export function setReviewJobActions(actions: ReviewJobActions): void {
+  reviewJobActions = actions;
+}
 const tvValidation = new TvValidationService(
   repositories.tvValidationEvidence,
   repositories.tvEpisodeFeedback,
@@ -79,6 +91,7 @@ app.addHook("preHandler", async (request, reply) => {
 });
 
 app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
+app.register(fastifyRateLimit, { global: false });
 
 function publicSettings(settings: AppSettings): Omit<AppSettings,
   "metadataApiKey" | "lidarrApiKey" | "adminPasswordSalt" | "adminPasswordHash" | "tvMetadataProviderApiKeys"> & {
@@ -445,6 +458,89 @@ app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/retry", async (request
   events.emit("review-retry", retrying);
   return { item: retrying, message: "Retry requested. Keep the related disc in the configured drive." };
 });
+
+app.get("/api/v1/review-jobs", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async () => ({ reviewJobs: repositories.reviewJobs.list() }));
+
+app.get<{ Params: { id: string } }>("/api/v1/review-jobs/:id", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) => {
+  const reviewJob = repositories.reviewJobs.get(request.params.id);
+  if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
+  return { reviewJob, job: jobDetails(reviewJob.originalJobId) ?? null };
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review-jobs/:id/metadata", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) => {
+  const reviewJob = repositories.reviewJobs.get(request.params.id);
+  if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
+  if (reviewJob.status !== "pending") return reply.code(409).send({ error: "Metadata can only be edited for a pending review job" });
+  if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
+    return reply.code(400).send({ error: "Review metadata must be an object" });
+  }
+  const body = request.body as Record<string, unknown>;
+  const allowedFields = ["title", "year", "overview", "originalTitle"];
+  if (Object.keys(body).some((key) => !allowedFields.includes(key)) ||
+    Object.values(body).some((value) => typeof value !== "string" || value.length > 1000) ||
+    (typeof body.title === "string" && !body.title.trim()) ||
+    (typeof body.title === "string" && body.title.length > 200)) {
+    return reply.code(400).send({ error: "Review metadata contains unsupported or invalid fields" });
+  }
+  if (!reviewJobActions) return reply.code(503).send({ error: "Review workspace service is unavailable" });
+  try {
+    return { reviewJob: await reviewJobActions.updateMetadata(reviewJob.id, body) };
+  } catch (error) {
+    return reply.code(409).send({ error: error instanceof Error ? error.message : "Could not update review metadata" });
+  }
+});
+
+app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/continue", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) => {
+  const reviewJob = repositories.reviewJobs.get(request.params.id);
+  if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
+  if (reviewJob.status !== "pending") return reply.code(409).send({ error: `Cannot continue a ${reviewJob.status} review job` });
+  if (!reviewJobActions) return reply.code(503).send({ error: "Review processing service is unavailable" });
+  if (activeJob()) return reply.code(409).send({ error: "Another media job is already active" });
+  repositories.reviewJobs.update(reviewJob.id, { status: "retrying" });
+  void reviewJobActions.continue(reviewJob.id).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "Review processing failed";
+    repositories.reviewJobs.update(reviewJob.id, { status: "pending", failureReason: message });
+    app.log.error({ err: error, reviewJobId: reviewJob.id }, "Review processing could not be continued");
+    events.emit("status");
+  });
+  return reply.code(202).send({ reviewJob: repositories.reviewJobs.get(reviewJob.id), message: "Processing resumed from preserved media; no disc is required." });
+});
+
+async function discardReviewJob(id: string, reply: FastifyReply) {
+  const reviewJob = repositories.reviewJobs.get(id);
+  if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
+  if (reviewJob.status === "retrying" || reviewJob.status === "processing") {
+    return reply.code(409).send({ error: "A review job cannot be cleared while processing" });
+  }
+  if (!reviewJobActions) return reply.code(503).send({ error: "Review workspace service is unavailable" });
+  await reviewJobActions.remove(reviewJob.id);
+  for (const status of ["active", "retrying"] as const) {
+    for (const item of repositories.reviewItems.list({ status, limit: 1000 })) {
+      if (item.relatedJobId === reviewJob.originalJobId) {
+        repositories.reviewItems.updateStatus(item.id, "dismissed", "Review notification cleared by administrator");
+      }
+    }
+  }
+  events.emit("status");
+  return { ok: true };
+}
+
+app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/clear-notification", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) =>
+  discardReviewJob(request.params.id, reply));
+app.delete<{ Params: { id: string } }>("/api/v1/review-jobs/:id", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) =>
+  discardReviewJob(request.params.id, reply));
 
 app.get<{ Querystring: { confidence?: string; state?: string; limit?: string; offset?: string } }>(
   "/api/v1/tv/analysis", async (request, reply) => {

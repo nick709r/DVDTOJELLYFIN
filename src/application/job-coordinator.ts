@@ -100,6 +100,32 @@ export class JobCoordinator {
     };
   }
 
+  resume(
+    id: string,
+    mediaKind: string,
+    fingerprint: string | null,
+    discLabel: string | null,
+    signal: AbortSignal
+  ): JobContext {
+    const job = this.repositories.history.get(id);
+    if (!job || (job.status !== "review" && job.status !== "failed")) {
+      throw new Error(`Job ${id} is not available to resume`);
+    }
+    this.cancellation.register(id);
+    this.repositories.jobs.setStatus(id, "converting", "Resuming from preserved extracted media");
+    this.publisher.publish(id, "converting");
+    return {
+      id,
+      mediaKind,
+      fingerprint,
+      discLabel,
+      signal,
+      throwIfCancelled() {
+        if (signal.aborted) throw signal.reason ?? new Error("Job cancelled");
+      }
+    };
+  }
+
   step(context: JobContext, step: JobStep): void {
     context.throwIfCancelled();
     this.repositories.jobs.setStatus(context.id, step.status, step.message);
@@ -142,6 +168,11 @@ export class JobCoordinator {
     return { jobId: context.id, status: "completed" };
   }
 
+  finishForReview(context: JobContext, message: string): void {
+    this.repositories.jobs.finish(context.id, "review", message);
+    this.publisher.publish(context.id, "review");
+  }
+
   holdForReview(
     context: JobContext,
     message: string,
@@ -169,6 +200,35 @@ export class JobCoordinator {
       jobId: context.id,
       status: "review",
       error: { code: "review_required", message, recoverable: false }
+    };
+  }
+
+  holdForProcessingReview(
+    context: JobContext,
+    message: string,
+    failureStage: string,
+    errorDetails?: Readonly<Record<string, unknown>>
+  ): JobResult {
+    this.repositories.jobs.finish(context.id, "review", message);
+    this.createReview({
+      category: "processing_failure",
+      severity: "high",
+      title: "Extracted media needs review",
+      description: message,
+      relatedJobId: context.id,
+      ...(context.discLabel ? { relatedDisc: context.discLabel } : {}),
+      errorDetails: { failureStage, ...(errorDetails ?? {}) },
+      suggestedActions: [
+        { type: "view-job", label: "View job details" },
+        { type: "open-review", label: "Open review queue" }
+      ],
+      ...(context.fingerprint ? { discFingerprint: context.fingerprint } : {})
+    });
+    this.publisher.publish(context.id, "review");
+    return {
+      jobId: context.id,
+      status: "review",
+      error: { code: "review_required", message, recoverable: true }
     };
   }
 
