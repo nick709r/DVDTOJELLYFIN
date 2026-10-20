@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
+import fastifyRateLimit from "@fastify/rate-limit";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { access, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -51,33 +52,7 @@ const tvValidation = new TvValidationService(
 );
 const tvReview = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
 const sessions = new Map<string, number>();
-const reviewJobRequestWindows = new Map<string, { startedAt: number; count: number }>();
 const staticRoot = join(dirname(fileURLToPath(import.meta.url)), "../web");
-
-function allowReviewJobRequest(ip: string): { allowed: boolean; retryAfterSeconds: number } {
-  const now = Date.now();
-  let window = reviewJobRequestWindows.get(ip);
-  if (!window || now - window.startedAt >= 60_000) {
-    window = { startedAt: now, count: 0 };
-    reviewJobRequestWindows.set(ip, window);
-  }
-  if (window.count >= 120) {
-    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((60_000 - (now - window.startedAt)) / 1000)) };
-  }
-  window.count += 1;
-  if (reviewJobRequestWindows.size > 5000) {
-    for (const [key, value] of reviewJobRequestWindows) {
-      if (now - value.startedAt >= 60_000) reviewJobRequestWindows.delete(key);
-      if (reviewJobRequestWindows.size <= 5000) break;
-    }
-    while (reviewJobRequestWindows.size > 5000) {
-      const oldest = reviewJobRequestWindows.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      reviewJobRequestWindows.delete(oldest);
-    }
-  }
-  return { allowed: true, retryAfterSeconds: 0 };
-}
 
 function passwordConfigured(): boolean {
   return Boolean(getSettings().adminPasswordHash);
@@ -101,13 +76,6 @@ function isAuthenticated(request: FastifyRequest): boolean {
 }
 
 app.addHook("preHandler", async (request, reply) => {
-  if (request.url.startsWith("/api/v1/review-jobs")) {
-    const budget = allowReviewJobRequest(request.ip);
-    if (!budget.allowed) {
-      reply.header("Retry-After", String(budget.retryAfterSeconds));
-      return reply.code(429).send({ error: "Too many review queue requests; retry later" });
-    }
-  }
   if (!request.url.startsWith("/api/") || request.url === "/api/health" || request.url === "/api/v1/login") return;
   if (passwordConfigured() && !isAuthenticated(request)) {
     return reply.code(401).send({ error: "Authentication required" });
@@ -123,6 +91,7 @@ app.addHook("preHandler", async (request, reply) => {
 });
 
 app.register(fastifyStatic, { root: staticRoot, prefix: "/" });
+app.register(fastifyRateLimit, { global: false });
 
 function publicSettings(settings: AppSettings): Omit<AppSettings,
   "metadataApiKey" | "lidarrApiKey" | "adminPasswordSalt" | "adminPasswordHash" | "tvMetadataProviderApiKeys"> & {
@@ -490,15 +459,21 @@ app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/retry", async (request
   return { item: retrying, message: "Retry requested. Keep the related disc in the configured drive." };
 });
 
-app.get("/api/v1/review-jobs", async () => ({ reviewJobs: repositories.reviewJobs.list() }));
+app.get("/api/v1/review-jobs", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async () => ({ reviewJobs: repositories.reviewJobs.list() }));
 
-app.get<{ Params: { id: string } }>("/api/v1/review-jobs/:id", async (request, reply) => {
+app.get<{ Params: { id: string } }>("/api/v1/review-jobs/:id", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) => {
   const reviewJob = repositories.reviewJobs.get(request.params.id);
   if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
   return { reviewJob, job: jobDetails(reviewJob.originalJobId) ?? null };
 });
 
-app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review-jobs/:id/metadata", async (request, reply) => {
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review-jobs/:id/metadata", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) => {
   const reviewJob = repositories.reviewJobs.get(request.params.id);
   if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
   if (reviewJob.status !== "pending") return reply.code(409).send({ error: "Metadata can only be edited for a pending review job" });
@@ -521,7 +496,9 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review-jobs/:id/met
   }
 });
 
-app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/continue", async (request, reply) => {
+app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/continue", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) => {
   const reviewJob = repositories.reviewJobs.get(request.params.id);
   if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
   if (reviewJob.status !== "pending") return reply.code(409).send({ error: `Cannot continue a ${reviewJob.status} review job` });
@@ -556,9 +533,13 @@ async function discardReviewJob(id: string, reply: FastifyReply) {
   return { ok: true };
 }
 
-app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/clear-notification", async (request, reply) =>
+app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/clear-notification", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) =>
   discardReviewJob(request.params.id, reply));
-app.delete<{ Params: { id: string } }>("/api/v1/review-jobs/:id", async (request, reply) =>
+app.delete<{ Params: { id: string } }>("/api/v1/review-jobs/:id", {
+  config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
+}, async (request, reply) =>
   discardReviewJob(request.params.id, reply));
 
 app.get<{ Querystring: { confidence?: string; state?: string; limit?: string; offset?: string } }>(
