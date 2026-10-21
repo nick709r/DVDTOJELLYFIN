@@ -53,6 +53,7 @@ export class MusicBrainzMetadataProvider implements MetadataProvider {
         album: metadata.album,
         year: metadata.year,
         tracks: metadata.tracks,
+        releaseId: metadata.releaseId ?? null,
         source: metadata.source
       },
       identifiers: { musicBrainzDiscId: discId }
@@ -66,6 +67,8 @@ export function isMusicAlbumMetadata(value: unknown): value is MusicAlbumMetadat
   return typeof candidate.artist === "string" &&
     typeof candidate.album === "string" &&
     (candidate.year === null || typeof candidate.year === "string") &&
+    (candidate.source === "musicbrainz" || candidate.source === "manual" || candidate.source === "offline") &&
+    (candidate.releaseId === undefined || candidate.releaseId === null || typeof candidate.releaseId === "string") &&
     Array.isArray(candidate.tracks) &&
     candidate.tracks.every((track) =>
       typeof track === "object" && track !== null &&

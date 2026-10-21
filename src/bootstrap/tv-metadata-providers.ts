@@ -7,6 +7,7 @@ interface TvSeriesResult {
   title: string;
   year?: number;
   overview?: string;
+  artwork?: Array<{ kind: string; url: string }>;
 }
 
 interface TvEpisodeResult {
@@ -44,7 +45,8 @@ function seriesCandidates(series: readonly TvSeriesResult[], providerId: string,
     "series",
     item.title,
     0.35 + titleSimilarity(query, item.title) * 0.6,
-    { seriesId: item.id, title: item.title, year: item.year ?? null, overview: item.overview ?? null },
+    { seriesId: item.id, title: item.title, year: item.year ?? null, overview: item.overview ?? null,
+      artwork: item.artwork ?? [] },
     { [providerId]: item.id }
   ));
 }
@@ -103,13 +105,19 @@ async function tmdbLookup(
   };
   const searchUrl = new URL("https://api.themoviedb.org/3/search/tv");
   searchUrl.searchParams.set("query", input.query);
-  const search = await request(searchUrl) as { results?: Array<{ id?: number; name?: string; first_air_date?: string; overview?: string }> };
+  const search = await request(searchUrl) as { results?: Array<{
+    id?: number; name?: string; first_air_date?: string; overview?: string; poster_path?: string | null; backdrop_path?: string | null
+  }> };
   const series = (search.results ?? []).filter((result) => typeof result.id === "number" && typeof result.name === "string")
     .map((result) => ({
       id: String(result.id),
       title: result.name!,
       ...(result.first_air_date?.match(/^\d{4}/) ? { year: Number(result.first_air_date.slice(0, 4)) } : {}),
-      ...(result.overview ? { overview: result.overview } : {})
+      ...(result.overview ? { overview: result.overview } : {}),
+      artwork: [
+        ...(result.poster_path ? [{ kind: "poster", url: `https://image.tmdb.org/t/p/original${result.poster_path}` }] : []),
+        ...(result.backdrop_path ? [{ kind: "backdrop", url: `https://image.tmdb.org/t/p/original${result.backdrop_path}` }] : [])
+      ]
     }));
   if (input.entityType === "series") return seriesCandidates(series, "tmdbTvId", input.query);
   const first = series[0];
@@ -152,7 +160,7 @@ async function tvdbLookupById(id: string, apiKey: string, fetcher: typeof fetch)
     signal
   }), "TVDB");
   if (!login.data?.token) throw new Error("TVDB authentication failure: response did not include a token");
-  const response = await responseJson<{ data?: { id?: number | string; name?: string; year?: string; overview?: string } }>(
+  const response = await responseJson<{ data?: { id?: number | string; name?: string; year?: string; overview?: string; image?: string } }>(
     await fetcher(`https://api4.thetvdb.com/v4/series/${encodeURIComponent(id)}/extended`, {
       headers: { Authorization: `Bearer ${login.data.token}` },
       signal
@@ -165,19 +173,40 @@ async function tvdbLookupById(id: string, apiKey: string, fetcher: typeof fetch)
     seriesId: String(series.id ?? id),
     title: series.name,
     year: year ?? null,
-    overview: series.overview ?? null
+    overview: series.overview ?? null,
+    artwork: series.image?.startsWith("https://artworks.thetvdb.com/")
+      ? [{ kind: "poster", url: series.image }] : []
   }, { tvdbId: String(series.id ?? id) });
 }
 
 async function tmdbLookupById(id: string, apiKey: string, fetcher: typeof fetch): Promise<MetadataProviderCandidate | undefined> {
   const url = new URL(`https://api.themoviedb.org/3/tv/${encodeURIComponent(id)}`);
   url.searchParams.set("api_key", apiKey);
-  const response = await responseJson<{ id?: number; name?: string; first_air_date?: string; overview?: string }>(
+  url.searchParams.set("append_to_response", "aggregate_credits,images");
+  url.searchParams.set("include_image_language", "en,null");
+  const response = await responseJson<{ id?: number; name?: string; first_air_date?: string; overview?: string;
+    poster_path?: string | null; backdrop_path?: string | null; vote_average?: number;
+    genres?: Array<{ name?: string }>; aggregate_credits?: { cast?: Array<{ name?: string }> };
+    images?: { posters?: Array<{ file_path?: string }>; backdrops?: Array<{ file_path?: string }>;
+      logos?: Array<{ file_path?: string }> } }>(
     await fetcher(url, { signal: AbortSignal.timeout(10000) }), "TMDB TV");
   if (typeof response.id !== "number" || typeof response.name !== "string") return undefined;
   const year = response.first_air_date?.match(/^\d{4}/) ? Number(response.first_air_date.slice(0, 4)) : undefined;
   return candidate(String(response.id), "series", response.name, 1, {
-    seriesId: String(response.id), title: response.name, year: year ?? null, overview: response.overview ?? null
+    seriesId: String(response.id), title: response.name, year: year ?? null, overview: response.overview ?? null,
+    rating: response.vote_average ?? null,
+    genres: (response.genres ?? []).flatMap((genre) => genre.name ? [genre.name] : []),
+    cast: (response.aggregate_credits?.cast ?? []).slice(0, 20).flatMap((person) => person.name ? [person.name] : []),
+    artwork: [
+      ...(response.poster_path ? [{ kind: "poster", url: `https://image.tmdb.org/t/p/original${response.poster_path}` }] : []),
+      ...(response.images?.posters?.[0]?.file_path
+        ? [{ kind: "poster", url: `https://image.tmdb.org/t/p/original${response.images.posters[0].file_path}` }] : []),
+      ...(response.backdrop_path ? [{ kind: "backdrop", url: `https://image.tmdb.org/t/p/original${response.backdrop_path}` }] : []),
+      ...(response.images?.backdrops?.[0]?.file_path
+        ? [{ kind: "fanart", url: `https://image.tmdb.org/t/p/original${response.images.backdrops[0].file_path}` }] : []),
+      ...(response.images?.logos?.[0]?.file_path
+        ? [{ kind: "logo", url: `https://image.tmdb.org/t/p/original${response.images.logos[0].file_path}` }] : [])
+    ]
   }, { tmdbTvId: String(response.id) });
 }
 
@@ -189,10 +218,12 @@ async function imdbLookupById(id: string, apiKey: string, fetcher: typeof fetch)
     await fetcher(url, { signal: AbortSignal.timeout(10000) }), "TMDB IMDb ID lookup");
   const result = response.tv_results?.find((item) => typeof item.id === "number" && typeof item.name === "string");
   if (!result?.id || !result.name) return undefined;
-  const year = result.first_air_date?.match(/^\d{4}/) ? Number(result.first_air_date.slice(0, 4)) : undefined;
-  return candidate(id, "series", result.name, 1, {
-    seriesId: String(result.id), title: result.name, year: year ?? null, overview: result.overview ?? null
-  }, { imdbId: id, tmdbTvId: String(result.id) });
+  const details = await tmdbLookupById(String(result.id), apiKey, fetcher);
+  return details ? {
+    ...details,
+    id,
+    identifiers: { ...(details.identifiers ?? {}), imdbId: id, tmdbTvId: String(result.id) }
+  } : undefined;
 }
 
 async function tmdbEpisodesById(

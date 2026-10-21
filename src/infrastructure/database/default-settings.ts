@@ -11,6 +11,7 @@ export const defaultSettings: AppSettings = {
   preset: "ultrafast",
   encoder: "auto",
   autoEject: true,
+  automationMode: "regular_auto",
   metadataEnabled: false,
   metadataProvider: "tmdb",
   metadataApiKey: "",
@@ -33,5 +34,51 @@ export const defaultSettings: AppSettings = {
   tvMetadataProviderApiKeys: {},
   tvMetadataProviderValidation: {},
   tvMetadataProviderStatus: {},
+  libraryMetadata: {
+    automaticImport: true,
+    downloadSeriesMetadata: true,
+    downloadEpisodeMetadata: true,
+    downloadMovieMetadata: true,
+    downloadMusicMetadata: true,
+    downloadCastInformation: true,
+    downloadRatings: true,
+    downloadArtwork: true,
+    downloadSeasonArtwork: true,
+    downloadEpisodeImages: true,
+    downloadFanart: true,
+    downloadLogos: true,
+    downloadBackdrops: true,
+    downloadBanners: true,
+    generateNfo: true,
+    nfoFormat: "jellyfin",
+    libraryStructure: "jellyfin",
+    seriesFolderTemplate: "{Series Name} ({Year})",
+    seasonFolderTemplate: "Season {Season Number:00}",
+    episodeFileTemplate: "{Series Name} - S{Season:00}E{Episode:00} - {Episode Title}",
+    movieFolderTemplate: "{Movie Title} ({Year})",
+    movieFileTemplate: "{Movie Title} ({Year})",
+    artistFolderTemplate: "{Artist}",
+    albumFolderTemplate: "{Album} ({Year})"
+  },
+  outputDestinations: {
+    activeProfileId: "default",
+    profiles: [{
+      id: "default",
+      name: "Jellyfin Server",
+      routes: { tv: "jellyfin", movies: "jellyfin", music: "jellyfin" },
+      jellyfin: {
+        root: "",
+        paths: {
+          tv: process.env.TV_DIR ?? "/srv/jellyfin/TV",
+          movies: process.env.MOVIES_DIR ?? "/srv/jellyfin/Movies",
+          music: process.env.MUSIC_DIR ?? "/srv/jellyfin/Music"
+        }
+      },
+      sonarr: { seriesRoot: "" },
+      radarr: { movieRoot: "" },
+      lidarr: { artistRoot: "" },
+      folder: { tv: "", movies: "", music: "" }
+    }]
+  },
   logLevel: "info"
 };

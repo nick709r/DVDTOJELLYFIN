@@ -1,13 +1,14 @@
 import { getSettings, repositories } from "./db.js";
 import { configureLogLevel, log } from "./logger.js";
 import { startDiscMonitor } from "./disc-monitor.js";
-import { setReviewJobActions, startServer, stopServer } from "./server.js";
+import { setDiscApprovalAction, setReviewJobActions, startServer, stopServer } from "./server.js";
 import { recoverTemporaryFiles } from "./recovery.js";
 import { createProviderRuntime } from "./bootstrap/providers.js";
 import { JobCoordinator } from "./application/job-coordinator.js";
 import { events } from "./events.js";
 import { jobControl } from "./job-control.js";
 import { ReviewJobProcessor } from "./application/review-job-processor.js";
+import { processInsertedDisc } from "./pipeline.js";
 
 let providerRuntime: Awaited<ReturnType<typeof createProviderRuntime>> | undefined;
 
@@ -29,6 +30,20 @@ async function main(): Promise<void> {
     continue: (id) => reviewProcessor.continue(id),
     updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch),
     remove: (id) => providerRuntime!.reviewWorkspaces.remove(id)
+  });
+  setDiscApprovalAction(async (item) => {
+    if (providerRuntime!.jobs.activeJob()) throw new Error("Wait for the active disc job to finish before approving another disc");
+    const signature = item.errorDetails?.detectionSignature;
+    if (typeof signature !== "string") throw new Error("The pending disc approval is missing its detection signature");
+    const processed = await processInsertedDisc(
+      providerRuntime!.sources,
+      providerRuntime!.workflows,
+      providerRuntime!.jobs,
+      providerRuntime!.metadata,
+      new AbortController().signal,
+      { detectionSignature: signature }
+    );
+    if (!processed) throw new Error("No matching disc is currently available in the optical drive");
   });
   configureLogLevel(getSettings().logLevel);
   await recoverTemporaryFiles(repositories);

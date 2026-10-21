@@ -38,9 +38,14 @@ ssh -L 8787:127.0.0.1:8787 user@server
 
    Then open `http://127.0.0.1:8787` on the client. Setup Mode exposes only the setup endpoints; after setup, sign in with the account created in the wizard. Normal dashboard/API access requires authentication.
 
-4. The installer creates the configured Movies, TV, and Music folders when they are missing. Configure those paths, the work directory, and the optical drive in Settings. Use **Create Folder** to create or verify a library path; health status displays writability and free space, and invalid paths cannot be saved. TV publishing is limited to DVD tracks with explicitly saved manual episode mappings; automatic matches never publish. Test with known movie and TV DVDs and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
+4. The installer creates the configured Movies, TV, and Music folders when they are missing. In Settings, select a named output profile and configure only the destinations used by its selected routes. A Jellyfin root can supply inherited category paths. The work directory and optical drive remain required. TV publishing is limited to DVD tracks with explicitly saved manual episode mappings; automatic matches never publish. Test with known movie and TV DVDs and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
 
 Disc classifications retain the original detection alongside an operator-reviewed final type and audit notes. Blu-ray and other media labels do not imply that an ingestion workflow is available.
+See [Library Metadata & Organization](./docs/METADATA-LIBRARY-ORGANIZATION.md)
+for provider coverage, settings, file naming, NFO behavior, and API details.
+See [Output Destination Profiles](./docs/OUTPUT-DESTINATION-PROFILES.md) for
+named profiles, supported routes, compatibility migrations, and automation
+modes.
 
 Quick commands:
 
@@ -61,6 +66,21 @@ sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
 That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
 
 ## Release history
+
+### Version 1.16.0
+
+- Add configurable metadata/NFO import, artwork and safe naming templates for
+  supported movie, manually mapped TV DVD, and audio-CD publishing workflows.
+  Available provider data is imported without enabling online lookups by
+  default; failed optional metadata imports do not block media publishing.
+- Migration 20 adds imported movie, TV, and audio-CD metadata plus validated artwork references to
+  disc recovery without altering existing recovery decisions.
+- Add named output profiles with per-media Jellyfin, Sonarr-compatible,
+  Radarr-compatible, Lidarr, and generic-folder destinations. Migrations 21–22
+  preserve existing library paths and default automation to Regular Auto.
+- Add Full Auto, Regular Auto, and Review-Based modes. Review-Based queues
+  detected discs for approval before processing; Full Auto records failures in
+  Review and attempts to eject so the drive can continue.
 
 ### Version 1.15.2
 

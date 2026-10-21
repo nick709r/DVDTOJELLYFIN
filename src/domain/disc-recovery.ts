@@ -11,11 +11,16 @@ export type MediaType =
   | "documentary"
   | "mixed_content"
   | "other";
-export type MetadataProviderId = "tvdb" | "tmdb" | "imdb" | "anidb" | "manual";
+export type MetadataProviderId = "tvdb" | "tmdb" | "imdb" | "anidb" | "musicbrainz" | "manual";
 
 export interface EpisodeMapping {
   trackId: string;
   episodes: readonly Episode[];
+}
+
+export interface RecoveryArtworkReference {
+  kind: string;
+  url: string;
 }
 
 export interface DiscRecovery {
@@ -32,6 +37,8 @@ export interface DiscRecovery {
   seriesName: string | null;
   seasonNumber: number | null;
   mappings: readonly EpisodeMapping[];
+  importedMetadata: Readonly<Record<string, unknown>> | null;
+  artworkReferences: readonly RecoveryArtworkReference[];
   notes: string | null;
   updatedAt: string;
 }
@@ -44,6 +51,8 @@ export interface DiscRecoveryUpdate {
   seriesName?: string | null;
   seasonNumber?: number | null;
   mappings?: readonly EpisodeMapping[];
+  importedMetadata?: Readonly<Record<string, unknown>> | null;
+  artworkReferences?: readonly RecoveryArtworkReference[];
   notes?: string | null;
 }
 
@@ -58,7 +67,8 @@ export const discTypes: readonly DiscType[] =
   ["cd", "dvd", "bluray", "uhd_bluray", "data_disc", "unknown"];
 export const mediaTypes: readonly MediaType[] =
   ["movie", "tv_series", "music_album", "audiobook", "music_video", "concert", "documentary", "mixed_content", "other"];
-export const metadataProviderIds: readonly MetadataProviderId[] = ["tvdb", "tmdb", "imdb", "anidb", "manual"];
+export const metadataProviderIds: readonly MetadataProviderId[] =
+  ["tvdb", "tmdb", "imdb", "anidb", "musicbrainz", "manual"];
 
 export function isValidAirDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;

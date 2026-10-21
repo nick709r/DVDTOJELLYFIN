@@ -5,9 +5,11 @@ import { randomUUID } from "node:crypto";
 import type { JobContext, JobCoordinator } from "./application/job-coordinator.js";
 import type { AudioDisc } from "./audio-cd.js";
 import type { AudioTrackFile } from "./audio-cd.js";
+import type { DiscRecovery } from "./domain/disc-recovery.js";
 import type { MusicAlbumMetadata } from "./music-metadata.js";
 import { events } from "./events.js";
 import { log } from "./logger.js";
+import { outputTarget } from "./output-destinations.js";
 import { getLiveDiscDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
 import type { MetadataResolver } from "./application/metadata-resolver.js";
 import { isMusicAlbumMetadata } from "./providers/metadata/musicbrainz.js";
@@ -16,6 +18,7 @@ import { importAlbumToLidarr } from "./lidarr.js";
 import { runProcess } from "./process.js";
 import { ejectDisc, safeTitle } from "./media.js";
 import { setRuntimeStatus } from "./runtime-status.js";
+import { libraryTemplate, metadataDocument, renderLibraryTemplate, writeMetadataBundle } from "./library-metadata.js";
 
 const minimumWorkBytes = 2 * 1024 ** 3;
 const minimumMusicBytes = 256 * 1024 ** 2;
@@ -195,7 +198,8 @@ export async function processAudioCd(
   const settings = jobs.getSettings();
   const id = randomUUID();
   const workDir = join(settings.workDir, id);
-  const outputDir = settings.lidarrEnabled ? settings.lidarrImportDir : settings.musicDir;
+  const routeToLidarr = outputTarget(settings, "music") === "lidarr" && settings.lidarrEnabled;
+  const outputDir = routeToLidarr ? settings.lidarrImportDir : settings.musicDir;
   const stagingDir = join(outputDir, `.autodisc-${id}`);
   let successful = false;
   let failure: string | null = null;
@@ -204,6 +208,7 @@ export async function processAudioCd(
   let failureCode: string | undefined;
   let failureDetails: Readonly<Record<string, unknown>> | undefined;
   const context = jobs.begin(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", "audio_cd", disc.fingerprint, signal, device);
+  let recovery: DiscRecovery;
   updateDiscDiagnostics({ status: "Audio CD identified", classification: "Audio", mediaType: "audio_cd" });
   jobs.record(context, "disc-detected", "info", JSON.stringify({
     driveId: device,
@@ -221,6 +226,7 @@ export async function processAudioCd(
   }));
 
   try {
+    recovery = jobs.recordDiscDetection(disc.fingerprint, "cd", "music_album");
     events.emit("status");
     await assertWritableDirectory(settings.workDir, minimumWorkBytes);
     try {
@@ -244,7 +250,10 @@ export async function processAudioCd(
       throw new Error(`Audio extraction returned tracks [${ripped}], expected [${detected}]`);
     }
 
-    const metadataResult = metadataResolver
+    const recoveredMetadata = isMusicAlbumMetadata(recovery.importedMetadata)
+      ? recovery.importedMetadata
+      : undefined;
+    const metadataResult = !recoveredMetadata && metadataResolver
       ? await metadataResolver.resolve({
         entityType: "album",
         identifiers: {
@@ -263,7 +272,8 @@ export async function processAudioCd(
         durationMs: null,
         cacheUsage: "Not reported by the metadata provider interface"
       }));
-    let metadata: MusicAlbumMetadata = metadataResult?.selected && isMusicAlbumMetadata(metadataResult.selected.metadata)
+    let metadata: MusicAlbumMetadata = recoveredMetadata ??
+      (metadataResult?.selected && isMusicAlbumMetadata(metadataResult.selected.metadata)
       ? metadataResult.selected.metadata
       : {
         artist: "Unknown Artist",
@@ -271,7 +281,8 @@ export async function processAudioCd(
         year: null,
         tracks: disc.trackNumbers.map((number) => ({ number, title: `Track ${String(number).padStart(2, "0")}` })),
         source: "offline" as const
-      };
+      });
+    if (recoveredMetadata) jobs.record(context, "metadata", "info", "Restored album metadata saved for this disc fingerprint");
     if (signal?.aborted) throw new Error("Audio CD processing cancelled");
     if (settings.musicMetadataEnabled && metadata.source === "offline") {
       jobs.step(context, { id: "resolve-metadata", status: "ripping", message: "Waiting for manual metadata in the dashboard" });
@@ -296,8 +307,33 @@ export async function processAudioCd(
       metadata = await waitForManualMusicMetadata(id, disc, signal);
       jobs.record(context, "metadata", "info", `Music details supplied ${metadata.source === "musicbrainz" ? "from a metadata provider" : "manually"}`);
     }
-    const artistFolder = safeTitle(metadata.artist);
-    const albumFolder = safeTitle(`${metadata.album}${metadata.year ? ` (${metadata.year})` : ""}`);
+    if (metadata.source !== "offline") {
+      const artworkReferences = metadata.releaseId ? [{
+        kind: "album",
+        url: `https://coverartarchive.org/release/${encodeURIComponent(metadata.releaseId)}/front-500`
+      }] : [];
+      jobs.updateDiscRecovery(disc.fingerprint, {
+        metadataProvider: metadata.source === "musicbrainz" ? "musicbrainz" : "manual",
+        providerId: metadata.releaseId ?? null,
+        importedMetadata: {
+          entityType: "album",
+          artist: metadata.artist,
+          album: metadata.album,
+          year: metadata.year,
+          tracks: metadata.tracks,
+          source: metadata.source,
+          ...(metadata.releaseId ? { releaseId: metadata.releaseId } : {})
+        },
+        artworkReferences
+      });
+    }
+    const artistFolder = renderLibraryTemplate(libraryTemplate(settings.libraryMetadata, "artistFolderTemplate"), {
+      Artist: metadata.artist
+    });
+    const albumFolder = renderLibraryTemplate(libraryTemplate(settings.libraryMetadata, "albumFolderTemplate"), {
+      Album: metadata.album,
+      Year: metadata.year
+    });
     const artistDirectory = await ensureAudioAlbumFolders(
       jobs, context, outputDir, artistFolder, disc, device
     );
@@ -343,12 +379,12 @@ export async function processAudioCd(
     jobs.update(context, { conversionSeconds: (Date.now() - conversionStartedAt) / 1000 });
     await rm(workDir, { recursive: true, force: true });
 
-    jobs.step(context, { id: "publish-media", status: "publishing", message: settings.lidarrEnabled
+    jobs.step(context, { id: "publish-media", status: "publishing", message: routeToLidarr
       ? "Preparing named tracks for Lidarr library import"
       : "Publishing the complete album to Jellyfin Music" });
     events.emit("status");
     if (signal?.aborted) throw new Error("Audio CD processing cancelled");
-    jobs.update(context, { outputBytes, encoder: "FLAC lossless", progress: settings.lidarrEnabled ? 99 : 100 });
+    jobs.update(context, { outputBytes, encoder: "FLAC lossless", progress: routeToLidarr ? 99 : 100 });
     try {
       finalPath = await publishAudioAlbum(jobs, context, stagingDir, artistDirectory, albumFolder, disc, device);
       jobs.update(context, { outputPath: finalPath });
@@ -360,7 +396,30 @@ export async function processAudioCd(
       }
       throw error;
     }
-    if (settings.lidarrEnabled) {
+    const writeMusicMetadata = async (albumDirectory: string, artistOutputDirectory: string): Promise<void> => {
+      if (!settings.libraryMetadata.downloadMusicMetadata && !settings.libraryMetadata.generateNfo) return;
+      const importedMetadata = settings.libraryMetadata.downloadMusicMetadata ? {
+        artist: metadata.artist,
+        album: metadata.album,
+        year: metadata.year,
+        tracks: metadata.tracks
+      } : {};
+      const document = metadataDocument(metadata.album, metadata.source, metadata.releaseId, importedMetadata);
+      const assets = settings.libraryMetadata.automaticImport && settings.libraryMetadata.downloadMusicMetadata && metadata.releaseId
+        ? [{ kind: "album" as const, url: `https://coverartarchive.org/release/${encodeURIComponent(metadata.releaseId)}/front-500` }]
+        : [];
+      await writeMetadataBundle(albumDirectory, "album", document, assets, settings.libraryMetadata, {
+        nfoFileName: "album.nfo"
+      });
+      if (settings.libraryMetadata.downloadMusicMetadata || settings.libraryMetadata.generateNfo) {
+        await writeMetadataBundle(artistOutputDirectory, "artist", {
+          title: metadata.artist,
+          artist: metadata.artist,
+          provider: metadata.source
+        }, [], settings.libraryMetadata, { nfoFileName: "artist.nfo" });
+      }
+    };
+    if (routeToLidarr) {
       jobs.step(context, { id: "library-import", status: "publishing", message: "Sending named and tagged tracks to Lidarr for categorization" });
       events.emit("status");
       const importPath = finalPath;
@@ -380,7 +439,28 @@ export async function processAudioCd(
       }
       await rm(importPath, { recursive: true, force: true });
       if (result.albumPath) jobs.update(context, { outputPath: result.albumPath });
+      if (result.albumPath) {
+        try {
+          await writeMusicMetadata(result.albumPath, dirname(result.albumPath));
+        } catch (error) {
+          log("warn", "metadata", "Music album metadata or artwork could not be fully written after Lidarr import", {
+            jobId: id,
+            outputPath: result.albumPath,
+            error: error instanceof Error ? error.message : "unknown metadata write failure"
+          });
+        }
+      }
       jobs.record(context, "library-import", "info", `Library provider imported and categorized ${result.imported} named FLAC tracks`);
+    } else {
+      try {
+        await writeMusicMetadata(finalPath, artistDirectory);
+      } catch (error) {
+        log("warn", "metadata", "Music album metadata or artwork could not be fully written", {
+          jobId: id,
+          outputPath: finalPath,
+          error: error instanceof Error ? error.message : "unknown metadata write failure"
+        });
+      }
     }
     successful = true;
   } catch (error) {
@@ -391,7 +471,7 @@ export async function processAudioCd(
         failureDetails = error.reviewDetails as Readonly<Record<string, unknown>>;
       }
     }
-    if (settings.lidarrEnabled && finalPath) {
+    if (routeToLidarr && finalPath) {
       failure += `; check Lidarr and the staged album at ${finalPath} before retrying to avoid a duplicate import`;
     }
     if (conversionStartedAt !== undefined) {
@@ -411,7 +491,7 @@ export async function processAudioCd(
   if (successful) {
     jobs.complete(context, disc.fingerprint);
     setRuntimeStatus("completed");
-    if (settings.autoEject) {
+    if (settings.autoEject || settings.automationMode === "full_auto") {
       try {
         await ejectDisc(device);
         jobs.record(context, "eject", "info", "Disc ejected");

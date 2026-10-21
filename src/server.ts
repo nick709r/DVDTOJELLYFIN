@@ -21,7 +21,7 @@ import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
 import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manual-music-metadata.js";
 import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
-import type { AppSettings, EncoderChoice, OutputFormat } from "./model.js";
+import type { AppSettings, EncoderChoice, LibraryMetadataSettings, OutputFormat } from "./model.js";
 import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js";
 import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
@@ -43,8 +43,9 @@ import {
   type MediaType,
   type MetadataProviderId
 } from "./domain/disc-recovery.js";
-import type { ReviewCategory, ReviewSeverity, ReviewStatus } from "./domain/reviews.js";
+import type { ReviewCategory, ReviewItem, ReviewSeverity, ReviewStatus } from "./domain/reviews.js";
 import type { ReviewJob } from "./domain/review-jobs.js";
+import { outputDestinationsPayloadIsValid, outputPath, outputTarget, type OutputMedia } from "./output-destinations.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
 interface ReviewJobActions {
@@ -53,9 +54,14 @@ interface ReviewJobActions {
   remove(id: string): Promise<void>;
 }
 let reviewJobActions: ReviewJobActions | undefined;
+let discApprovalAction: ((item: ReviewItem) => Promise<void>) | undefined;
 
 export function setReviewJobActions(actions: ReviewJobActions): void {
   reviewJobActions = actions;
+}
+
+export function setDiscApprovalAction(action: (item: ReviewItem) => Promise<void>): void {
+  discApprovalAction = action;
 }
 const tvValidation = new TvValidationService(
   repositories.tvValidationEvidence,
@@ -548,6 +554,24 @@ app.get<{ Params: { id: string } }>("/api/v1/reviews/:id", async (request, reply
   return { item, job: job ?? null };
 });
 
+app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/approve-process", async (request, reply) => {
+  const item = repositories.reviewItems.get(request.params.id);
+  if (!item) return reply.code(404).send({ error: "Review item not found" });
+  if (item.category !== "configuration_issue" || item.errorDetails?.approvalRequired !== true ||
+    typeof item.errorDetails.detectionSignature !== "string") {
+    return reply.code(409).send({ error: "This review item is not a pending disc approval" });
+  }
+  if (item.status !== "active") return reply.code(409).send({ error: `Review item is already ${item.status}` });
+  if (!discApprovalAction) return reply.code(503).send({ error: "Disc approval processing is not available" });
+  try {
+    await discApprovalAction(item);
+    const resolved = repositories.reviewItems.updateStatus(item.id, "resolved", "Disc approved and processing completed");
+    return { item: resolved };
+  } catch (error) {
+    return reply.code(409).send({ error: error instanceof Error ? error.message : "Disc could not be approved for processing" });
+  }
+});
+
 app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/resolve", async (request, reply) => {
   const item = repositories.reviewItems.get(request.params.id);
   if (!item) return reply.code(404).send({ error: "Review item not found" });
@@ -781,6 +805,7 @@ function parseEpisodeMappings(value: unknown): EpisodeMapping[] {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       throw new Error("Episode mapping must be an object");
     }
+
     const mapping = entry as Record<string, unknown>;
     if (typeof mapping.trackId !== "string" || !mapping.trackId.trim() ||
       !Array.isArray(mapping.episodes) || mapping.episodes.length < 1 || mapping.episodes.length > 3) {
@@ -812,6 +837,71 @@ function parseEpisodeMappings(value: unknown): EpisodeMapping[] {
   });
 }
 
+const recoveryArtworkKinds = new Set([
+  "poster", "backdrop", "fanart", "logo", "banner", "season-poster", "episode-image", "disc", "artist", "album"
+]);
+const recoveryArtworkHosts = new Set(["image.tmdb.org", "artworks.thetvdb.com", "coverartarchive.org", "archive.org"]);
+
+function validImportedMetadata(value: unknown): value is Record<string, unknown> | null {
+  if (value === null) return true;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8") <= 64 * 1024;
+  } catch {
+    return false;
+  }
+}
+
+function validArtworkReferences(value: unknown): value is Array<{ kind: string; url: string }> {
+  if (!Array.isArray(value) || value.length > 20) return false;
+  return value.every((asset) => {
+    if (typeof asset !== "object" || asset === null || Array.isArray(asset) ||
+      typeof asset.kind !== "string" || !recoveryArtworkKinds.has(asset.kind) ||
+      typeof asset.url !== "string" || asset.url.length > 2048) return false;
+    try {
+      const url = new URL(asset.url);
+      return url.protocol === "https:" &&
+        (recoveryArtworkHosts.has(url.hostname) || url.hostname.endsWith(".archive.org"));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function isValidLibraryMetadata(value: unknown): value is LibraryMetadataSettings {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  const toggles = [
+    "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
+    "downloadMusicMetadata", "downloadCastInformation", "downloadRatings", "downloadArtwork",
+    "downloadSeasonArtwork", "downloadEpisodeImages", "downloadFanart", "downloadLogos",
+    "downloadBackdrops", "downloadBanners", "generateNfo"
+  ];
+  if (toggles.some((key) => typeof input[key] !== "boolean")) return false;
+  if (!["jellyfin", "kodi", "emby"].includes(String(input.nfoFormat)) ||
+    !["jellyfin", "sonarr", "radarr", "lidarr", "kodi", "custom"].includes(String(input.libraryStructure))) return false;
+  const templates = [
+    "seriesFolderTemplate", "seasonFolderTemplate", "episodeFileTemplate", "movieFolderTemplate",
+    "movieFileTemplate", "artistFolderTemplate", "albumFolderTemplate"
+  ];
+  const allowedTokens = new Set([
+    "Series Name", "Year", "Season Number", "Season", "Episode", "Episode Title",
+    "Movie Title", "Artist", "Album"
+  ]);
+  return templates.every((key) => {
+    const template = input[key];
+    if (typeof template !== "string" || !template.trim() || template.length > 200 ||
+      /[\\/]/.test(template) || template.includes("..")) return false;
+    const tokens = [...template.matchAll(/\{([^{}]+)\}/g)];
+    const stripped = template.replace(/\{[^{}]+\}/g, "");
+    return !/[{}]/.test(stripped) && tokens.every((token) => {
+      const parts = token[1]?.split(":");
+      return Boolean(parts && allowedTokens.has(parts[0] ?? "") &&
+        (parts.length === 1 || (parts.length === 2 && parts[1] === "00")));
+    });
+  });
+}
+
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recovery", async (request, reply) => {
   const plan = repositories.tvProcessingPlans.get(request.params.id);
   if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
@@ -820,7 +910,8 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recover
     return reply.code(400).send({ error: "Recovery metadata must be an object" });
   }
   const body = request.body as Record<string, unknown>;
-  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber", "mappings", "notes"];
+  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber",
+    "mappings", "notes", "importedMetadata", "artworkReferences"];
   if (Object.keys(body).some((key) => !allowed.includes(key))) {
     return reply.code(400).send({ error: "Recovery metadata contains unsupported fields" });
   }
@@ -835,7 +926,9 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recover
       (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100)) ||
     (body.notes !== undefined && body.notes !== null &&
       (typeof body.notes !== "string" || body.notes.length > 2000)) ||
-    (body.mappings !== undefined && (!Array.isArray(body.mappings) || body.mappings.length > 100))) {
+    (body.mappings !== undefined && (!Array.isArray(body.mappings) || body.mappings.length > 100)) ||
+    (body.importedMetadata !== undefined && !validImportedMetadata(body.importedMetadata)) ||
+    (body.artworkReferences !== undefined && !validArtworkReferences(body.artworkReferences))) {
     return reply.code(400).send({ error: "Recovery metadata contains invalid values" });
   }
   let mappings: EpisodeMapping[] | undefined;
@@ -850,6 +943,8 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recover
       ...(body.seriesName === undefined ? {} : { seriesName: body.seriesName as string | null }),
       ...(body.seasonNumber === undefined ? {} : { seasonNumber: body.seasonNumber as number | null }),
       ...(mappings === undefined ? {} : { mappings }),
+      ...(body.importedMetadata === undefined ? {} : { importedMetadata: body.importedMetadata as Record<string, unknown> | null }),
+      ...(body.artworkReferences === undefined ? {} : { artworkReferences: body.artworkReferences as Array<{ kind: string; url: string }> }),
       ...(body.notes === undefined ? {} : { notes: body.notes as string | null })
     };
     const recovery = repositories.discRecovery.update(plan.fingerprint, patch);
@@ -880,7 +975,8 @@ app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/recov
     return reply.code(400).send({ error: "Recovery update must be an object" });
   }
   const body = request.body as Record<string, unknown>;
-  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber", "mappings", "notes"];
+  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber",
+    "mappings", "notes", "importedMetadata", "artworkReferences"];
   if (Object.keys(body).some((key) => !allowed.includes(key)) ||
     (body.discType !== undefined && !discTypes.includes(body.discType as never)) ||
     (body.mediaType !== undefined && !mediaTypes.includes(body.mediaType as never)) ||
@@ -892,7 +988,9 @@ app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/recov
     (body.seasonNumber !== undefined && body.seasonNumber !== null &&
       (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100)) ||
     (body.notes !== undefined && body.notes !== null &&
-      (typeof body.notes !== "string" || body.notes.length > 2000))) {
+      (typeof body.notes !== "string" || body.notes.length > 2000)) ||
+    (body.importedMetadata !== undefined && !validImportedMetadata(body.importedMetadata)) ||
+    (body.artworkReferences !== undefined && !validArtworkReferences(body.artworkReferences))) {
     return reply.code(400).send({ error: "Recovery update contains invalid values" });
   }
   try {
@@ -904,6 +1002,8 @@ app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/recov
       ...(body.seriesName === undefined ? {} : { seriesName: body.seriesName as string | null }),
       ...(body.seasonNumber === undefined ? {} : { seasonNumber: body.seasonNumber as number | null }),
       ...(body.mappings === undefined ? {} : { mappings: parseEpisodeMappings(body.mappings) }),
+      ...(body.importedMetadata === undefined ? {} : { importedMetadata: body.importedMetadata as Record<string, unknown> | null }),
+      ...(body.artworkReferences === undefined ? {} : { artworkReferences: body.artworkReferences as Array<{ kind: string; url: string }> }),
       ...(body.notes === undefined ? {} : { notes: body.notes as string | null })
     });
     if (!recovery) return reply.code(404).send({ error: "Disc recovery record not found" });
@@ -1311,24 +1411,64 @@ app.post<{ Body: unknown }>("/api/v1/paths/check", async (request, reply) => {
     return reply.code(400).send({ error: "Path check request must be a JSON object" });
   }
   const body = request.body as Record<string, unknown>;
-  if (typeof body.moviesDir !== "string" || typeof body.musicDir !== "string" ||
-    typeof body.tvRootDir !== "string" ||
-    typeof body.workDir !== "string" || typeof body.opticalDevice !== "string" ||
-    typeof body.lidarrImportDir !== "string" || typeof body.lidarrEnabled !== "boolean") {
-    return reply.code(400).send({ error: "Path check requires Movies, Music, TV root, work, optical drive, and Lidarr settings" });
+  if (typeof body.workDir !== "string" || typeof body.opticalDevice !== "string") {
+    return reply.code(400).send({ error: "Path check requires a work folder and optical drive" });
   }
-
-  const checks = await Promise.all([
-    checkDirectoryPermissions("Movies folder", body.moviesDir, true),
-    checkDirectoryPermissions("Music folder", body.musicDir, !body.lidarrEnabled),
-    checkTvRootDirectory(body.tvRootDir),
-    checkDirectoryPermissions("Temporary work folder", body.workDir, true),
-    ...(body.lidarrEnabled ? [checkDirectoryPermissions("Lidarr downloads/import folder", body.lidarrImportDir, true)] : []),
-    checkOpticalDevice(body.opticalDevice)
-  ]);
+  const checks: Array<Awaited<ReturnType<typeof checkDirectoryPermissions>>> = [];
+  const settings = getSettings();
+  const lidarrEnabled = typeof body.lidarrEnabled === "boolean" ? body.lidarrEnabled : settings.lidarrEnabled;
+  const requestedDestinations = body.outputDestinations;
+  if (outputDestinationsPayloadIsValid(requestedDestinations)) {
+    const routedSettings = { ...settings, outputDestinations: requestedDestinations };
+    const active = requestedDestinations.profiles.find(({ id }) => id === requestedDestinations.activeProfileId)!;
+    for (const media of ["tv", "movies", "music"] as const) {
+      const target = outputTarget(routedSettings, media);
+      const path = target === "sonarr" ? active.sonarr.seriesRoot :
+        target === "radarr" ? active.radarr.movieRoot :
+          target === "lidarr" ? active.lidarr.artistRoot :
+            target === "folder" ? active.folder[media] : outputPath(routedSettings, media);
+      checks.push(media === "tv"
+        ? await checkTvRootDirectory(path)
+        : await checkDirectoryPermissions(`${media} output (${target})`, path, true));
+    }
+  } else if (typeof body.moviesDir === "string" && typeof body.musicDir === "string" &&
+    typeof body.tvRootDir === "string") {
+    checks.push(
+      await checkDirectoryPermissions("Movies folder", body.moviesDir, true),
+      await checkDirectoryPermissions("Music folder", body.musicDir, !lidarrEnabled),
+      await checkTvRootDirectory(body.tvRootDir)
+    );
+  } else {
+    return reply.code(400).send({ error: "Path check requires a valid output profile" });
+  }
+  checks.push(
+    await checkDirectoryPermissions("Temporary work folder", body.workDir, true),
+    await checkOpticalDevice(body.opticalDevice)
+  );
+  if (lidarrEnabled && typeof body.lidarrImportDir === "string") {
+    checks.push(await checkDirectoryPermissions("Lidarr downloads/import folder", body.lidarrImportDir, true));
+  }
   const tvCheck = checks.find((check) => check.name === "TV root folder");
   if (tvCheck && !tvCheck.ok) createTvPathReview(tvCheck.path, tvCheck.message);
   return { ok: checks.every((check) => check.ok), checks };
+});
+
+app.get<{ Querystring: { path?: string } }>("/api/v1/directories", async (request, reply) => {
+  const path = request.query.path ?? "/";
+  if (!validAbsolutePath(path) || path.length > 4096) {
+    return reply.code(400).send({ error: "Directory path must be an absolute path" });
+  }
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    const directories = entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => ({ name: entry.name, path: join(path, entry.name) }))
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, 300);
+    return { path, parentPath: path === sep ? null : dirname(resolve(path)), directories };
+  } catch (error) {
+    return reply.code(400).send({ error: `Cannot browse ${path}: ${error instanceof Error ? error.message : "directory access failed"}` });
+  }
 });
 
 function pathsOverlap(first: string, second: string): boolean {
@@ -1588,6 +1728,12 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     if (typeof body.autoEject !== "boolean") return reply.code(400).send({ error: "autoEject must be a boolean" });
     patch.autoEject = body.autoEject;
   }
+  if ("automationMode" in body) {
+    if (!["full_auto", "regular_auto", "review_based"].includes(String(body.automationMode))) {
+      return reply.code(400).send({ error: "Invalid automation mode" });
+    }
+    patch.automationMode = body.automationMode as AppSettings["automationMode"];
+  }
   if ("tvDetectionEnabled" in body) {
     if (typeof body.tvDetectionEnabled !== "boolean") return reply.code(400).send({ error: "tvDetectionEnabled must be a boolean" });
     patch.tvDetectionEnabled = body.tvDetectionEnabled;
@@ -1716,13 +1862,71 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     }
     patch.logLevel = body.logLevel as AppSettings["logLevel"];
   }
+  if ("libraryMetadata" in body) {
+    if (!isValidLibraryMetadata(body.libraryMetadata)) {
+      return reply.code(400).send({ error: "Library metadata settings contain invalid options or naming templates" });
+    }
+    patch.libraryMetadata = body.libraryMetadata;
+  }
 
-  const effectiveSettings = { ...getSettings(), ...patch };
+  let effectiveSettings = { ...getSettings(), ...patch };
+  if ("outputDestinations" in body) {
+    const requestedDestinations = body.outputDestinations;
+    if (!outputDestinationsPayloadIsValid(requestedDestinations)) {
+      return reply.code(400).send({ error: "Output profiles contain invalid names, routes, or paths" });
+    }
+    const routedSettings = { ...effectiveSettings, outputDestinations: requestedDestinations };
+    const profile = requestedDestinations.profiles.find(({ id }) => id === requestedDestinations.activeProfileId)!;
+    if (outputTarget(routedSettings, "music") === "lidarr" && !effectiveSettings.lidarrEnabled) {
+      return reply.code(400).send({ error: "Enable and configure the Lidarr integration before routing Music to Lidarr" });
+    }
+    for (const media of ["tv", "movies", "music"] as const satisfies readonly OutputMedia[]) {
+      const target = outputTarget(routedSettings, media);
+      let path: string;
+      if (target === "sonarr") path = profile.sonarr.seriesRoot;
+      else if (target === "radarr") path = profile.radarr.movieRoot;
+      else if (target === "lidarr") path = profile.lidarr.artistRoot;
+      else if (target === "folder") path = profile.folder[media];
+      else path = outputPath(routedSettings, media);
+      if (!validAbsolutePath(path)) {
+        return reply.code(400).send({ error: `Configure an absolute output path for ${media} in the active profile` });
+      }
+      try {
+        await ensureWritableDirectory(path);
+      } catch (error) {
+        return reply.code(400).send({
+          error: `${media} output path must be creatable and writable by AutoDisc: ${error instanceof Error ? error.message : "validation failed"}`
+        });
+      }
+    }
+    patch.outputDestinations = requestedDestinations;
+    patch.tvRootDir = outputPath(routedSettings, "tv");
+    patch.moviesDir = outputPath(routedSettings, "movies");
+    patch.musicDir = outputPath(routedSettings, "music");
+  }
+  if (!("outputDestinations" in body) &&
+    (typeof body.moviesDir === "string" || typeof body.tvRootDir === "string" || typeof body.musicDir === "string")) {
+    const destinations = structuredClone(effectiveSettings.outputDestinations);
+    const profile = destinations.profiles.find(({ id }) => id === destinations.activeProfileId);
+    if (profile) {
+      if (profile.routes.movies === "jellyfin" && typeof body.moviesDir === "string") {
+        profile.jellyfin.paths.movies = body.moviesDir;
+      }
+      if (profile.routes.tv === "jellyfin" && typeof body.tvRootDir === "string") {
+        profile.jellyfin.paths.tv = body.tvRootDir;
+      }
+      if (profile.routes.music === "jellyfin" && typeof body.musicDir === "string") {
+        profile.jellyfin.paths.music = body.musicDir;
+      }
+      patch.outputDestinations = destinations;
+    }
+  }
+  effectiveSettings = { ...getSettings(), ...patch };
   if (effectiveSettings.lidarrEnabled) {
     if (!effectiveSettings.lidarrApiKey) return reply.code(400).send({ error: "A Lidarr API key is required when Lidarr integration is enabled" });
     if (!effectiveSettings.musicMetadataEnabled) return reply.code(400).send({ error: "Enable MusicBrainz lookup so Lidarr can match the named album and tracks" });
     if (pathsOverlap(effectiveSettings.musicDir, effectiveSettings.lidarrImportDir)) {
-      return reply.code(400).send({ error: "Lidarr incoming folder must be outside the Jellyfin Music library folder" });
+      return reply.code(400).send({ error: "Lidarr incoming folder must be outside the configured Music library folder" });
     }
     try {
       await validateReadableDirectory(effectiveSettings.musicDir);

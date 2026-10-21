@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null };
+const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null };
 const loginDialog = $("#login-dialog");
 const themeToggle = $("#theme-toggle");
 
@@ -806,6 +806,9 @@ function renderReviewItem(item) {
       if (action.type === "retry" || action.type === "retry-after-correction") {
         return `<button class="button primary review-action" data-action="retry" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
       }
+      if (action.type === "approve-process") {
+        return `<button class="button primary review-action" data-action="approve-process" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
       if (action.type === "open-settings") {
         return `<button class="button secondary review-action" data-action="open-settings">${escapeHtml(action.label)}</button>`;
       }
@@ -835,7 +838,7 @@ function renderReviewItem(item) {
     ...(item.errorDetails || {})
   };
   return `<article class="review-item ${escapeHtml(item.severity)}">
-    <div class="review-heading"><div><span class="review-category">${escapeHtml(reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
+    <div class="review-heading"><div><span class="review-category">${escapeHtml(item.errorDetails?.approvalRequired ? "Disc approval" : reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
       <h3>${escapeHtml(item.title)}</h3><span class="list-sub">${escapeHtml(item.relatedDisc || "Disc not identified")}${item.relatedDrive ? ` · ${escapeHtml(item.relatedDrive)}` : ""} · ${new Date(item.createdAt).toLocaleString()}</span></div>
       <span class="review-status">${escapeHtml(item.status)}</span></div>
     <p>${escapeHtml(item.description)}</p>
@@ -999,15 +1002,32 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["moviesDir", "musicDir", "tvRootDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
+  for (const key of ["workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
+  form.elements.namedItem("automationMode").value = data.settings.automationMode || "regular_auto";
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
   form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
   form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
+  state.outputDestinations = data.settings.outputDestinations;
+  state.legacyOutputPaths = { tv: data.settings.tvRootDir, movies: data.settings.moviesDir, music: data.settings.musicDir };
+  renderOutputProfiles();
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
+  const libraryMetadata = data.settings.libraryMetadata;
+  for (const key of [
+    "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
+    "downloadMusicMetadata", "downloadCastInformation", "downloadRatings", "downloadArtwork",
+    "downloadSeasonArtwork", "downloadEpisodeImages", "downloadFanart", "downloadLogos",
+    "downloadBackdrops", "downloadBanners", "generateNfo"
+  ]) form.elements.namedItem(key).checked = libraryMetadata[key];
+  for (const key of [
+    "nfoFormat", "libraryStructure", "seriesFolderTemplate", "seasonFolderTemplate",
+    "episodeFileTemplate", "movieFolderTemplate", "movieFileTemplate", "artistFolderTemplate",
+    "albumFolderTemplate"
+  ]) form.elements.namedItem(key).value = libraryMetadata[key];
+  updateLibraryTemplateFields(form);
   await loadTvMetadataSettings();
   $("#lidarr-key-status").textContent = data.settings.lidarrApiKeyConfigured
     ? "A Lidarr API key is saved. It is never displayed."
@@ -1018,12 +1038,189 @@ async function loadSettings() {
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
   await refreshLibraryHealth();
+  updateOutputPreview();
   await refreshUpdateStatus();
   const encoders = await api("/api/v1/encoders");
   $("#encoder-capability").textContent = encoders.encoders.error
     ? encoders.encoders.error
     : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
 }
+
+function activeOutputProfile() {
+  return state.outputDestinations?.profiles.find((profile) => profile.id === state.outputDestinations.activeProfileId) ||
+    state.outputDestinations?.profiles[0];
+}
+
+function saveOutputProfileForm() {
+  const profile = activeOutputProfile();
+  if (!profile) return;
+  const form = $("#settings-form");
+  const value = (name) => form.elements.namedItem(name).value.trim();
+  profile.name = $("#output-profile-name").value.trim() || "Output Profile";
+  profile.routes = {
+    tv: value("routeTv"),
+    movies: value("routeMovies"),
+    music: value("routeMusic")
+  };
+  profile.jellyfin = {
+    root: value("jellyfinRoot"),
+    paths: { tv: value("jellyfinTvPath"), movies: value("jellyfinMoviesPath"), music: value("jellyfinMusicPath") }
+  };
+  profile.sonarr = { seriesRoot: value("sonarrSeriesRoot") };
+  profile.radarr = { movieRoot: value("radarrMovieRoot") };
+  profile.lidarr = { artistRoot: value("lidarrArtistRoot") };
+  profile.folder = { tv: value("folderTv"), movies: value("folderMovies"), music: value("folderMusic") };
+}
+
+function renderOutputProfiles() {
+  if (!state.outputDestinations?.profiles?.length) return;
+  const select = $("#output-profile-select");
+  select.innerHTML = state.outputDestinations.profiles.map((profile) =>
+    `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`).join("");
+  select.value = state.outputDestinations.activeProfileId;
+  loadOutputProfileForm();
+}
+
+function loadOutputProfileForm() {
+  const profile = activeOutputProfile();
+  if (!profile) return;
+  const form = $("#settings-form");
+  $("#output-profile-name").value = profile.name;
+  const fields = {
+    routeTv: profile.routes.tv,
+    routeMovies: profile.routes.movies,
+    routeMusic: profile.routes.music,
+    jellyfinRoot: profile.jellyfin.root,
+    jellyfinTvPath: profile.jellyfin.paths.tv,
+    jellyfinMoviesPath: profile.jellyfin.paths.movies,
+    jellyfinMusicPath: profile.jellyfin.paths.music,
+    sonarrSeriesRoot: profile.sonarr.seriesRoot,
+    radarrMovieRoot: profile.radarr.movieRoot,
+    lidarrArtistRoot: profile.lidarr.artistRoot,
+    folderTv: profile.folder.tv,
+    folderMovies: profile.folder.movies,
+    folderMusic: profile.folder.music
+  };
+  for (const [name, value] of Object.entries(fields)) form.elements.namedItem(name).value = value;
+  updateOutputRouteFields();
+}
+
+function updateOutputRouteFields() {
+  const form = $("#settings-form");
+  const routes = {
+    tv: form.elements.namedItem("routeTv").value,
+    movies: form.elements.namedItem("routeMovies").value,
+    music: form.elements.namedItem("routeMusic").value
+  };
+  const targets = Object.values(routes);
+  for (const group of form.querySelectorAll("[data-route-group]")) {
+    group.classList.toggle("hidden", !targets.includes(group.dataset.routeGroup));
+  }
+  $("#settings-form").elements.namedItem("jellyfinRoot").closest("label")
+    .classList.toggle("hidden", !targets.includes("jellyfin"));
+  for (const label of form.querySelectorAll("[data-route-for]")) {
+    label.classList.toggle("hidden", routes[label.dataset.routeFor] !== label.dataset.routeTarget);
+  }
+  const lidarrEnabled = form.elements.namedItem("lidarrEnabled").checked;
+  $("#lidarr-settings-card").classList.toggle("hidden", !lidarrEnabled && routes.music !== "lidarr");
+  updateOutputPreview();
+}
+
+function outputPathForPreview(media) {
+  const form = $("#settings-form");
+  const routeName = media === "tv" ? "routeTv" : media === "movies" ? "routeMovies" : "routeMusic";
+  const target = form.elements.namedItem(routeName).value;
+  const name = (field) => form.elements.namedItem(field).value.trim();
+  if (target === "jellyfin") {
+    const override = name(media === "tv" ? "jellyfinTvPath" : media === "movies" ? "jellyfinMoviesPath" : "jellyfinMusicPath");
+    const root = name("jellyfinRoot");
+    if (override) return override;
+    if (root) return joinPreviewPath(root, media === "tv" ? "TV Shows" : media === "movies" ? "Movies" : "Music");
+    return state.legacyOutputPaths[media] || "(set a library path)";
+  }
+  if (target === "sonarr") return name("sonarrSeriesRoot") || "(set Sonarr series root)";
+  if (target === "radarr") return name("radarrMovieRoot") || "(set Radarr movie root)";
+  if (target === "lidarr") return name("lidarrArtistRoot") || "(set Lidarr artist root)";
+  return name(media === "tv" ? "folderTv" : media === "movies" ? "folderMovies" : "folderMusic") || "(set folder path)";
+}
+
+function joinPreviewPath(base, child) {
+  const separator = base.includes("\\") && !base.includes("/") ? "\\" : "/";
+  return `${base.replace(/[\\/]+$/, "")}${separator}${child}`;
+}
+
+function previewTemplate(template, values) {
+  return template.replace(/\{([^}]+)\}/g, (match, key) => String(values[key] ?? match));
+}
+
+function updateOutputPreview() {
+  const form = $("#settings-form");
+  if (!form || !state.outputDestinations) return;
+  const library = {};
+  for (const key of ["seriesFolderTemplate", "seasonFolderTemplate", "episodeFileTemplate", "movieFolderTemplate", "movieFileTemplate", "artistFolderTemplate", "albumFolderTemplate"]) {
+    const input = form.elements.namedItem(key);
+    if (input) library[key] = input.value;
+  }
+  const sample = { "Series Name": "Example Series", "Movie Title": "Example Movie", Year: 2024, "Season Number:00": "01", Season: "01", "Season:00": "01", Episode: "01", "Episode:00": "01", "Episode Title": "Pilot", Artist: "Example Artist", Album: "Example Album" };
+  const tvBase = outputPathForPreview("tv");
+  const tvSeries = previewTemplate(library.seriesFolderTemplate || "{Series Name} ({Year})", sample);
+  const tvSeason = previewTemplate(library.seasonFolderTemplate || "Season {Season Number:00}", sample);
+  const tvPath = joinPreviewPath(joinPreviewPath(joinPreviewPath(tvBase, tvSeries), tvSeason), previewTemplate(library.episodeFileTemplate || "{Series Name} - S{Season:00}E{Episode:00} - {Episode Title}", sample) + `.${form.elements.namedItem("format").value}`);
+  const movieBase = outputPathForPreview("movies");
+  const movieFolder = previewTemplate(library.movieFolderTemplate || "{Movie Title} ({Year})", sample);
+  const movieName = previewTemplate(library.movieFileTemplate || "{Movie Title} ({Year})", sample);
+  const moviePath = joinPreviewPath(joinPreviewPath(movieBase, movieFolder), `${movieName}.${form.elements.namedItem("format").value}`);
+  const musicBase = outputPathForPreview("music");
+  const artist = previewTemplate(library.artistFolderTemplate || "{Artist}", sample);
+  const album = previewTemplate(library.albumFolderTemplate || "{Album} ({Year})", sample);
+  const musicPath = joinPreviewPath(joinPreviewPath(joinPreviewPath(musicBase, artist), album), "01 - Example Track.flac");
+  const targetLabels = { jellyfin: "Jellyfin", sonarr: "Sonarr-compatible folder", radarr: "Radarr-compatible folder", lidarr: "Lidarr", folder: "Generic folder" };
+  const routeTarget = (media) => form.elements.namedItem(media === "tv" ? "routeTv" : media === "movies" ? "routeMovies" : "routeMusic").value;
+  const rows = [
+    ["TV Series · Example Series", "tv", tvPath],
+    ["Movie · Example Movie", "movies", moviePath],
+    ["Music Album · Example Album", "music", musicPath]
+  ];
+  const importEnabled = form.elements.namedItem("automaticImport").checked;
+  const metadata = [
+    form.elements.namedItem("downloadArtwork").checked ? "Artwork" : "",
+    form.elements.namedItem("generateNfo").checked ? "NFO files" : "",
+    form.elements.namedItem("downloadSeriesMetadata").checked || form.elements.namedItem("downloadMovieMetadata").checked || form.elements.namedItem("downloadMusicMetadata").checked ? "Metadata" : ""
+  ].filter(Boolean);
+  $("#output-preview").innerHTML = rows.map(([label, media, path]) =>
+    `<div class="output-preview-row"><b>${escapeHtml(label)}</b><span>${escapeHtml(path)}</span><small>Publishing mode: ${escapeHtml(targetLabels[routeTarget(media)])} · ${escapeHtml(importEnabled && metadata.length ? metadata.join(", ") : "Metadata import disabled")}</small></div>`
+  ).join("");
+}
+
+async function loadDirectoryPicker(path) {
+  const error = $("#directory-picker-error");
+  const list = $("#directory-picker-list");
+  error.textContent = "";
+  list.textContent = "Loading folders…";
+  try {
+    const result = await api(`/api/v1/directories?path=${encodeURIComponent(path)}`);
+    $("#directory-picker-path").value = result.path;
+    list.innerHTML = [
+      ...(result.parentPath ? [`<button class="directory-choice" type="button" data-directory-path="${escapeHtml(result.parentPath)}">.. (parent folder)</button>`] : []),
+      ...result.directories.map((directory) =>
+        `<button class="directory-choice" type="button" data-directory-path="${escapeHtml(directory.path)}">${escapeHtml(directory.name)}</button>`)
+    ].join("") || '<p class="muted">No visible subfolders.</p>';
+  } catch (cause) {
+    list.textContent = "";
+    error.textContent = cause.message;
+  }
+}
+
+function updateLibraryTemplateFields(form = $("#settings-form")) {
+  const custom = form.elements.namedItem("libraryStructure").value === "custom";
+  for (const input of form.querySelectorAll('[name$="Template"]')) input.disabled = !custom;
+}
+
+$("#settings-form").elements.namedItem("libraryStructure").addEventListener("change", () => {
+  updateLibraryTemplateFields();
+});
+$("#settings-form").addEventListener("input", updateOutputPreview);
+$("#settings-form").addEventListener("change", updateOutputPreview);
 
 async function refreshUpdateStatus() {
   const data = await api("/api/v1/updates/status");
@@ -1257,9 +1454,11 @@ $("#review-list").addEventListener("click", async (event) => {
       container.innerHTML = `<details open><summary>Related job and logs</summary>${job ? `<p>${escapeHtml(job.job.title || job.job.discLabel || job.job.id)} · ${escapeHtml(job.job.status)}</p><pre>${escapeHtml(JSON.stringify(job.timeline, null, 2))}</pre>` : "<p>Related job is no longer available.</p>"}</details>`;
       return;
     }
-    const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" : "dismiss";
+    const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" :
+      action === "approve-process" ? "approve-process" : "dismiss";
     const result = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}/${endpoint}`, { method: "POST" });
-    notify(result.message || `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`);
+    notify(result.message || (action === "approve-process" ? "Disc approved and processing completed." :
+      `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`));
     await loadReviewCentre();
   } catch (error) {
     notify(error.message, true);
@@ -1527,6 +1726,9 @@ document.addEventListener("submit", async (event) => {
       });
     }
     const seasonValue = form.elements.seasonNumber.value;
+    const importedSeries = form.dataset.lookupResult
+      ? JSON.parse(form.dataset.lookupResult).series
+      : null;
     await api(`/api/v1/tv/plans/${encodeURIComponent(form.dataset.planId)}/recovery`, {
       method: "PUT",
       body: JSON.stringify({
@@ -1537,6 +1739,10 @@ document.addEventListener("submit", async (event) => {
         seriesName: form.elements.seriesName.value.trim() || null,
         seasonNumber: seasonValue === "" ? null : Number(seasonValue),
         mappings: [...mappingsByTrack].map(([trackId, episodes]) => ({ trackId, episodes })),
+        ...(importedSeries ? {
+          importedMetadata: { ...(importedSeries.metadata || {}), entityType: importedSeries.entityType },
+          artworkReferences: importedSeries.metadata?.artwork || []
+        } : {}),
         notes: form.elements.notes.value
       })
     });
@@ -1735,14 +1941,97 @@ $("#check-updates").addEventListener("click", async () => {
   }
 });
 
+$("#output-profile-select").addEventListener("change", () => {
+  saveOutputProfileForm();
+  state.outputDestinations.activeProfileId = $("#output-profile-select").value;
+  loadOutputProfileForm();
+});
+
+$("#output-profile-name").addEventListener("input", () => {
+  const profile = activeOutputProfile();
+  if (!profile) return;
+  profile.name = $("#output-profile-name").value.trim() || "Output Profile";
+  const option = [...$("#output-profile-select").options].find((item) => item.value === profile.id);
+  if (option) option.textContent = profile.name;
+});
+
+$("#output-profile-new").addEventListener("click", () => {
+  saveOutputProfileForm();
+  const id = `profile-${Date.now()}`;
+  const active = activeOutputProfile();
+  const profile = active ? structuredClone(active) : null;
+  if (!profile) return;
+  profile.id = id;
+  profile.name = "New Profile";
+  state.outputDestinations.profiles.push(profile);
+  state.outputDestinations.activeProfileId = id;
+  renderOutputProfiles();
+  $("#output-profile-name").focus();
+});
+
+$("#output-profile-delete").addEventListener("click", () => {
+  if (state.outputDestinations.profiles.length <= 1) {
+    notify("At least one output profile is required.", true);
+    return;
+  }
+  state.outputDestinations.profiles = state.outputDestinations.profiles
+    .filter((profile) => profile.id !== state.outputDestinations.activeProfileId);
+  state.outputDestinations.activeProfileId = state.outputDestinations.profiles[0].id;
+  renderOutputProfiles();
+});
+
+["routeTv", "routeMovies", "routeMusic"].forEach((name) =>
+  $("#settings-form").elements.namedItem(name).addEventListener("change", updateOutputRouteFields));
+$("#settings-form").elements.namedItem("lidarrEnabled").addEventListener("change", updateOutputRouteFields);
+
+for (const name of [
+  "jellyfinRoot", "jellyfinTvPath", "jellyfinMoviesPath", "jellyfinMusicPath",
+  "sonarrSeriesRoot", "radarrMovieRoot", "lidarrArtistRoot",
+  "folderTv", "folderMovies", "folderMusic"
+]) {
+  const input = $("#settings-form").elements.namedItem(name);
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.className = "button secondary directory-browse";
+  browse.dataset.browseFor = name;
+  browse.textContent = "Browse";
+  input.insertAdjacentElement("afterend", browse);
+}
+
+$("#settings-form").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-browse-for]");
+  if (!button) return;
+  state.directoryPickerTarget = button.dataset.browseFor;
+  const currentPath = $("#settings-form").elements.namedItem(state.directoryPickerTarget).value || "/";
+  $("#directory-picker").showModal();
+  loadDirectoryPicker(currentPath);
+});
+
+$("#directory-picker-close").addEventListener("click", () => $("#directory-picker").close());
+$("#directory-picker-go").addEventListener("click", () => loadDirectoryPicker($("#directory-picker-path").value));
+$("#directory-picker-path").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    loadDirectoryPicker(event.currentTarget.value);
+  }
+});
+$("#directory-picker-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-directory-path]");
+  if (button) loadDirectoryPicker(button.dataset.directoryPath);
+});
+$("#directory-picker-select").addEventListener("click", () => {
+  if (!state.directoryPickerTarget) return;
+  $("#settings-form").elements.namedItem(state.directoryPickerTarget).value = $("#directory-picker-path").value;
+  $("#directory-picker").close();
+});
+
 $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const values = new FormData(form);
+  saveOutputProfileForm();
   const patch = {
-    moviesDir: values.get("moviesDir"),
-    musicDir: values.get("musicDir"),
-    tvRootDir: values.get("tvRootDir"),
+    outputDestinations: state.outputDestinations,
     workDir: values.get("workDir"),
     opticalDevice: values.get("opticalDevice"),
     format: values.get("format"),
@@ -1750,9 +2039,36 @@ $("#settings-form").addEventListener("submit", async (event) => {
     preset: values.get("preset"),
     encoder: values.get("encoder"),
     autoEject: form.elements.namedItem("autoEject").checked,
+    automationMode: values.get("automationMode"),
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
     musicBrainzContactEmail: values.get("musicBrainzContactEmail"),
+    libraryMetadata: {
+      automaticImport: form.elements.namedItem("automaticImport").checked,
+      downloadSeriesMetadata: form.elements.namedItem("downloadSeriesMetadata").checked,
+      downloadEpisodeMetadata: form.elements.namedItem("downloadEpisodeMetadata").checked,
+      downloadMovieMetadata: form.elements.namedItem("downloadMovieMetadata").checked,
+      downloadMusicMetadata: form.elements.namedItem("downloadMusicMetadata").checked,
+      downloadCastInformation: form.elements.namedItem("downloadCastInformation").checked,
+      downloadRatings: form.elements.namedItem("downloadRatings").checked,
+      downloadArtwork: form.elements.namedItem("downloadArtwork").checked,
+      downloadSeasonArtwork: form.elements.namedItem("downloadSeasonArtwork").checked,
+      downloadEpisodeImages: form.elements.namedItem("downloadEpisodeImages").checked,
+      downloadFanart: form.elements.namedItem("downloadFanart").checked,
+      downloadLogos: form.elements.namedItem("downloadLogos").checked,
+      downloadBackdrops: form.elements.namedItem("downloadBackdrops").checked,
+      downloadBanners: form.elements.namedItem("downloadBanners").checked,
+      generateNfo: form.elements.namedItem("generateNfo").checked,
+      nfoFormat: values.get("nfoFormat"),
+      libraryStructure: values.get("libraryStructure"),
+      seriesFolderTemplate: form.elements.namedItem("seriesFolderTemplate").value,
+      seasonFolderTemplate: form.elements.namedItem("seasonFolderTemplate").value,
+      episodeFileTemplate: form.elements.namedItem("episodeFileTemplate").value,
+      movieFolderTemplate: form.elements.namedItem("movieFolderTemplate").value,
+      movieFileTemplate: form.elements.namedItem("movieFileTemplate").value,
+      artistFolderTemplate: form.elements.namedItem("artistFolderTemplate").value,
+      albumFolderTemplate: form.elements.namedItem("albumFolderTemplate").value
+    },
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
@@ -1765,8 +2081,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
       [...form.querySelectorAll(".tv-metadata-provider-enabled")].map((input) =>
         [input.dataset.providerId, input.checked])
     ),
-    lidarrUrl: values.get("lidarrUrl"),
-    lidarrImportDir: values.get("lidarrImportDir"),
     metadataProvider: "tmdb",
     logLevel: values.get("logLevel")
   };
@@ -1778,6 +2092,8 @@ $("#settings-form").addEventListener("submit", async (event) => {
     else if (input.value) providerApiKeys[providerId] = input.value;
   }
   patch.tvMetadataProviderApiKeys = providerApiKeys;
+  if (values.get("lidarrUrl") || patch.lidarrEnabled) patch.lidarrUrl = values.get("lidarrUrl");
+  if (values.get("lidarrImportDir") || patch.lidarrEnabled) patch.lidarrImportDir = values.get("lidarrImportDir");
   if (values.get("metadataApiKey")) patch.metadataApiKey = values.get("metadataApiKey");
   if (form.elements.namedItem("clearMetadataKey").checked) patch.metadataApiKey = "";
   if (values.get("lidarrApiKey")) patch.lidarrApiKey = values.get("lidarrApiKey");
@@ -1785,6 +2101,15 @@ $("#settings-form").addEventListener("submit", async (event) => {
   if (values.get("adminPassword")) patch.adminPassword = values.get("adminPassword");
   try {
     await api("/api/v1/settings", { method: "PUT", body: JSON.stringify(patch) });
+    const savedSettings = await api("/api/v1/settings");
+    state.outputDestinations = savedSettings.settings.outputDestinations;
+    state.legacyOutputPaths = {
+      tv: savedSettings.settings.tvRootDir,
+      movies: savedSettings.settings.moviesDir,
+      music: savedSettings.settings.musicDir
+    };
+      renderOutputProfiles();
+    await refreshLibraryHealth();
     form.elements.namedItem("adminPassword").value = "";
     form.elements.namedItem("metadataApiKey").value = "";
     form.elements.namedItem("clearMetadataKey").checked = false;
@@ -1810,6 +2135,7 @@ $("#check-paths").addEventListener("click", async () => {
   const status = $("#paths-status");
   const form = $("#settings-form");
   const values = new FormData(form);
+  saveOutputProfileForm();
   button.disabled = true;
   status.classList.remove("hidden");
   status.textContent = "Checking configured folders and optical drive permissions…";
@@ -1817,9 +2143,7 @@ $("#check-paths").addEventListener("click", async () => {
     const result = await api("/api/v1/paths/check", {
       method: "POST",
       body: JSON.stringify({
-        moviesDir: values.get("moviesDir"),
-        musicDir: values.get("musicDir"),
-        tvRootDir: values.get("tvRootDir"),
+        outputDestinations: state.outputDestinations,
         workDir: values.get("workDir"),
         opticalDevice: values.get("opticalDevice"),
         lidarrImportDir: values.get("lidarrImportDir"),

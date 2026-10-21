@@ -24,6 +24,8 @@ interface RecoveryRow {
   series_name: string | null;
   season_number: number | null;
   mappings_json: string;
+  imported_metadata_json: string;
+  artwork_references_json: string;
   notes: string | null;
   updated_at: string;
 }
@@ -37,6 +39,18 @@ function mapRow(row: RecoveryRow | undefined): DiscRecovery | undefined {
     throw new Error(`Stored disc recovery mappings are invalid for ${row.fingerprint}`, { cause: error });
   }
   if (!Array.isArray(mappings)) throw new Error(`Stored disc recovery mappings are invalid for ${row.fingerprint}`);
+  let importedMetadata: Record<string, unknown> | null;
+  let artworkReferences: DiscRecovery["artworkReferences"];
+  try {
+    importedMetadata = JSON.parse(row.imported_metadata_json) as Record<string, unknown>;
+    artworkReferences = JSON.parse(row.artwork_references_json) as DiscRecovery["artworkReferences"];
+  } catch (error) {
+    throw new Error(`Stored disc recovery imported metadata is invalid for ${row.fingerprint}`, { cause: error });
+  }
+  if ((importedMetadata !== null && (Array.isArray(importedMetadata) || typeof importedMetadata !== "object")) ||
+    !Array.isArray(artworkReferences)) {
+    throw new Error(`Stored disc recovery imported metadata is invalid for ${row.fingerprint}`);
+  }
   return {
     fingerprint: row.fingerprint,
     detectedDiscType: row.detected_disc_type,
@@ -51,6 +65,8 @@ function mapRow(row: RecoveryRow | undefined): DiscRecovery | undefined {
     seriesName: row.series_name,
     seasonNumber: row.season_number,
     mappings,
+    importedMetadata,
+    artworkReferences,
     notes: row.notes,
     updatedAt: row.updated_at
   };
@@ -80,6 +96,19 @@ function validatePatch(patch: DiscRecoveryUpdate): void {
   }
   if (patch.notes !== undefined && patch.notes !== null && patch.notes.length > 2000) {
     throw new Error("Notes must not exceed 2000 characters");
+  }
+  if (patch.importedMetadata !== undefined && patch.importedMetadata !== null) {
+    if (typeof patch.importedMetadata !== "object" || Array.isArray(patch.importedMetadata) ||
+      Buffer.byteLength(JSON.stringify(patch.importedMetadata), "utf8") > 64 * 1024) {
+      throw new Error("Imported metadata must be an object no larger than 64 KB");
+    }
+  }
+  if (patch.artworkReferences !== undefined) {
+    const allowedKinds = new Set(["poster", "backdrop", "fanart", "logo", "banner", "season-poster", "episode-image", "disc", "artist", "album"]);
+    if (patch.artworkReferences.length > 20 || patch.artworkReferences.some((asset) =>
+      !allowedKinds.has(asset.kind) || asset.url.length > 2048 || !asset.url.startsWith("https://"))) {
+      throw new Error("Artwork references contain invalid values");
+    }
   }
   if (patch.mappings !== undefined) {
     if (patch.mappings.length > 100) throw new Error("Episode mappings must not exceed 100 tracks");
@@ -157,17 +186,21 @@ export class SqliteDiscRecoveryRepository implements DiscRecoveryRepository {
       ...(patch.seriesName === undefined ? {} : { seriesName: patch.seriesName?.trim() || null }),
       ...(patch.seasonNumber === undefined ? {} : { seasonNumber: patch.seasonNumber }),
       ...(patch.mappings === undefined ? {} : { mappings: patch.mappings }),
+      ...(patch.importedMetadata === undefined ? {} : { importedMetadata: patch.importedMetadata }),
+      ...(patch.artworkReferences === undefined ? {} : { artworkReferences: patch.artworkReferences }),
       ...(patch.notes === undefined ? {} : { notes: patch.notes?.trim() || null }),
       updatedAt
     };
     this.db.prepare(`
       UPDATE disc_recovery SET final_disc_type = ?, final_media_type = ?,
         disc_type_overridden = ?, media_type_overridden = ?, metadata_provider = ?, provider_id = ?,
-        series_name = ?, season_number = ?, mappings_json = ?, notes = ?, updated_at = ?
+        series_name = ?, season_number = ?, mappings_json = ?, imported_metadata_json = ?,
+        artwork_references_json = ?, notes = ?, updated_at = ?
       WHERE fingerprint = ?
     `).run(updated.finalDiscType, updated.finalMediaType, Number(updated.discTypeOverridden),
       Number(updated.mediaTypeOverridden), updated.metadataProvider, updated.providerId, updated.seriesName,
-      updated.seasonNumber, JSON.stringify(updated.mappings), updated.notes, updatedAt, fingerprint);
+      updated.seasonNumber, JSON.stringify(updated.mappings), JSON.stringify(updated.importedMetadata ?? {}),
+      JSON.stringify(updated.artworkReferences), updated.notes, updatedAt, fingerprint);
     return this.get(fingerprint);
   }
 

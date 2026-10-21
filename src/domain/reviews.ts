@@ -14,6 +14,7 @@ export type ReviewStatus = "active" | "retrying" | "resolved" | "dismissed";
 export type ReviewActionType =
   | "retry"
   | "retry-after-correction"
+  | "approve-process"
   | "open-settings"
   | "enter-metadata"
   | "view-job"

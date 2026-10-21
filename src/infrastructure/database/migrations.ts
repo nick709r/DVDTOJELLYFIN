@@ -342,4 +342,43 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (19, ?)")
     .run(new Date().toISOString());
+  const recoveryColumns = db.pragma("table_info(disc_recovery)") as Array<{ name: string }>;
+  if (!recoveryColumns.some((column) => column.name === "imported_metadata_json")) {
+    db.exec("ALTER TABLE disc_recovery ADD COLUMN imported_metadata_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!recoveryColumns.some((column) => column.name === "artwork_references_json")) {
+    db.exec("ALTER TABLE disc_recovery ADD COLUMN artwork_references_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (20, ?)")
+    .run(new Date().toISOString());
+  const savedDestinations = db.prepare("SELECT value FROM settings WHERE key = 'outputDestinations'").get() as
+    { value: string } | undefined;
+  if (!savedDestinations) {
+    const savedSetting = (key: string): unknown => {
+      const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+      return row ? JSON.parse(row.value) as unknown : undefined;
+    };
+    const setting = (key: string, fallback: string): string => {
+      const value = savedSetting(key);
+      return typeof value === "string" ? value : fallback;
+    };
+    const profile = JSON.parse(JSON.stringify(defaults.outputDestinations.profiles[0])) as
+      typeof defaults.outputDestinations.profiles[number];
+    profile.jellyfin.paths = {
+      tv: setting("tvRootDir", defaults.tvRootDir),
+      movies: setting("moviesDir", defaults.moviesDir),
+      music: setting("musicDir", defaults.musicDir)
+    };
+    const lidarrWasEnabled = savedSetting("lidarrEnabled") === true;
+    if (lidarrWasEnabled) profile.routes.music = "lidarr";
+    const outputDestinations = { activeProfileId: profile.id, profiles: [profile] };
+    db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('outputDestinations', ?, ?)")
+      .run(JSON.stringify(outputDestinations), new Date().toISOString());
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (21, ?)")
+    .run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('automationMode', ?, ?)")
+    .run(JSON.stringify("regular_auto"), new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (22, ?)")
+    .run(new Date().toISOString());
 }

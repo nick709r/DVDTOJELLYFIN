@@ -53,6 +53,8 @@ test("disc recovery API preserves detections and gives saved manual values prece
         seriesName: "Example Show",
         seasonNumber: 1,
         notes: "Manual identification",
+        importedMetadata: { title: "Example Show", year: 2020, overview: "Series details" },
+        artworkReferences: [{ kind: "poster", url: "https://image.tmdb.org/t/p/original/poster.jpg" }],
         mappings: [{
           trackId: "1",
           episodes: [{
@@ -73,8 +75,11 @@ test("disc recovery API preserves detections and gives saved manual values prece
     assert.equal(update.json().recovery.mediaTypeOverridden, true);
     assert.equal(update.json().recovery.mappings[0].episodes[0].airDate, "2020-01-01");
     assert.equal(update.json().recovery.mappings[0].episodes[0].notes, "User-verified episode");
+    assert.equal(update.json().recovery.importedMetadata.overview, "Series details");
+    assert.equal(update.json().recovery.artworkReferences[0].kind, "poster");
     const persisted = await inject({ method: "GET", url: "/api/v1/discs/recovery/fingerprint-recovery" });
     assert.deepEqual(persisted.json().recovery.mappings, update.json().recovery.mappings);
+    assert.deepEqual(persisted.json().recovery.artworkReferences, update.json().recovery.artworkReferences);
 
     const invalid = await inject({
       method: "PUT",
@@ -98,6 +103,12 @@ test("disc recovery API preserves detections and gives saved manual values prece
       }
     });
     assert.equal(invalidAirDate.statusCode, 400);
+    const invalidArtwork = await inject({
+      method: "PUT",
+      url: "/api/v1/discs/recovery/fingerprint-recovery",
+      payload: { artworkReferences: [{ kind: "poster", url: "https://example.invalid/poster.jpg" }] }
+    });
+    assert.equal(invalidArtwork.statusCode, 400);
 
     const manualLookup = await inject({
       method: "POST",

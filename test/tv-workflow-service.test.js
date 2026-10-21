@@ -385,7 +385,8 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
   const jobs = {
     getSettings: () => ({
       workDir, tvRootDir, moviesDir: path.join(root, "Movies"),
-      tvDetectionEnabled: false, autoEject: false, format: "mkv"
+      tvDetectionEnabled: false, autoEject: false, format: "mkv",
+      libraryMetadata: defaultSettings.libraryMetadata
     }),
     lastDiscFingerprint: () => null,
     recordDiscDetection: () => recovery,
@@ -439,6 +440,9 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
     assert.equal(jobCalls.some(([kind]) => kind === "fail" || kind === "review"), false);
     await access(path.join(tvRootDir, "Example Show", "Season 01", "Example Show - S01E01 - Pilot.mkv"));
     await access(path.join(tvRootDir, "Example Show", "Season 01", "Example Show - S01E02 - Second.mkv"));
+    await access(path.join(tvRootDir, "Example Show", "tvshow.nfo"));
+    await access(path.join(tvRootDir, "Example Show", "Season 01", "season.nfo"));
+    await access(path.join(tvRootDir, "Example Show", "Season 01", "Example Show - S01E01 - Pilot.nfo"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

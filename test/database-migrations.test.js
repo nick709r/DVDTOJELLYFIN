@@ -47,7 +47,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 19);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 22);
   assert.deepEqual(
     db.pragma("table_info(review_jobs)").map((column) => column.name),
     ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",
@@ -59,7 +59,7 @@ test("database migrations preserve legacy job history and add current columns", 
     db.pragma("table_info(disc_recovery)").map((column) => column.name),
     ["fingerprint", "detected_disc_type", "final_disc_type", "detected_media_type", "detected_confidence",
       "final_media_type", "disc_type_overridden", "media_type_overridden", "metadata_provider", "provider_id", "series_name",
-      "season_number", "mappings_json", "notes", "updated_at"]
+      "season_number", "mappings_json", "notes", "updated_at", "imported_metadata_json", "artwork_references_json"]
   );
   const recovery = createSqliteRepositories(db, defaultSettings).discRecovery;
   recovery.recordDetection("recovery-disc", "dvd", "movie");
@@ -72,13 +72,20 @@ test("database migrations preserve legacy job history and add current columns", 
     mappings: [{
       trackId: "1",
       episodes: [{ seriesId: "manual:Example Show", seasonNumber: 1, episodeNumber: 1, title: "Pilot" }]
-    }]
+    }],
+    importedMetadata: { title: "Example Show", year: 2024 },
+    artworkReferences: [{ kind: "poster", url: "https://image.tmdb.org/t/p/original/poster.jpg" }]
   });
   assert.equal(updatedRecovery.detectedMediaType, "movie");
   assert.equal(updatedRecovery.finalMediaType, "tv_series");
   assert.equal(updatedRecovery.mediaTypeOverridden, true);
   assert.equal(updatedRecovery.mappings[0].episodes[0].title, "Pilot");
+  assert.equal(updatedRecovery.importedMetadata.year, 2024);
+  assert.equal(updatedRecovery.artworkReferences[0].kind, "poster");
   assert.throws(() => recovery.update("recovery-disc", { seasonNumber: 101 }), /Season number/);
+  assert.throws(() => recovery.update("recovery-disc", {
+    artworkReferences: [{ kind: "poster", url: "http://example.invalid/poster.jpg" }]
+  }), /Artwork references/);
   db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
     "tvStoreAnalysisEvidence", "true", "2026-01-01T00:00:00.000Z"
   );
@@ -105,6 +112,31 @@ test("setup state repository completes once and migrates legacy administrator cr
   assert.equal(repositories.setup.authenticate("admin", "wrong password"), false);
   assert.throws(() => repositories.setup.complete("other-admin", "salt", "hash"), /already been completed/);
   repositories.close();
+});
+
+test("destination migration preserves saved legacy library paths and routes existing Lidarr users", () => {
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)");
+  const insert = db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)");
+  const updatedAt = new Date().toISOString();
+  insert.run("moviesDir", JSON.stringify("/legacy/Movies"), updatedAt);
+  insert.run("tvRootDir", JSON.stringify("/legacy/TV"), updatedAt);
+  insert.run("musicDir", JSON.stringify("/legacy/Music"), updatedAt);
+  insert.run("lidarrEnabled", JSON.stringify(true), updatedAt);
+
+  migrateDatabase(db, defaultSettings);
+  const destinations = JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'outputDestinations'").get().value);
+  const profile = destinations.profiles[0];
+  assert.equal(destinations.activeProfileId, profile.id);
+  assert.deepEqual(profile.jellyfin.paths, {
+    tv: "/legacy/TV",
+    movies: "/legacy/Movies",
+    music: "/legacy/Music"
+  });
+  assert.equal(profile.routes.music, "lidarr");
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 22);
+  db.close();
 });
 
 test("SQLite repository adapters preserve settings, job, history, event and recovery contracts", () => {

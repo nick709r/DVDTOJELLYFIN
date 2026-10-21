@@ -11,6 +11,7 @@ import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
 import { createMovieOutput } from "../../movie-output.js";
+import { artworkAssets, artworkFromMetadata, downloadArtwork, libraryTemplate, metadataDocument, renderLibraryTemplate, writeMetadataBundle, writeNfo } from "../../library-metadata.js";
 import {
   assessTvDisc,
   summarizeTvPlan,
@@ -18,6 +19,7 @@ import {
 } from "../../application/tv-workflow-service.js";
 import type { ReviewJob } from "../../domain/review-jobs.js";
 import type { ReviewResumeStage } from "../../domain/review-jobs.js";
+import type { MetadataCandidate, MetadataResult } from "../../domain/metadata.js";
 import type { ReviewWorkspaceService } from "../../application/review-workspace-service.js";
 import type { JobContext } from "../../application/job-coordinator.js";
 import type { DiscRecovery, EpisodeMapping } from "../../domain/disc-recovery.js";
@@ -35,19 +37,25 @@ async function assertWritableDirectory(path: string, reserveBytes: number): Prom
   }
 }
 
-function episodeOutputName(seriesName: string, mapping: EpisodeMapping): string {
+function episodeOutputName(
+  seriesName: string,
+  mapping: EpisodeMapping,
+  template: string
+  ): string {
     const episodes = [...mapping.episodes].sort((left, right) =>
       left.seasonNumber - right.seasonNumber || left.episodeNumber - right.episodeNumber);
     const first = episodes[0];
     if (!first || episodes.some((episode) => episode.seasonNumber !== first.seasonNumber)) {
       throw new Error(`Track ${mapping.trackId} must map to episodes from one season`);
     }
-    const season = String(first.seasonNumber).padStart(2, "0");
     const episodeNumbers = episodes.map((episode) => String(episode.episodeNumber).padStart(2, "0"));
-    const episodePart = episodeNumbers.length === 1 ? `E${episodeNumbers[0]}` :
-      `E${episodeNumbers[0]}-${episodeNumbers.slice(1).join("-")}`;
     const title = episodes.map((episode) => episode.title?.trim()).find(Boolean);
-    return safeTitle(`${seriesName} - S${season}${episodePart}${title ? ` - ${title}` : ""}`);
+    return renderLibraryTemplate(template, {
+      "Series Name": seriesName,
+      Season: first.seasonNumber,
+      Episode: episodeNumbers.length === 1 ? first.episodeNumber : episodeNumbers.join("-"),
+      "Episode Title": title ?? ""
+    });
   }
 
 async function processMappedTvEpisodes(
@@ -82,8 +90,16 @@ async function processMappedTvEpisodes(
     if (!seriesName) throw new Error("TV series name is required before episode processing");
 
     const workDir = join(settings.workDir, job.id);
-    const seriesDir = join(settings.tvRootDir, safeTitle(seriesName));
+    const metadataSettings = settings.libraryMetadata;
+    const importedMetadata = recovery.importedMetadata ?? {};
+    const importedYear = importedMetadata.year;
+    const seriesFolder = renderLibraryTemplate(libraryTemplate(metadataSettings, "seriesFolderTemplate"), {
+      "Series Name": seriesName,
+      Year: typeof importedYear === "string" || typeof importedYear === "number" ? importedYear : undefined
+    });
+    const seriesDir = join(settings.tvRootDir, seriesFolder);
     const createdOutputs: string[] = [];
+    const metadataTasks: Array<() => Promise<void>> = [];
     let totalOutputBytes = 0;
     let failureMessage: string | undefined;
     try {
@@ -91,13 +107,64 @@ async function processMappedTvEpisodes(
       await ensureWritable(settings.tvRootDir, minimumOutputBytes);
       await mkdir(workDir, { recursive: true, mode: 0o750 });
       await mkdir(seriesDir, { recursive: true, mode: 0o750 });
+      if (metadataSettings.downloadSeriesMetadata || metadataSettings.generateNfo) {
+        metadataTasks.push(async () => {
+          try {
+          const seriesMetadata = metadataDocument(seriesName, recovery.metadataProvider,
+            recovery.providerId ?? undefined, metadataSettings.downloadSeriesMetadata ? importedMetadata : {});
+          const artwork = artworkAssets(recovery.artworkReferences).filter((asset) =>
+            asset.kind !== "season-poster" && asset.kind !== "episode-image");
+          await writeMetadataBundle(seriesDir, "series", seriesMetadata,
+            metadataSettings.automaticImport && metadataSettings.downloadSeriesMetadata ? artwork : [],
+            metadataSettings, { nfoFileName: "tvshow.nfo" });
+          } catch (error) {
+            log("warn", "metadata", "TV series metadata or artwork could not be fully written", {
+              jobId: job.id,
+              error: error instanceof Error ? error.message : "unknown metadata write failure"
+            });
+          }
+        });
+      }
       for (const [index, { item, mapping }] of selected.entries()) {
         job.throwIfCancelled();
-        const baseName = episodeOutputName(seriesName, mapping);
+        const baseName = episodeOutputName(seriesName, mapping,
+          libraryTemplate(metadataSettings, "episodeFileTemplate"));
         const seasonNumber = mapping.episodes[0]?.seasonNumber;
         if (seasonNumber === undefined) throw new Error(`Track ${item.id} has no season assignment`);
-        const seasonDir = join(seriesDir, `Season ${String(seasonNumber).padStart(2, "0")}`);
+        const seasonName = renderLibraryTemplate(libraryTemplate(metadataSettings, "seasonFolderTemplate"), {
+          "Season Number": seasonNumber,
+          Season: seasonNumber
+        });
+        const seasonDir = join(seriesDir, seasonName);
         await mkdir(seasonDir, { recursive: true, mode: 0o750 });
+        if (metadataSettings.automaticImport && metadataSettings.downloadSeriesMetadata) {
+          metadataTasks.push(async () => {
+            try {
+            const seasonArtwork = artworkAssets(recovery.artworkReferences).filter((asset) => asset.kind === "season-poster");
+            await downloadArtwork(seasonDir, seasonArtwork, metadataSettings);
+            } catch (error) {
+              log("warn", "metadata", "TV season artwork could not be fully written", {
+                jobId: job.id, seasonNumber, error: error instanceof Error ? error.message : "unknown artwork failure"
+              });
+            }
+          });
+        }
+        if (metadataSettings.generateNfo) {
+          metadataTasks.push(async () => {
+            try {
+            await writeNfo(seasonDir, "season.nfo", "season", {
+              title: seasonName,
+              season: seasonNumber,
+              provider: recovery.metadataProvider,
+              providerId: recovery.providerId
+            }, metadataSettings);
+            } catch (error) {
+              log("warn", "metadata", "TV season NFO could not be written", {
+                jobId: job.id, seasonNumber, error: error instanceof Error ? error.message : "unknown write failure"
+              });
+            }
+          });
+        }
         const targetPath = join(seasonDir, `${baseName}.${settings.format}`);
         const collision = await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return false;
@@ -134,6 +201,29 @@ async function processMappedTvEpisodes(
         createdOutputs.push(targetPath);
         const output = await stat(targetPath);
         if (output.size < 1024) throw new Error(`Published TV episode failed size validation: ${targetPath}`);
+        if (metadataSettings.downloadEpisodeMetadata || metadataSettings.generateNfo) {
+          metadataTasks.push(async () => {
+            try {
+            const firstEpisode = [...mapping.episodes].sort((left, right) =>
+              left.seasonNumber - right.seasonNumber || left.episodeNumber - right.episodeNumber)[0];
+            const episodeMetadata = metadataDocument(firstEpisode?.title ?? baseName,
+              recovery.metadataProvider, recovery.providerId ?? undefined, importedMetadata);
+            await writeNfo(seasonDir, `${baseName}.nfo`, "episode", {
+              ...episodeMetadata,
+              ...(firstEpisode ? {
+                season: firstEpisode.seasonNumber,
+                episode: firstEpisode.episodeNumber,
+                ...(firstEpisode.airDate ? { airDate: firstEpisode.airDate } : {}),
+                ...(firstEpisode.notes ? { overview: firstEpisode.notes } : {})
+              } : {})
+            }, metadataSettings);
+            } catch (error) {
+              log("warn", "metadata", "TV episode NFO could not be written", {
+                jobId: job.id, trackId: item.id, error: error instanceof Error ? error.message : "unknown write failure"
+              });
+            }
+          });
+        }
         totalOutputBytes += encoded.outputBytes;
         jobs.update(job, {
           title: seriesName,
@@ -146,6 +236,7 @@ async function processMappedTvEpisodes(
         jobs.record(job, "tv-episode-published", "info",
           `Published ${baseName}.${settings.format} for disc track ${item.id}`);
       }
+      for (const writeMetadata of metadataTasks) await writeMetadata();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "TV episode processing failed";
       const cleanupFailures: string[] = [];
@@ -171,7 +262,7 @@ async function processMappedTvEpisodes(
     }
     if (failureMessage) throw new Error(failureMessage);
     jobs.complete(job, fingerprint);
-    if (settings.autoEject) {
+    if (settings.autoEject || settings.automationMode === "full_auto") {
       try {
         await ejectDisc(devicePath);
         jobs.record(job, "eject", "info", "Disc ejected");
@@ -441,14 +532,60 @@ async function processMappedTvEpisodes(
         input = reviewWorkspace.mediaPath;
       }
 
-      const title = await metadata.resolve({ entityType: "movie", query: info.label || selectedTitle.name }, signal);
+      let title: MetadataResult;
+      let restoredMovieMetadata = false;
+      if (recovery.metadataProvider === "tmdb" && recovery.providerId &&
+        recovery.importedMetadata?.entityType === "movie" &&
+        typeof recovery.importedMetadata.title === "string") {
+        const recoveredCandidate: MetadataCandidate = {
+          id: recovery.providerId,
+          providerId: "metadata.tmdb.movie",
+          entityType: "movie",
+          title: recovery.importedMetadata.title,
+          confidence: 1,
+          metadata: recovery.importedMetadata,
+          identifiers: { tmdbMovieId: recovery.providerId }
+        };
+        title = { selected: recoveredCandidate, candidates: [recoveredCandidate], providerFailures: [] };
+        restoredMovieMetadata = true;
+      } else {
+        title = await metadata.resolve({ entityType: "movie", query: info.label || selectedTitle.name }, signal);
+      }
       for (const providerFailure of title.providerFailures) {
         log("warn", "metadata", providerFailure.message, { providerId: providerFailure.providerId });
       }
       if (settings.metadataEnabled && !title.selected && title.providerFailures.length > 0) {
         throw new Error(`Metadata lookup failed: ${title.providerFailures.map((item) => item.message).join("; ")}`);
       }
-      const resolvedTitle = title.selected?.title ??
+      let selectedMetadata = title.selected;
+      if (selectedMetadata && !restoredMovieMetadata && settings.libraryMetadata.automaticImport &&
+        settings.libraryMetadata.downloadMovieMetadata) {
+        try {
+          selectedMetadata = await metadata.enrich(selectedMetadata, signal);
+        } catch (error) {
+          log("warn", "metadata", "Could not import complete movie metadata; continuing with available identification data", {
+            providerId: selectedMetadata.providerId,
+            error: error instanceof Error ? error.message : "unknown metadata import failure"
+          });
+        }
+      }
+      if (selectedMetadata && !restoredMovieMetadata) {
+        const providerId = selectedMetadata.identifiers?.tmdbMovieId ?? selectedMetadata.id;
+        const importedMetadata = { ...selectedMetadata.metadata, entityType: "movie" };
+        jobs.updateDiscRecovery(fingerprint, {
+          metadataProvider: "tmdb",
+          providerId,
+          importedMetadata,
+          artworkReferences: artworkFromMetadata(importedMetadata)
+        });
+      }
+      const metadataValues = selectedMetadata?.metadata ?? {};
+      const movieTitle = typeof metadataValues.title === "string" ? metadataValues.title : selectedMetadata?.title ??
+        (info.label.trim() || selectedTitle.name || `Unknown Title ${new Date().toISOString().slice(0, 10)}`);
+      const movieYear = typeof metadataValues.year === "string" || typeof metadataValues.year === "number"
+        ? metadataValues.year
+        : undefined;
+      const resolvedTitle = selectedMetadata?.title ??
         (info.label.trim() || selectedTitle.name || `Unknown Title ${new Date().toISOString().slice(0, 10)}`);
       const cleanTitle = safeTitle(resolvedTitle);
       if (reviewWorkspace) await this.reviewWorkspaces?.updateMetadata(id, { title: cleanTitle });
@@ -459,7 +596,15 @@ async function processMappedTvEpisodes(
       resumeStage = "naming";
       jobs.step(context, { id: "convert-media", status: "converting", message: "Converting with FFmpeg" });
       notifyStatus();
-      const movieOutput = await createMovieOutput(settings.moviesDir, cleanTitle, settings.format);
+      const folderName = renderLibraryTemplate(libraryTemplate(settings.libraryMetadata, "movieFolderTemplate"), {
+        "Movie Title": movieTitle,
+        Year: movieYear
+      });
+      const fileName = renderLibraryTemplate(libraryTemplate(settings.libraryMetadata, "movieFileTemplate"), {
+        "Movie Title": movieTitle,
+        Year: movieYear
+      });
+      const movieOutput = await createMovieOutput(settings.moviesDir, folderName, settings.format, fileName);
       movieDirectory = movieOutput.directory;
       const targetPath = movieOutput.path;
       finalPath = targetPath;
@@ -487,6 +632,21 @@ async function processMappedTvEpisodes(
       jobs.update(context, { conversionSeconds: (Date.now() - conversionStartedAt) / 1000 });
       const outputStat = await stat(targetPath);
       if (outputStat.size < 1024) throw new Error("Published movie failed size validation");
+      try {
+        const document = metadataDocument(movieTitle, selectedMetadata?.providerId,
+          selectedMetadata?.id, settings.libraryMetadata.downloadMovieMetadata ? metadataValues : {});
+        const assets = settings.libraryMetadata.downloadMovieMetadata && settings.libraryMetadata.automaticImport
+          ? artworkFromMetadata(metadataValues) : [];
+        await writeMetadataBundle(movieDirectory, "movie", document, assets, settings.libraryMetadata, {
+          nfoFileName: "movie.nfo"
+        });
+      } catch (error) {
+        log("warn", "metadata", "Movie metadata or artwork could not be fully written", {
+          jobId: id,
+          outputPath: movieDirectory,
+          error: error instanceof Error ? error.message : "unknown metadata write failure"
+        });
+      }
       jobs.update(context, {
         outputPath: targetPath,
         outputBytes: encoded.outputBytes,
@@ -533,7 +693,7 @@ async function processMappedTvEpisodes(
         await this.reviewWorkspaces?.remove(id);
       }
       setRuntimeStatus("completed");
-      if (settings.autoEject) {
+      if (settings.autoEject || settings.automationMode === "full_auto") {
         try {
           await ejectDisc(devicePath);
           jobs.record(context, "eject", "info", "Disc ejected");

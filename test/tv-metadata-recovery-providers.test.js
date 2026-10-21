@@ -40,9 +40,14 @@ test("TMDB and IMDb direct lookups resolve a TV series with provider identifiers
     "tt0944947",
     "test-key",
     async (url) => {
-      assert.match(String(url), /\/find\/tt0944947\?/);
-      assert.match(String(url), /external_source=imdb_id/);
-      return jsonResponse({ tv_results: [{ id: 1396, name: "Example Show" }] });
+      if (String(url).includes("/find/")) {
+        assert.match(String(url), /\/find\/tt0944947\?/);
+        assert.match(String(url), /external_source=imdb_id/);
+        return jsonResponse({ tv_results: [{ id: 1396, name: "Example Show" }] });
+      }
+      assert.match(String(url), /\/tv\/1396\?/);
+      assert.match(String(url), /append_to_response=aggregate_credits/);
+      return jsonResponse({ id: 1396, name: "Example Show", first_air_date: "2011-04-17" });
     }
   );
   assert.equal(imdbSeries.title, "Example Show");

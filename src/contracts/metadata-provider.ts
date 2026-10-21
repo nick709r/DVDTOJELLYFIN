@@ -16,4 +16,8 @@ export type MetadataProviderHealth = ProviderHealth;
 
 export interface MetadataProvider extends Provider {
   identify(input: MetadataIdentificationInput, signal?: AbortSignal): Promise<readonly MetadataProviderCandidate[]>;
+  enrich?(
+    candidate: MetadataProviderCandidate,
+    signal?: AbortSignal
+  ): Promise<MetadataProviderCandidate>;
 }

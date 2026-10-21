@@ -60,8 +60,9 @@ Migration 19 adds the `disc_recovery` table keyed by the normalized disc
 fingerprint. It stores detected and final disc/media types, per-type override
 flags, detected confidence, provider and provider ID, series name, season
 number, episode mappings (including optional air dates and notes), notes, and
-the update timestamp. Existing databases receive the new table
-without rewriting jobs, TV plans, or classification audit history.
+the update timestamp. Migration 20 adds imported metadata and validated
+artwork references to that recovery record. Existing databases receive the
+new columns without rewriting jobs, TV plans, or classification audit history.
 
 At processing time, a manual final media classification is checked before the
 automatic TV heuristic. Saved episode mappings are used directly and do not
@@ -81,6 +82,8 @@ These authenticated routes expose the recovery workflow:
 - `PUT /api/v1/tv/plans/:id/recovery` saves classification, series metadata,
   and mappings. A mapping has the shape
   `{ "trackId": "1", "episodes": [{ "seriesId": "provider-id", "seasonNumber": 1, "episodeNumber": 1, "title": "Pilot", "airDate": "2020-01-01", "notes": "Verified" }] }`.
+  Optional `importedMetadata` and `artworkReferences` fields preserve the
+  confirmed provider result on the disc recovery record.
 - `POST /api/v1/tv/metadata/series/lookup` accepts `provider`, `providerId`,
   and (for manual entry) `seriesName`.
 - `POST /api/v1/tv/metadata/episodes/lookup` accepts `provider`, `providerId`,
@@ -88,3 +91,5 @@ These authenticated routes expose the recovery workflow:
 
 The dashboard provides a dropdown episode assignment for keyboard/mouse
 operation and native drag-and-drop from detected tracks to mapping rows.
+See [Library Metadata & Organization](./METADATA-LIBRARY-ORGANIZATION.md) for
+settings, provider capabilities, NFO behavior, and the full API field list.

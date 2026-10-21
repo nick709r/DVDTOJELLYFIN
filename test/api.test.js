@@ -11,7 +11,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
   process.env.MOVIES_DIR = root;
   process.env.WORK_DIR = root;
 
-  const { app } = await import("../dist/server.js");
+  const server = await import("../dist/server.js");
+  const { app } = server;
   const { db } = await import("../dist/db.js");
   const jobs = await import("../dist/db.js");
   const jobControl = await import("../dist/job-control.js");
@@ -69,6 +70,8 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.match(homeAfterSetup.body, /classification-form/);
     const unauthenticatedSettings = await app.inject({ method: "GET", url: "/api/v1/settings" });
     assert.equal(unauthenticatedSettings.statusCode, 401);
+    const unauthenticatedDirectoryBrowse = await app.inject({ method: "GET", url: "/api/v1/directories?path=/" });
+    assert.equal(unauthenticatedDirectoryBrowse.statusCode, 401);
     const initialLogin = await app.inject({
       method: "POST",
       url: "/api/v1/login",
@@ -91,8 +94,13 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.tvRootDir, "/srv/jellyfin/TV");
     assert.equal(initial.json().settings.tvValidationLoggingEnabled, true);
     assert.equal(initial.json().settings.musicBrainzContactEmail, "");
+    assert.equal(initial.json().settings.libraryMetadata.automaticImport, true);
+    assert.equal(initial.json().settings.libraryMetadata.generateNfo, true);
+    assert.equal(initial.json().settings.libraryMetadata.libraryStructure, "jellyfin");
     assert.equal("adminPasswordHash" in initial.json().settings, false);
     assert.equal("lidarrApiKey" in initial.json().settings, false);
+    assert.equal(typeof initial.json().settings.outputDestinations.activeProfileId, "string");
+    assert.equal(initial.json().settings.automationMode, "regular_auto");
     const emptyDiagnostics = await app.inject({ method: "GET", url: "/api/v1/diagnostics" });
     assert.equal(emptyDiagnostics.statusCode, 200);
     assert.equal(emptyDiagnostics.json().job, null);
@@ -124,6 +132,13 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal((await readdir(root)).includes("tv-library"), true);
     assert.equal(pathCheck.json().checks.find((check) => check.name === "Optical drive").ok, false);
     assert.equal((await readdir(root)).some((name) => name.startsWith(".autodisc-permission-check-")), false);
+    const directoryListing = await app.inject({
+      method: "GET",
+      url: `/api/v1/directories?path=${encodeURIComponent(linuxRoot)}`
+    });
+    assert.equal(directoryListing.statusCode, 200);
+    assert.equal(directoryListing.json().path, linuxRoot);
+    assert.ok(Array.isArray(directoryListing.json().directories));
     const lidarrPathCheck = await app.inject({
       method: "POST",
       url: "/api/v1/paths/check",
@@ -285,6 +300,27 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(setMusicSettings.json().settings.tvValidationLoggingEnabled, false);
     assert.equal(setMusicSettings.json().settings.lidarrApiKeyConfigured, true);
     assert.equal("lidarrApiKey" in setMusicSettings.json().settings, false);
+    const libraryMetadata = {
+      ...setMusicSettings.json().settings.libraryMetadata,
+      libraryStructure: "custom",
+      movieFolderTemplate: "{Movie Title} ({Year}) {Unknown}"
+    };
+    const invalidLibraryMetadata = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { libraryMetadata }
+    });
+    assert.equal(invalidLibraryMetadata.statusCode, 400);
+    libraryMetadata.movieFolderTemplate = "{Movie Title} ({Year})";
+    libraryMetadata.downloadRatings = false;
+    const setLibraryMetadata = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { libraryMetadata }
+    });
+    assert.equal(setLibraryMetadata.statusCode, 200);
+    assert.equal(setLibraryMetadata.json().settings.libraryMetadata.libraryStructure, "custom");
+    assert.equal(setLibraryMetadata.json().settings.libraryMetadata.downloadRatings, false);
 
     const libraryPath = path.posix.join(linuxRoot, "library-created-by-api");
     jobs.saveSettings({ tvRootDir: libraryPath });
@@ -654,6 +690,54 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       ]
     });
     jobs.finishJob("manual-metadata-job", "completed", null);
+
+    const activeSettings = (await app.inject({
+      method: "GET", url: "/api/v1/settings", headers: { cookie }
+    })).json().settings;
+    const outputDestinations = structuredClone(activeSettings.outputDestinations);
+    const activeProfile = outputDestinations.profiles.find((profile) => profile.id === outputDestinations.activeProfileId);
+    activeProfile.routes = { tv: "folder", movies: "folder", music: "folder" };
+    activeProfile.folder = { tv: linuxRoot, movies: linuxRoot, music: linuxRoot };
+    activeProfile.jellyfin = { root: "", paths: { tv: linuxRoot, movies: linuxRoot, music: linuxRoot } };
+    const { outputDestinationsPayloadIsValid } = await import("../dist/output-destinations.js");
+    assert.equal(outputDestinationsPayloadIsValid(outputDestinations), true, JSON.stringify(outputDestinations));
+    const invalidAutomation = await app.inject({
+      method: "PUT", url: "/api/v1/settings", headers: { cookie }, payload: { automationMode: "hands_off" }
+    });
+    assert.equal(invalidAutomation.statusCode, 400);
+    const saveDestinations = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      headers: { cookie },
+      payload: { outputDestinations, automationMode: "review_based" }
+    });
+    assert.equal(saveDestinations.statusCode, 200, saveDestinations.body);
+    assert.equal(saveDestinations.json().settings.automationMode, "review_based");
+    assert.equal(saveDestinations.json().settings.outputDestinations.profiles[0].routes.tv, "folder");
+    assert.equal(saveDestinations.json().settings.tvRootDir, linuxRoot);
+
+    const approvalItem = jobs.repositories.reviewItems.create({
+      category: "configuration_issue",
+      severity: "medium",
+      title: "Disc detected — approval required",
+      description: "Approve processing",
+      relatedDisc: "Example DVD",
+      relatedDrive: jobs.getSettings().opticalDevice,
+      errorDetails: { approvalRequired: true, detectionSignature: "test-signature" },
+      suggestedActions: [{ type: "approve-process", label: "Approve & Process" }]
+    });
+    let approvedSignature = "";
+    server.setDiscApprovalAction(async (item) => {
+      approvedSignature = String(item.errorDetails?.detectionSignature ?? "");
+    });
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/v1/reviews/${approvalItem.id}/approve-process`,
+      headers: { cookie }
+    });
+    assert.equal(approved.statusCode, 200);
+    assert.equal(approvedSignature, "test-signature");
+    assert.equal(approved.json().item.status, "resolved");
   } finally {
     await app.close();
     db.close();

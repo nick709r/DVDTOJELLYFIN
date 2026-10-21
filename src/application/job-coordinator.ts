@@ -73,6 +73,15 @@ export class JobCoordinator {
     return this.repositories.jobs.active();
   }
 
+  latestJob(): Job | undefined {
+    return this.repositories.history.list(1)[0];
+  }
+
+  hasActiveDiscApproval(signature: string): boolean {
+    return this.repositories.reviewItems.list({ category: "configuration_issue", status: "active", limit: 250 })
+      .some((item) => item.errorDetails?.detectionSignature === signature);
+  }
+
   lastDiscFingerprint(): string | null {
     return this.repositories.recovery.lastDiscFingerprint();
   }
