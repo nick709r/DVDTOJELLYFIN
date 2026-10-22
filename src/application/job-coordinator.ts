@@ -145,9 +145,7 @@ export class JobCoordinator {
     drivePath?: string
   ): JobContext {
     this.repositories.jobs.add(id, label, fingerprint, mediaKind);
-    this.cancellation.register(id);
-    this.publisher.publish(id, "inspecting");
-    return {
+    const context: JobContext = {
       id,
       mediaKind,
       fingerprint,
@@ -158,6 +156,22 @@ export class JobCoordinator {
         if (signal?.aborted) throw signal.reason ?? new Error("Job cancelled");
       }
     };
+    try {
+      this.cancellation.register(id);
+      this.publisher.publish(id, "inspecting");
+      return context;
+    } catch (error) {
+      try {
+        this.fail(context, "failed", {
+          code: "job_initialization_failed",
+          message: error instanceof Error ? error.message : "Job initialization failed",
+          recoverable: true
+        });
+      } catch {
+        // The startup recovery path will interrupt the job if persistence is unavailable here.
+      }
+      throw error;
+    }
   }
 
   resume(
@@ -345,6 +359,23 @@ export class JobCoordinator {
     }
     this.publisher.publish(context.id, status);
     return { jobId: context.id, status, error: failure };
+  }
+
+  failUnexpected(error: unknown, status: "failed" | "interrupted" = "failed"): JobResult | undefined {
+    const job = this.activeJob();
+    if (!job) return undefined;
+    const message = error instanceof Error ? error.message : "Unexpected processing error";
+    return this.fail({
+      id: job.id,
+      mediaKind: job.mediaType,
+      fingerprint: job.discFingerprint,
+      discLabel: job.discLabel,
+      throwIfCancelled() {}
+    }, status, {
+      code: "unexpected_processing_exception",
+      message,
+      recoverable: true
+    });
   }
 
   createReview(input: ReviewItemInput): ReviewItem {

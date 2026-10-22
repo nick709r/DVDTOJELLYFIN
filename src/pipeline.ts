@@ -33,6 +33,19 @@ export async function processInsertedDisc(
   const jobSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
     return await processInsertedDiscCore(sources, workflows, jobs, metadata, jobSignal, approval);
+  } catch (error) {
+    if (!jobs.activeJob()) throw error;
+    try {
+      jobs.failUnexpected(error, jobSignal.aborted ? "interrupted" : "failed");
+    } catch (handlingError) {
+      log("error", "job", "Unexpected workflow failure could not be persisted", {
+        error: handlingError instanceof Error ? handlingError.message : "unknown terminal-state error"
+      });
+    }
+    log("error", "job", "Unexpected workflow failure was caught at the disc-processing boundary", {
+      error: error instanceof Error ? error.message : "unknown processing error"
+    });
+    return true;
   } finally {
     jobs.endOperation(controller);
   }

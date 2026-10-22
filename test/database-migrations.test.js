@@ -194,6 +194,28 @@ test("SQLite repository adapters preserve settings, job, history, event and reco
   repositories.close();
 });
 
+test("job initialization is atomic and terminal states reject later processing transitions", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  const addEvent = repositories.events.add;
+  repositories.events.add = () => {
+    throw new Error("event storage unavailable");
+  };
+  assert.throws(() => repositories.jobs.add("partial-job", "Test source", "partial-fingerprint"), /event storage unavailable/);
+  assert.equal(repositories.history.get("partial-job"), undefined);
+  assert.equal(repositories.classificationAudit.getByJob("partial-job"), undefined);
+  repositories.events.add = addEvent;
+
+  repositories.jobs.add("terminal-job", "Test source", "terminal-fingerprint");
+  repositories.jobs.setStatus("terminal-job", "ripping", "Acquiring");
+  repositories.jobs.finish("terminal-job", "completed", null, "terminal-fingerprint");
+  assert.throws(() => repositories.jobs.setStatus("terminal-job", "publishing", "Publishing again"), /Rejected/);
+  assert.throws(() => repositories.jobs.finish("terminal-job", "failed", "Late failure"), /Rejected/);
+  assert.equal(repositories.history.get("terminal-job").status, "completed");
+  repositories.close();
+});
+
 test("review item repository persists searchable lifecycle data and summary counts", () => {
   const db = new Database(":memory:");
   migrateDatabase(db, defaultSettings);

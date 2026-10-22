@@ -1,5 +1,5 @@
-import { readdir, rmdir, rm, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { lstat, readdir, rmdir, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { AutoDiscRepositories } from "./contracts/repositories.js";
 import { mediaDuration } from "./encoding.js";
 import { log } from "./logger.js";
@@ -9,22 +9,19 @@ const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const partialOutput = new RegExp(`^\\.autodisc-${uuid}\\.(mp4|mkv)$`, "i");
 const partialAlbumDirectory = new RegExp(`^\\.autodisc-${uuid}$`, "i");
 
-function isWithin(directory: string, path: string): boolean {
-  const relativePath = relative(resolve(directory), resolve(path));
-  return relativePath === "" ||
-    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
-}
-
 export async function recoverTemporaryFiles(repositories: AutoDiscRepositories): Promise<void> {
   const settings = repositories.settings.get();
   let removedWorkdirs = 0;
   let removedOutputs = 0;
+  let recoveredJobs = 0;
+  let failedJobs = 0;
+  const knownJobs = new Set(repositories.recovery.jobIds());
   const workEntries = await readdir(settings.workDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [];
     throw error;
   });
   for (const entry of workEntries) {
-    if (entry.isDirectory() && uuidDirectory.test(entry.name)) {
+    if (entry.isDirectory() && uuidDirectory.test(entry.name) && !knownJobs.has(entry.name)) {
       await rm(join(settings.workDir, entry.name), { recursive: true, force: true });
       removedWorkdirs += 1;
     }
@@ -80,45 +77,45 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
       }
     }
   }
-  let recoveredJobs = 0;
-  for (const job of repositories.recovery.interruptedOutputs()) {
-    const isMovieOutput = job.mediaType === "dvd" && isWithin(settings.moviesDir, job.outputPath);
-    const isMusicOutput = job.mediaType === "audio_cd" && isWithin(settings.musicDir, job.outputPath);
-    if (!isMovieOutput && !isMusicOutput) continue;
+  for (const job of repositories.recovery.interruptedJobs()) {
     try {
-      const info = await stat(job.outputPath);
-      if (isMusicOutput) {
-        if (!info.isDirectory()) continue;
+      if (!job.outputPath) throw new Error("No published output path was recorded");
+      const info = await lstat(job.outputPath);
+      if (info.isSymbolicLink()) throw new Error("Recorded output path is a symbolic link");
+      if (job.mediaType === "audio_cd") {
+        if (!info.isDirectory()) throw new Error("Recorded audio output is not a directory");
         const tracks = await readdir(job.outputPath, { withFileTypes: true });
         const audioFiles = tracks.filter((track) => track.isFile() && track.name.toLowerCase().endsWith(".flac"));
-        if (audioFiles.length === 0) continue;
+        if (audioFiles.length === 0) throw new Error("No audio tracks were found in the recorded output directory");
         let outputBytes = 0;
         for (const track of audioFiles) {
           const path = join(job.outputPath, track.name);
-          const trackInfo = await stat(path);
+          const trackInfo = await lstat(path);
+          if (trackInfo.isSymbolicLink()) throw new Error(`Recovered audio track is a symbolic link: ${track.name}`);
           if (trackInfo.size < 1024) throw new Error(`Recovered audio track is too small: ${track.name}`);
           await mediaDuration(path);
           outputBytes += trackInfo.size;
         }
-        repositories.recovery.recoverPublished(job.id, outputBytes);
+        if (!repositories.recovery.recoverPublished(job.id, outputBytes)) continue;
       } else {
-        if (!info.isFile() || info.size < 1024) continue;
+        if (!info.isFile() || info.size < 1024) throw new Error("Recorded media output is missing or too small");
         await mediaDuration(job.outputPath);
-        repositories.recovery.recoverPublished(job.id, info.size);
+        if (!repositories.recovery.recoverPublished(job.id, info.size)) continue;
       }
       recoveredJobs += 1;
     } catch (error) {
-      log("warn", "recovery", "Could not validate previously published output; leaving job interrupted", {
+      const reason = `Interrupted job recovery failed: ${error instanceof Error ? error.message : "unknown output validation error"}`;
+      if (repositories.recovery.failInterrupted(job.id, reason)) failedJobs += 1;
+      log("warn", "recovery", "Interrupted job was marked failed because output could not be reconciled", {
         jobId: job.id,
         error: error instanceof Error ? error.message : "unknown validation error"
       });
     }
   }
-  if (removedWorkdirs || removedOutputs || recoveredJobs) {
-    log("info", "recovery", "Removed abandoned AutoDisc temporary files", {
-      workDirectories: removedWorkdirs,
-      partialOutputs: removedOutputs,
-      completedJobsRecovered: recoveredJobs
-    });
-  }
+  log("info", "recovery", "Startup filesystem and interrupted-job reconciliation completed", {
+    orphanWorkDirectoriesRemoved: removedWorkdirs,
+    partialOutputsRemoved: removedOutputs,
+    publishedJobsRecovered: recoveredJobs,
+    interruptedJobsFailed: failedJobs
+  });
 }

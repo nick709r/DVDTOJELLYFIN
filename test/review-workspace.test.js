@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -43,6 +43,12 @@ test("review workspace preserves verified media, persists review metadata, and c
   await workspaces.updateMetadata(jobId, { title: "Corrected title" });
   assert.equal(repositories.reviewJobs.get(jobId).metadata.title, "Corrected title");
   assert.equal((await workspaces.manifest(jobId)).failureReason, "Metadata provider unavailable");
+  const orphanId = "d07deddd-79e0-4dc7-a2d4-a8e8df68e13d";
+  const orphanPath = join(root, "reviews", orphanId);
+  await mkdir(orphanPath);
+  assert.equal(await workspaces.recoverOrphanedWorkspaces(root), 1);
+  await assert.rejects(stat(orphanPath));
+  await assert.doesNotReject(stat(created.job.storagePath));
 
   await workspaces.remove(jobId);
   assert.equal(repositories.reviewJobs.get(jobId), undefined);

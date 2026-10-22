@@ -53,6 +53,13 @@ async function main(): Promise<void> {
   await recoverTemporaryFiles(repositories);
   await providerRuntime.reviewWorkspaces.recoverProcessing();
   try {
+    await providerRuntime.reviewWorkspaces.recoverOrphanedWorkspaces(getSettings().workDir);
+  } catch (error) {
+    log("error", "review-recovery", "Review workspace orphan scan failed during startup", {
+      error: error instanceof Error ? error.message : "unknown review workspace cleanup failure"
+    });
+  }
+  try {
     providerRuntime.dvdWorkflow.recoverInterruptedTvMatchingTasks();
     await providerRuntime.dvdWorkflow.recoverOrphanedTvStagingDirectories();
     await providerRuntime.dvdWorkflow.pruneExpiredTvMatchingTasks();

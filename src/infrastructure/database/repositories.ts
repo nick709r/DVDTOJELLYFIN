@@ -26,7 +26,7 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     jobs: new SqliteJobRepository(db, events, classificationAudit),
     history: new SqliteHistoryRepository(db),
     events,
-    recovery: new SqliteRecoveryRepository(db, events),
+    recovery: new SqliteRecoveryRepository(db, events, classificationAudit),
     tvEpisodeFeedback: new SqliteTvEpisodeFeedbackRepository(db),
     tvProcessingPlans: new SqliteTvProcessingPlanRepository(db),
     tvValidationEvidence: new SqliteTvValidationEvidenceRepository(db),
