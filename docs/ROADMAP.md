@@ -1,18 +1,18 @@
 AutoDisc Roadmap
 
-This roadmap separates the capabilities already shipped in v1.13.0 from
+This roadmap separates the capabilities already shipped in v1.15.2 from
 remaining Version 2 development. Priorities may change based on community
 feedback and validation results.
 
-## Current status in v1.13.0
+## Current status in v1.15.2
 
 | Area | Status |
 |---|---|
 | Provider/workflow foundation | Implemented for the existing DVD and audio-CD sources, TMDB/MusicBrainz metadata providers, SQLite repositories, and shared job coordination. Provider-owned configuration and durable queue/event infrastructure remain future work. |
 | TV analysis and matching | Implemented as explainable, confidence-scored suggestions with correction history and TVDB/TMDB TV metadata candidates. Broad real-disc validation remains outstanding. |
 | TV metadata lookup | TVDB/TMDB TV series, season, and episode lookup is integrated with provider selection/fallback, health-aware failover, optional cache, refresh, audit history, and live metrics. |
-| TV workflow and review | TV plans are persisted and held for review; the dashboard exposes analysis, matching, plan approval/correction, and validation evidence. TV output execution remains disabled. |
-| TV output destination | A configurable TV library root is created/validated and reports writable permissions and available space. Series/Season folder creation and TV publishing remain disabled. |
+| TV workflow and review | TV plans, analysis, matching, corrections, and validation evidence are persisted and exposed in the dashboard. Automatic matches remain review-only; explicitly saved recovery mappings can publish DVD TV episodes. |
+| TV output destination | The configured TV library root is created/validated and reports writable permissions and available space. Series/Season folders are created when a manually mapped DVD TV job is published. |
 | Universal Review Centre | Implemented for TV/CD reviews, metadata issues, processing failures, folder failures, disc-read errors, validation warnings, configuration issues, and system warnings. |
 | Disc diagnostics | Live diagnostics page backed by detection snapshots and persisted job events; provider-specific unavailable fields are identified explicitly. |
 | Audio-CD publishing | Missing Music/artist directories are created; albums are atomically published under `Artist/Album`, with collision-safe naming and Review Centre recovery on destination failures. |
@@ -40,17 +40,20 @@ DVD and audio-CD discovery/acquisition use open media contracts and registered
 workflows. TMDB and MusicBrainz are behind metadata contracts, SQLite is split
 into repository adapters, and both workflows use a shared job coordinator.
 The TV analysis and episode matching engines feed a confidence-gated
-DVD workflow that persists plans and holds likely TV discs for review.
+DVD workflow that persists plans and holds likely TV discs for review. Since
+v1.15.2, operators can also persist manual classification and episode mappings
+by disc fingerprint and explicitly publish mapped DVD episodes; automatic
+matches still do not initiate output.
 Validation evidence and the universal Review Centre are exposed through the
-dashboard and authenticated APIs; TV output execution remains disabled.
+dashboard and authenticated APIs.
 Provider-owned configuration, drive/platform adapters, and durable
 queue/event infrastructure remain future gates. See
 [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md) and
 [TV-WORKFLOW-INTEGRATION.md](./TV-WORKFLOW-INTEGRATION.md).
 
-AutoDisc v1.13.0 includes provider-backed TV metadata lookups in the existing
-analysis workflow. Results remain suggestions only; episode assignment and TV
-output execution are not enabled. See
+AutoDisc v1.13.0 added provider-backed TV metadata lookups in the existing
+analysis workflow. Results remain suggestions only; explicit episode recovery
+and DVD TV publishing were added later in v1.15.2. See
 [TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md) for provider, cache, and
 API behavior.
 

@@ -2,6 +2,8 @@ import type { AutoDiscRepositories } from "../contracts/repositories.js";
 import type { JobCancellationControl } from "../contracts/job-control.js";
 import type { Job, JobStatus } from "../model.js";
 import type { ReviewItemInput, ReviewItem } from "../domain/reviews.js";
+import type { DiscRecovery, DiscRecoveryUpdate, DiscType, MediaType } from "../domain/disc-recovery.js";
+import type { TvMatchingTask, TvMatchingTaskInput } from "../domain/tv-matching.js";
 
 export interface JobStep {
   id: string;
@@ -64,12 +66,70 @@ export class JobCoordinator {
     return this.repositories.settings.get();
   }
 
+  setupComplete(): boolean {
+    return this.repositories.setup.get().setupComplete;
+  }
+
   activeJob(): Job | null {
     return this.repositories.jobs.active();
   }
 
+  latestJob(): Job | undefined {
+    return this.repositories.history.list(1)[0];
+  }
+
+  getJob(id: string): Job | undefined {
+    return this.repositories.history.get(id);
+  }
+
+  hasActiveDiscApproval(signature: string): boolean {
+    return this.repositories.reviewItems.list({ category: "configuration_issue", status: "active", limit: 250 })
+      .some((item) => item.errorDetails?.detectionSignature === signature);
+  }
+
   lastDiscFingerprint(): string | null {
     return this.repositories.recovery.lastDiscFingerprint();
+  }
+
+  getDiscRecovery(fingerprint: string): DiscRecovery | undefined {
+    return this.repositories.discRecovery.get(fingerprint);
+  }
+
+  recordDiscDetection(fingerprint: string, discType: DiscType, mediaType: MediaType, confidence?: number): DiscRecovery {
+    return this.repositories.discRecovery.recordDetection(fingerprint, discType, mediaType, confidence);
+  }
+
+  updateDiscRecovery(fingerprint: string, patch: DiscRecoveryUpdate): DiscRecovery | undefined {
+    return this.repositories.discRecovery.update(fingerprint, patch);
+  }
+
+  createTvMatchingTask(input: TvMatchingTaskInput): TvMatchingTask {
+    return this.repositories.tvMatchingTasks.create(input);
+  }
+
+  getTvMatchingTask(jobId: string): TvMatchingTask | undefined {
+    return this.repositories.tvMatchingTasks.get(jobId);
+  }
+
+  listTvMatchingTasks(): TvMatchingTask[] {
+    return this.repositories.tvMatchingTasks.list();
+  }
+
+  updateTvMatchingTask(jobId: string, patch: Partial<Pick<TvMatchingTask,
+    "status" | "stagingPath" | "diagnostics" | "files" | "assignments">> & { failure?: string | null }): TvMatchingTask | undefined {
+    return this.repositories.tvMatchingTasks.update(jobId, patch);
+  }
+
+  deleteTvMatchingTask(jobId: string): boolean {
+    return this.repositories.tvMatchingTasks.delete(jobId);
+  }
+
+  deleteTvMatchingRecords(jobId: string, fingerprint: string): boolean {
+    return this.repositories.tvMatchingTasks.deleteTemporaryRecords(jobId, fingerprint);
+  }
+
+  listDiscRecoveries(limit = 100): DiscRecovery[] {
+    return this.repositories.discRecovery.list(limit);
   }
 
   clearInsertedDisc(): void {
@@ -96,6 +156,33 @@ export class JobCoordinator {
       ...(drivePath ? { drivePath } : {}),
       throwIfCancelled() {
         if (signal?.aborted) throw signal.reason ?? new Error("Job cancelled");
+      }
+    };
+  }
+
+  resume(
+    id: string,
+    mediaKind: string,
+    fingerprint: string | null,
+    discLabel: string | null,
+    signal: AbortSignal
+  ): JobContext {
+    const job = this.repositories.history.get(id);
+    if (!job || (job.status !== "review" && job.status !== "awaiting-identification" &&
+      job.status !== "failed" && job.status !== "interrupted")) {
+      throw new Error(`Job ${id} is not available to resume`);
+    }
+    this.cancellation.register(id);
+    this.repositories.jobs.setStatus(id, "converting", "Resuming from preserved extracted media");
+    this.publisher.publish(id, "converting");
+    return {
+      id,
+      mediaKind,
+      fingerprint,
+      discLabel,
+      signal,
+      throwIfCancelled() {
+        if (signal.aborted) throw signal.reason ?? new Error("Job cancelled");
       }
     };
   }
@@ -142,6 +229,31 @@ export class JobCoordinator {
     return { jobId: context.id, status: "completed" };
   }
 
+  finishForReview(context: JobContext, message: string): void {
+    this.repositories.jobs.finish(context.id, "review", message);
+    this.publisher.publish(context.id, "review");
+  }
+
+  finishForIdentification(context: JobContext, message: string): void {
+    this.repositories.jobs.finish(context.id, "awaiting-identification", message);
+    this.createReview({
+      category: "tv_review",
+      severity: "medium",
+      title: "TV disc awaiting identification",
+      description: message,
+      relatedJobId: context.id,
+      ...(context.discLabel ? { relatedDisc: context.discLabel } : {}),
+      ...(context.fingerprint ? { discFingerprint: context.fingerprint } : {}),
+      suggestedActions: [{ type: "view-job", label: "Open TV Matching" }]
+    });
+    this.publisher.publish(context.id, "awaiting-identification");
+  }
+
+  interruptTvMatching(jobId: string, message: string): void {
+    this.repositories.jobs.finish(jobId, "interrupted", message);
+    this.publisher.publish(jobId, "interrupted");
+  }
+
   holdForReview(
     context: JobContext,
     message: string,
@@ -169,6 +281,35 @@ export class JobCoordinator {
       jobId: context.id,
       status: "review",
       error: { code: "review_required", message, recoverable: false }
+    };
+  }
+
+  holdForProcessingReview(
+    context: JobContext,
+    message: string,
+    failureStage: string,
+    errorDetails?: Readonly<Record<string, unknown>>
+  ): JobResult {
+    this.repositories.jobs.finish(context.id, "review", message);
+    this.createReview({
+      category: "processing_failure",
+      severity: "high",
+      title: "Extracted media needs review",
+      description: message,
+      relatedJobId: context.id,
+      ...(context.discLabel ? { relatedDisc: context.discLabel } : {}),
+      errorDetails: { failureStage, ...(errorDetails ?? {}) },
+      suggestedActions: [
+        { type: "view-job", label: "View job details" },
+        { type: "open-review", label: "Open review queue" }
+      ],
+      ...(context.fingerprint ? { discFingerprint: context.fingerprint } : {})
+    });
+    this.publisher.publish(context.id, "review");
+    return {
+      jobId: context.id,
+      status: "review",
+      error: { code: "review_required", message, recoverable: true }
     };
   }
 

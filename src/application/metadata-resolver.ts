@@ -2,7 +2,7 @@ import type {
   MetadataIdentificationInput,
   MetadataProvider
 } from "../contracts/metadata-provider.js";
-import { normalizeConfidence, type MetadataResult } from "../domain/metadata.js";
+import { normalizeConfidence, type MetadataCandidate, type MetadataResult } from "../domain/metadata.js";
 
 export class MetadataResolver {
   constructor(private readonly providers: readonly MetadataProvider[]) {
@@ -43,6 +43,21 @@ export class MetadataResolver {
       ...(candidates[0] ? { selected: candidates[0] } : {}),
       candidates,
       providerFailures: failures
+    };
+  }
+
+  async enrich(candidate: MetadataCandidate, signal?: AbortSignal): Promise<MetadataCandidate> {
+    if (signal?.aborted) throw signal.reason ?? new Error("Metadata enrichment cancelled");
+    const provider = this.providers.find((item) => item.describe().id === candidate.providerId);
+    if (!provider?.enrich) return candidate;
+    const enriched = await provider.enrich(candidate, signal);
+    return {
+      ...candidate,
+      ...enriched,
+      providerId: candidate.providerId,
+      confidence: candidate.confidence,
+      metadata: { ...candidate.metadata, ...enriched.metadata },
+      identifiers: { ...candidate.identifiers, ...enriched.identifiers }
     };
   }
 }

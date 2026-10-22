@@ -12,6 +12,7 @@ export interface MusicAlbumMetadata {
   year: string | null;
   tracks: MusicTrackMetadata[];
   source: "musicbrainz" | "manual" | "offline";
+  releaseId?: string;
 }
 
 interface MusicBrainzTrack {
@@ -25,6 +26,7 @@ interface MusicBrainzMedium {
 }
 
 interface MusicBrainzRelease {
+  id?: string;
   title?: string;
   date?: string;
   "artist-credit"?: Array<string | { name?: string; joinphrase?: string; artist?: { name?: string } }>;
@@ -87,7 +89,8 @@ export function parseMusicBrainzRelease(
     album: release.title,
     year: release.date?.match(/^\d{4}/)?.[0] ?? null,
     tracks,
-    source: "musicbrainz"
+    source: "musicbrainz",
+    ...(release.id ? { releaseId: release.id } : {})
   };
 }
 

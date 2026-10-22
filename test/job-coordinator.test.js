@@ -27,6 +27,7 @@ test("job coordinator centralizes start, step, progress event, terminal result a
     wasCancelled: () => false,
     end: () => {}
   });
+
   const controller = new AbortController();
   const context = coordinator.begin("job-1", "Test", "future_media", null, controller.signal);
   coordinator.step(context, { id: "acquire", status: "ripping", message: "Acquiring" });
@@ -40,4 +41,18 @@ test("job coordinator centralizes start, step, progress event, terminal result a
   const cancelled = coordinator.begin("job-2", "Test", "future_media", null, controller.signal);
   controller.abort(new Error("cancelled"));
   assert.throws(() => cancelled.throwIfCancelled(), /cancelled/);
+});
+
+test("job coordinator reports first-run setup state", () => {
+  const coordinator = new JobCoordinator({
+    setup: { get: () => ({ setupComplete: false }) }
+  }, { publish: () => {} }, {
+    begin: () => {},
+    register: () => {},
+    cancel: () => false,
+    wasCancelled: () => false,
+    end: () => {}
+  });
+
+  assert.equal(coordinator.setupComplete(), false);
 });

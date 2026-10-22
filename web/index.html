@@ -14,6 +14,7 @@
         <button class="nav-link active" data-page="dashboard">Dashboard</button>
         <button class="nav-link" data-page="diagnostics">Disc Diagnostics</button>
         <button class="nav-link" data-page="history">History</button>
+        <button class="nav-link" data-page="tv-matching">TV Matching</button>
         <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
         <button class="nav-link" data-page="episode-matching">Episode Matching</button>
         <button class="nav-link" data-page="tv-reviews">Review Centre</button>
@@ -57,6 +58,7 @@
             <div class="resource"><span>Work free</span><b id="work-free">—</b></div>
             <div class="resource"><span>Movies free</span><b id="movies-free">—</b></div>
             <div class="resource"><span>Music free</span><b id="music-free">—</b></div>
+            <div id="library-dashboard-health" class="library-health-list"></div>
             <p class="hint">Metrics pause when this dashboard is closed.</p>
           </article>
         </div>
@@ -80,6 +82,13 @@
       <section id="page-history" class="page hidden">
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">LIBRARY</p><h2>Conversion history</h2></div><button id="refresh-history" class="button secondary">Refresh</button></div><div id="history-list"></div></article>
       </section>
+      <section id="page-tv-matching" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">STAGED TV DISCS</p><h2>TV Matching Queue</h2></div><button id="refresh-tv-matching" class="button secondary" type="button">Refresh</button></div>
+          <p class="hint">Unidentified discs stay in protected staging until episode assignments are complete and the staged files can be published.</p>
+          <div id="tv-matching-queue"></div>
+        </article>
+      </section>
       <section id="page-diagnostics" class="page hidden">
         <article class="card table-card">
           <div class="card-heading"><div><p class="eyebrow">LIVE INSPECTION</p><h2>Disc Diagnostics</h2></div>
@@ -88,11 +97,44 @@
           <div id="diagnostics-live" class="diagnostics-grid"></div>
           <p id="diagnostics-live-status" class="hint" role="status">Waiting for disc detection data.</p>
         </article>
+        <article class="card" id="classification-review">
+          <div class="card-heading"><div><p class="eyebrow">DISK MONITOR</p><h2>Classification review</h2></div>
+            <div class="diagnostics-controls"><a class="button secondary" href="/api/v1/classification/export/text" download>Export log (text)</a><a class="button secondary" href="/api/v1/classification/export/json" download>Export JSON (LLM)</a></div></div>
+          <div id="classification-summary" class="hint">No disc selected.</div>
+          <form id="classification-form" class="hidden">
+            <label>Final type<select name="finalType" id="classification-final"></select></label>
+            <label>Override reason<select name="overrideReason" id="classification-reason"><option value="">Not needed (no change)</option></select></label>
+            <label>Operator notes<input name="notes" maxlength="2000"></label>
+            <button class="button" type="submit">Save review</button>
+          </form>
+          <form id="disc-recovery-form" class="hidden classification-override-form">
+            <h3>Media type recovery</h3>
+            <p id="disc-recovery-summary" class="classification-history-content">Detected and final classifications are stored separately.</p>
+            <label>Final disc type<select name="discType"></select></label>
+            <label>Final media type<select name="mediaType">
+              <option value="movie">Movie</option><option value="tv_series">TV Series</option><option value="music_album">Music Album</option>
+              <option value="audiobook">Audiobook</option><option value="music_video">Music Video</option><option value="concert">Concert</option>
+              <option value="documentary">Documentary</option><option value="mixed_content">Mixed Content</option><option value="other">Other</option>
+            </select></label>
+            <label>Metadata provider<select name="metadataProvider">
+              <option value="tvdb">TVDB</option><option value="tmdb">TMDB</option><option value="imdb">IMDb</option>
+              <option value="anidb">AniDB</option><option value="manual">Manual Entry</option>
+            </select></label>
+            <label>Provider ID<input name="providerId" maxlength="200"></label>
+            <label>Series name<input name="seriesName" maxlength="200"></label>
+            <label>Season number<input name="seasonNumber" type="number" min="0" max="100"></label>
+            <label>Notes<textarea name="notes" maxlength="2000"></textarea></label>
+            <button class="button secondary" type="submit">Save Media Recovery</button>
+            <p class="hint">Manual choices take precedence on the next disc detection. TV tracks can then be mapped in Review Centre.</p>
+          </form>
+          <div id="classification-metrics"></div>
+        </article>
         <div class="diagnostics-grid">
           <article class="card"><p class="eyebrow">CLASSIFICATION</p><h2>Scorecard</h2><div id="diagnostics-classification"></div></article>
           <article class="card"><p class="eyebrow">DISC STRUCTURE</p><h2>Inspected contents</h2><div id="diagnostics-structure"></div></article>
         </div>
         <article class="card table-card"><p class="eyebrow">TV ANALYSIS</p><h2>Series and episode evidence</h2><div id="diagnostics-tv"></div></article>
+        <article class="card table-card"><p class="eyebrow">TV IDENTIFICATION</p><h2>Series identification</h2><button id="diagnostics-identify" class="button primary hidden" type="button">Identify Disc</button><div id="diagnostics-identification"></div></article>
         <article class="card table-card"><p class="eyebrow">METADATA</p><h2>Provider lookups</h2><div id="diagnostics-metadata"></div></article>
         <article class="card table-card"><p class="eyebrow">PROCESSING PIPELINE</p><h2>Stage timeline</h2><div id="diagnostics-pipeline"></div></article>
         <article class="card table-card"><p class="eyebrow">LIVE LOG</p><h2>Job events</h2><div id="diagnostics-log"></div></article>
@@ -118,7 +160,7 @@
       <section id="page-tv-reviews" class="page hidden">
         <article class="card table-card">
           <div class="card-heading"><div><p class="eyebrow">VERSION 2 OPERATIONS</p><h2>Review Centre</h2></div>
-            <button id="refresh-reviews" class="button secondary" type="button">Refresh</button>
+            <div><button id="identify-disc-open" class="button primary" type="button">Identify Disc</button> <button id="refresh-reviews" class="button secondary" type="button">Refresh</button></div>
           </div>
           <div id="review-summary" class="tv-stat-grid"></div>
           <div class="review-filters">
@@ -129,6 +171,10 @@
             <label>Created to<input id="review-to" type="date"></label>
           </div>
           <div id="review-list"></div>
+        </article>
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">PRESERVED MEDIA</p><h2>Extracted Media Review Queue</h2></div></div>
+          <div id="review-jobs-list"></div>
         </article>
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">TV WORKFLOW</p><h2>Episode plans awaiting review</h2></div>
           <label>Show<select id="tv-review-filter"><option value="awaiting-review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All plans</option></select></label>
@@ -148,7 +194,7 @@
       <section id="page-statistics" class="page hidden">
         <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
         <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
-          <p class="hint">TV plans remain analysis-only. No files are assigned, renamed, moved, or published by these reports.</p>
+          <p class="hint">Automatic TV suggestions never publish files. Confirm series metadata and episode-to-track mappings in Review Centre to process TV episodes.</p>
         </article>
       </section>
       <section id="page-settings" class="page hidden">
@@ -163,10 +209,51 @@
             </section>
           </article>
           <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
-            <label>Jellyfin Movies folder<input name="moviesDir" required placeholder="/srv/jellyfin/Movies"></label>
-            <label>Jellyfin Music / Lidarr library folder<input name="musicDir" required placeholder="/srv/jellyfin/Music"></label>
-            <label>TV Output Folder (TV Root)<input name="tvRootDir" required placeholder="/srv/jellyfin/TV"></label>
-            <p class="hint">The TV root is created and validated when checked or saved. TV publishing and automatic Series/Season folder creation are not enabled.</p>
+            <h3>Library Paths</h3>
+            <div id="library-settings-health" class="library-health-list"></div>
+            <div class="form-row">
+              <label>Active output profile<select id="output-profile-select"></select></label>
+              <label>Profile name<input id="output-profile-name" maxlength="80" value="Jellyfin Server"></label>
+            </div>
+            <div class="form-row">
+              <button id="output-profile-new" class="button secondary" type="button">Create profile</button>
+              <button id="output-profile-delete" class="button danger" type="button">Delete profile</button>
+            </div>
+            <label>Jellyfin Library Root<input name="jellyfinRoot" placeholder="/srv/jellyfin"></label>
+            <p class="hint">A root automatically supplies TV Shows, Movies, and Music folders. Enter a category path below only to override that inherited location.</p>
+            <div class="output-route-grid">
+              <label>TV Shows destination<select name="routeTv"><option value="jellyfin">Jellyfin</option><option value="sonarr">Sonarr-compatible folder</option><option value="folder">Generic folder</option></select></label>
+              <label>Movies destination<select name="routeMovies"><option value="jellyfin">Jellyfin</option><option value="radarr">Radarr-compatible folder</option><option value="folder">Generic folder</option></select></label>
+              <label>Music destination<select name="routeMusic"><option value="jellyfin">Jellyfin</option><option value="lidarr">Lidarr</option><option value="folder">Generic folder</option></select></label>
+            </div>
+            <div class="output-path-fields" data-route-group="jellyfin">
+              <h3>Jellyfin path overrides</h3>
+              <label data-route-for="tv" data-route-target="jellyfin">TV Shows<input name="jellyfinTvPath" placeholder="Inherit from root"></label>
+              <label data-route-for="movies" data-route-target="jellyfin">Movies<input name="jellyfinMoviesPath" placeholder="Inherit from root"></label>
+              <label data-route-for="music" data-route-target="jellyfin">Music<input name="jellyfinMusicPath" placeholder="Inherit from root"></label>
+            </div>
+            <div class="output-path-fields" data-route-group="sonarr">
+              <h3>Sonarr Output</h3><label data-route-for="tv" data-route-target="sonarr">Series Root<input name="sonarrSeriesRoot" placeholder="/media/sonarr/series"></label>
+            </div>
+            <div class="output-path-fields" data-route-group="radarr">
+              <h3>Radarr Output</h3><label data-route-for="movies" data-route-target="radarr">Movie Root<input name="radarrMovieRoot" placeholder="/media/radarr/movies"></label>
+            </div>
+            <div class="output-path-fields" data-route-group="lidarr">
+              <h3>Lidarr Output</h3><label data-route-for="music" data-route-target="lidarr">Artist Root<input name="lidarrArtistRoot" placeholder="/media/lidarr/music"></label>
+              <p class="hint">The Lidarr import integration stages tracks separately, then Lidarr moves them into this library root.</p>
+            </div>
+            <div class="output-path-fields" data-route-group="folder">
+              <h3>Generic Folder Output</h3>
+              <label data-route-for="tv" data-route-target="folder">TV<input name="folderTv" placeholder="/media/archive/TV"></label>
+              <label data-route-for="movies" data-route-target="folder">Movies<input name="folderMovies" placeholder="/media/archive/Movies"></label>
+              <label data-route-for="music" data-route-target="folder">Music<input name="folderMusic" placeholder="/media/archive/Music"></label>
+            </div>
+            <section class="output-preview" aria-live="polite">
+              <h3>Output Preview</h3>
+              <div id="output-preview"></div>
+            </section>
+            <p class="hint">Sonarr/Radarr destinations use compatible folder layouts; AutoDisc does not call those applications' APIs. For Lidarr, configure its integration below. Browse folders as they appear inside the AutoDisc host/container.</p>
+            <p class="hint">TV DVDs publish only after you save explicit series metadata and track-to-episode mappings in Review Centre.</p>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
             <button id="check-paths" class="button secondary" type="button">Check paths and permissions</button>
@@ -176,6 +263,8 @@
           </article>
           <article class="card settings-card"><p class="eyebrow">ENCODING</p><h2>Encoder & behavior</h2>
             <label>Encoder preference<select name="encoder"><option value="auto">Automatic — prefer NVIDIA</option><option value="nvidia">NVIDIA NVENC (fallback enabled)</option><option value="software">Software (libx264)</option></select></label>
+            <label>Automation mode<select name="automationMode"><option value="full_auto">Full Auto — eject and continue; errors go to Review</option><option value="regular_auto">Regular Auto — process automatically; stop on errors</option><option value="review_based">Review-Based — require approval before processing</option></select></label>
+            <p class="hint">Full Auto ejects after successful jobs and after recording failures in Review. Regular Auto leaves failed discs in the drive. Review-Based queues detected discs; use Approve & Process in Review Centre.</p>
             <label class="check"><input name="autoEject" type="checkbox"> Eject disc after successful conversion</label>
             <div id="encoder-capability" class="inline-info">Checking FFmpeg encoders…</div>
           </article>
@@ -193,13 +282,46 @@
             <p class="hint">When enabled, a successful automatic match continues without interruption. If no usable match is found, the CD job waits for you to enter a release ID or provide album and track names in the dashboard. With lookup disabled, CDs keep processing unattended with generic track names.</p>
             <p class="hint">MusicBrainz provides album and track names for the FLAC tags and filenames. Lidarr needs these details to identify and categorize albums.</p>
           </article>
-          <article class="card settings-card"><p class="eyebrow">LIBRARY MANAGEMENT</p><h2>Lidarr import</h2>
+          <article class="card settings-card"><p class="eyebrow">LIBRARY METADATA</p><h2>Metadata, artwork & organization</h2>
+            <label class="check"><input name="automaticImport" type="checkbox"> Automatically import available metadata and artwork when a workflow is identified</label>
+            <p class="hint">Imports only data supplied by providers already enabled/configured or entered during review. Disabled/failed lookups never block media publishing.</p>
+            <div class="form-row">
+              <label>Library structure<select name="libraryStructure"><option value="jellyfin">Jellyfin</option><option value="sonarr">Sonarr</option><option value="radarr">Radarr</option><option value="lidarr">Lidarr</option><option value="kodi">Kodi</option><option value="custom">Custom</option></select></label>
+              <label>NFO compatibility<select name="nfoFormat"><option value="jellyfin">Jellyfin</option><option value="kodi">Kodi</option><option value="emby">Emby</option></select></label>
+            </div>
+            <div class="metadata-import-options">
+              <label class="check"><input name="downloadSeriesMetadata" type="checkbox"> Series metadata</label>
+              <label class="check"><input name="downloadEpisodeMetadata" type="checkbox"> Episode metadata</label>
+              <label class="check"><input name="downloadMovieMetadata" type="checkbox"> Movie metadata</label>
+              <label class="check"><input name="downloadMusicMetadata" type="checkbox"> Music metadata</label>
+              <label class="check"><input name="downloadCastInformation" type="checkbox"> Cast information</label>
+              <label class="check"><input name="downloadRatings" type="checkbox"> Ratings</label>
+              <label class="check"><input name="downloadArtwork" type="checkbox"> Artwork</label>
+              <label class="check"><input name="downloadSeasonArtwork" type="checkbox"> Season artwork</label>
+              <label class="check"><input name="downloadEpisodeImages" type="checkbox"> Episode images</label>
+              <label class="check"><input name="downloadFanart" type="checkbox"> Fanart</label>
+              <label class="check"><input name="downloadLogos" type="checkbox"> Logos</label>
+              <label class="check"><input name="downloadBackdrops" type="checkbox"> Backdrops</label>
+              <label class="check"><input name="downloadBanners" type="checkbox"> Banners</label>
+              <label class="check"><input name="generateNfo" type="checkbox"> Generate NFO files</label>
+            </div>
+            <h3>Folder and file naming</h3>
+            <label>Series folder template<input name="seriesFolderTemplate" maxlength="200"></label>
+            <label>Season folder template<input name="seasonFolderTemplate" maxlength="200"></label>
+            <label>Episode file template<input name="episodeFileTemplate" maxlength="200"></label>
+            <label>Movie folder template<input name="movieFolderTemplate" maxlength="200"></label>
+            <label>Movie file template<input name="movieFileTemplate" maxlength="200"></label>
+            <label>Artist folder template<input name="artistFolderTemplate" maxlength="200"></label>
+            <label>Album folder template<input name="albumFolderTemplate" maxlength="200"></label>
+            <p class="hint">Choose Custom to edit naming templates. Tokens: {Series Name}, {Movie Title}, {Year}, {Season Number:00}, {Episode:00}, {Episode Title}, {Artist}, {Album}. Templates produce a single safe folder or file component.</p>
+          </article>
+          <article id="lidarr-settings-card" class="card settings-card"><p class="eyebrow">LIBRARY MANAGEMENT</p><h2>Lidarr import</h2>
             <label class="check"><input name="lidarrEnabled" type="checkbox"> Import named music albums through Lidarr</label>
-            <label>Lidarr URL<input name="lidarrUrl" type="url" required placeholder="http://127.0.0.1:8686"></label>
+            <label>Lidarr URL<input name="lidarrUrl" type="url" placeholder="http://127.0.0.1:8686"></label>
             <label>Lidarr API key<input name="lidarrApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep the saved key"></label>
             <label class="check"><input name="clearLidarrApiKey" type="checkbox"> Clear saved Lidarr API key</label>
             <p id="lidarr-key-status" class="inline-info"></p>
-            <label>Lidarr downloads/import folder<input name="lidarrImportDir" required placeholder="/var/cache/autodisc/lidarr-import"></label>
+            <label>Lidarr downloads/import folder<input name="lidarrImportDir" placeholder="/var/cache/autodisc/lidarr-import"></label>
             <button id="test-lidarr" class="button secondary" type="button">Test Lidarr connection</button>
             <p id="lidarr-status" class="inline-info" role="status"></p>
             <p class="hint">Set this to the shared downloads/import folder that Lidarr can read; AutoDisc creates an Artist - Album folder with numbered, tagged FLAC tracks, then asks Lidarr to match and move them into its library. If Lidarr runs in Docker, use the path as mounted inside the Lidarr container and make sure AutoDisc can access that same path. Add the artist and album to Lidarr and enable MusicBrainz lookup. The Jellyfin Music folder must match Lidarr's library root.</p>
@@ -207,7 +329,12 @@
           <article class="card settings-card"><p class="eyebrow">VERSION 2 · TELEVISION</p><h2>TV Processing</h2>
             <label class="check"><input name="tvDetectionEnabled" type="checkbox"> Enable TV detection and analysis</label>
             <label class="check"><input name="tvValidationLoggingEnabled" type="checkbox"> Capture complete analysis and matching evidence</label>
-            <p class="hint">Disabling TV detection prevents TV analysis. Discs matching confirmed or uncertain TV criteria remain held for review rather than entering movie publishing. Disabling evidence capture does not disable TV analysis or review plans.</p>
+            <label>Unidentified TV staging retention<select name="tvStagingRetentionChoice">
+              <option value="never">Never Delete</option><option value="7">7 Days</option><option value="30">30 Days</option><option value="90">90 Days</option><option value="custom">Custom</option>
+            </select></label>
+            <label id="tv-staging-custom-label" class="hidden">Custom retention (days)<input name="tvStagingRetentionCustomDays" type="number" min="1" max="3650" step="1"></label>
+            <p class="hint">Unidentified TV discs are ripped to staging and remain unpublished until identified. The default is Never Delete; custom retention is measured in days.</p>
+            <p class="hint">Disabling TV detection prevents TV analysis. Disabling evidence capture does not disable TV analysis or review plans.</p>
             <div class="policy-panel">
               <b>Current matching policy (read-only)</b>
               <p>TV sensitivity: conservative, fixed by the V2 policy.</p>
@@ -242,8 +369,8 @@
             </div>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
-            <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
-            <p class="hint">Username is <b>admin</b>. A password must be at least 12 characters. Without a password, anyone who can reach the service can administer it. Never expose it to the internet.</p>
+            <label>New admin password            <input name="adminPassword" type="password" minlength="4" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
+                        <p class="hint">The administrator username is configured during first-run setup. Passwords must be at least 4 characters.</p>
             <label>Logging level<select name="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
           </article>
           <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>
@@ -254,11 +381,28 @@
       <form id="login-form" method="dialog">
         <p class="eyebrow">ADMINISTRATION</p><h2>Sign in to AutoDisc</h2>
         <p class="muted">Use the admin account to manage the appliance.</p>
-        <label>Username<input name="username" value="admin" autocomplete="username" required></label>
+        <label>Username<input name="username" autocomplete="username" required></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
         <p id="login-error" class="error-text"></p>
         <button class="button primary" type="submit">Sign in</button>
       </form>
+    </dialog>
+    <dialog id="password-change-dialog">
+      <form id="password-change-form" method="dialog">
+        <p class="eyebrow">SECURITY</p><h2>Set a new password</h2>
+        <p class="muted">Password rules are now simpler. Choose a new password (at least 4 characters) to continue.</p>
+        <label>New password<input name="password" type="password" minlength="4" maxlength="256" autocomplete="new-password" required></label>
+        <label>Confirm new password<input name="confirmPassword" type="password" minlength="4" maxlength="256" autocomplete="new-password" required></label>
+        <p id="password-change-error" class="error-text"></p>
+        <button class="button primary" type="submit">Save password</button>
+      </form>
+    </dialog>
+    <dialog id="directory-picker" class="directory-picker">
+      <div class="card-heading"><div><p class="eyebrow">SELECT DESTINATION</p><h2>Browse folders</h2></div><button id="directory-picker-close" class="button secondary" type="button">Close</button></div>
+      <div class="form-row"><label>Current folder<input id="directory-picker-path" value="/" autocomplete="off"></label><button id="directory-picker-go" class="button secondary" type="button">Go</button></div>
+      <div id="directory-picker-error" class="inline-info warning" role="alert"></div>
+      <div id="directory-picker-list" class="directory-picker-list"></div>
+      <button id="directory-picker-select" class="button primary" type="button">Use this folder</button>
     </dialog>
     <dialog id="music-metadata-dialog" class="metadata-dialog">
       <form id="music-metadata-form">
@@ -279,6 +423,42 @@
           <button id="cancel-metadata-job" class="button danger" type="button">Cancel disc job</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="identify-disc-dialog" class="metadata-dialog">
+      <form id="identify-disc-form">
+        <p class="eyebrow">IDENTIFY DISC</p><h2>Identify TV series</h2>
+        <p id="identify-disc-context" class="muted"></p>
+        <div class="form-row">
+          <label>Search<input id="identify-search" autocomplete="off" placeholder="Series title, tvdb:12345, tmdb:12345 or tt1234567"></label>
+          <button id="identify-search-button" class="button secondary" type="button">Search</button>
+        </div>
+        <p id="identify-status" class="inline-info" role="status"></p>
+        <div id="identify-results" class="identify-results"></div>
+        <div id="identify-assignment" class="hidden">
+          <p id="identify-selected" class="inline-info"></p>
+          <div class="form-row">
+            <label>Season Number<select id="identify-season"></select></label>
+            <label>Disc Number<select id="identify-disc"></select></label>
+          </div>
+          <label>Disc Name (optional)<input id="identify-disc-name" maxlength="200"></label>
+        </div>
+        <div class="metadata-actions">
+          <button id="identify-save" class="button primary" type="submit" disabled>Save</button>
+          <button id="identify-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="tv-delete-dialog">
+      <div class="delete-confirmation">
+        <p class="eyebrow">TV MATCHING</p><h2>Delete Unmatched TV Disc</h2>
+        <p>This will permanently remove:</p>
+        <ul><li>Staged video files</li><li>Temporary metadata</li><li>Downloaded artwork</li><li>Diagnostics</li><li>Matching history</li></ul>
+        <p><strong>Published media will NOT be affected.</strong></p>
+        <div class="metadata-actions">
+          <button id="tv-delete-confirm" class="button danger" type="button">Delete</button>
+          <button id="tv-delete-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
+      </div>
     </dialog>
     <script type="module" src="/app.js"></script>
   </body>

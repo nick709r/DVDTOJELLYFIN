@@ -2,6 +2,7 @@ import type { MediaSourceCoordinator } from "./application/media-source-coordina
 import type { MediaWorkflowRegistry } from "./application/media-workflow-registry.js";
 import type { JobCoordinator } from "./application/job-coordinator.js";
 import type { MetadataResolver } from "./application/metadata-resolver.js";
+import { createHash } from "node:crypto";
 import { isUpdatePending } from "./updater.js";
 import { log } from "./logger.js";
 import { updateCandidateDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
@@ -11,8 +12,17 @@ export async function processInsertedDisc(
   workflows: MediaWorkflowRegistry,
   jobs: JobCoordinator,
   metadata: MetadataResolver,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  approval?: { detectionSignature: string }
 ): Promise<boolean> {
+  if (!jobs.setupComplete()) {
+    updateDiscDiagnostics({
+      status: "Administrator setup required",
+      reason: "Disc processing is disabled until the first-run administrator account has been created."
+    });
+    log("info", "disc", "Disc processing is disabled until initial administrator setup is complete");
+    return true;
+  }
   if (isUpdatePending()) {
     log("info", "disc", "Disc inspection deferred because an application update is pending");
     return false;
@@ -22,7 +32,7 @@ export async function processInsertedDisc(
   jobs.beginOperation(controller);
   const jobSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
-    return await processInsertedDiscCore(sources, workflows, jobs, metadata, jobSignal);
+    return await processInsertedDiscCore(sources, workflows, jobs, metadata, jobSignal, approval);
   } finally {
     jobs.endOperation(controller);
   }
@@ -33,7 +43,8 @@ async function processInsertedDiscCore(
   workflows: MediaWorkflowRegistry,
   jobs: JobCoordinator,
   metadata: MetadataResolver,
-  signal: AbortSignal
+  signal: AbortSignal,
+  approval?: { detectionSignature: string }
 ): Promise<boolean> {
   if (isUpdatePending()) return false;
   if (jobs.activeJob()) return true;
@@ -91,6 +102,44 @@ async function processInsertedDiscCore(
       devicePath
     });
     return false;
+  }
+  const detectionSignature = createHash("sha256").update(JSON.stringify({
+    providerId: inspectedSource.candidate.providerId,
+    mediaKind: inspectedSource.candidate.mediaKind,
+    label: inspectedSource.candidate.label,
+    manifest: inspectedSource.candidate.manifest
+  })).digest("hex");
+  if (approval && approval.detectionSignature !== detectionSignature) {
+    throw new Error("The inserted disc no longer matches the disc waiting for approval");
+  }
+  if (jobs.getSettings().automationMode === "review_based" && !approval) {
+    if (!jobs.hasActiveDiscApproval(detectionSignature)) {
+      jobs.createReview({
+        category: "configuration_issue",
+        severity: "medium",
+        title: "Disc detected — approval required",
+        description: "Review-Based mode is enabled. Approve this detected disc to begin ripping and processing.",
+        relatedDisc: inspectedSource.candidate.label || "Unlabeled disc",
+        relatedDrive: devicePath,
+        errorDetails: {
+          detectionSignature,
+          mediaKind: inspectedSource.candidate.mediaKind,
+          sourceProviderId: inspectedSource.candidate.providerId,
+          approvalRequired: true
+        },
+        suggestedActions: [
+          { type: "approve-process", label: "Approve & Process" },
+          { type: "dismiss", label: "Dismiss" }
+        ]
+      });
+    }
+    updateDiscDiagnostics({
+      status: "Waiting for approval",
+      mediaType: inspectedSource.candidate.mediaKind,
+      classification: "Review required",
+      reason: "Review-Based automation requires approval before ripping."
+    });
+    return true;
   }
   updateCandidateDiagnostics(inspectedSource.candidate, sources.inspectionDiagnostics()?.attemptedProviders ?? []);
   const processed = await workflows.process(inspectedSource, {

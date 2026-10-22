@@ -41,6 +41,14 @@ export interface TvMetadataProvider {
   lookupImplemented: boolean;
   validateConnection(apiKey: string, fetcher: typeof fetch): Promise<void>;
   lookup(input: TvMetadataLookupInput, apiKey: string, fetcher: typeof fetch): Promise<readonly MetadataProviderCandidate[]>;
+  lookupById?(providerId: string, apiKey: string, fetcher: typeof fetch): Promise<MetadataProviderCandidate | undefined>;
+  lookupImdbId?(imdbId: string, apiKey: string, fetcher: typeof fetch): Promise<MetadataProviderCandidate | undefined>;
+  lookupEpisodesById?(
+    providerId: string,
+    seasonNumber: number,
+    apiKey: string,
+    fetcher: typeof fetch
+  ): Promise<readonly { seriesId: string; seasonNumber: number; episodeNumber: number; title: string }[]>;
 }
 
 function validationHealth(result: TvMetadataValidationResult | null): TvMetadataProviderHealth {
@@ -131,6 +139,44 @@ export class TvMetadataProviderRegistry {
     if (!provider.lookupImplemented) throw new Error(`TV metadata lookup is not implemented for ${provider.name}`);
     if (provider.apiKeyRequired && !apiKey) throw new Error(`${provider.name} API key is not configured`);
     return provider.lookup(input, apiKey, fetcher);
+  }
+
+  async lookupById(
+    id: string,
+    providerId: string,
+    apiKey: string,
+    fetcher: typeof fetch = fetch
+  ): Promise<MetadataProviderCandidate | undefined> {
+    const provider = this.providers.get(id);
+    if (!provider) throw new Error("TV metadata provider is not registered");
+    if (!provider.lookupById) throw new Error(`Direct ID lookup is not implemented for ${provider.name}`);
+    if (provider.apiKeyRequired && !apiKey) throw new Error(`${provider.name} API key is not configured`);
+    return provider.lookupById(providerId, apiKey, fetcher);
+  }
+
+  async lookupEpisodesById(
+    id: string,
+    providerId: string,
+    seasonNumber: number,
+    apiKey: string,
+    fetcher: typeof fetch = fetch
+  ): Promise<readonly { seriesId: string; seasonNumber: number; episodeNumber: number; title: string }[]> {
+    const provider = this.providers.get(id);
+    if (!provider) throw new Error("TV metadata provider is not registered");
+    if (!provider.lookupEpisodesById) throw new Error(`Episode lookup is not implemented for ${provider.name}`);
+    if (provider.apiKeyRequired && !apiKey) throw new Error(`${provider.name} API key is not configured`);
+    return provider.lookupEpisodesById(providerId, seasonNumber, apiKey, fetcher);
+  }
+
+  async lookupImdbId(
+    id: string,
+    apiKey: string,
+    fetcher: typeof fetch = fetch
+  ): Promise<MetadataProviderCandidate | undefined> {
+    const provider = this.providers.get("tmdb-tv");
+    if (!provider?.lookupImdbId) throw new Error("IMDb ID lookup is not implemented");
+    if (provider.apiKeyRequired && !apiKey) throw new Error(`${provider.name} API key is not configured`);
+    return provider.lookupImdbId(id, apiKey, fetcher);
   }
 
   listIds(): string[] {

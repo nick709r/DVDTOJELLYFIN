@@ -106,6 +106,7 @@ export async function convert(
     if (key === "out_time") onProgress(Math.min(0.99, parseClock(value ?? "") / duration));
   };
 
+  let targetLinked = false;
   try {
     let usedEncoder = encoder;
     try {
@@ -129,11 +130,23 @@ export async function convert(
     await mediaDuration(temporary, signal);
     onPublishing(usedEncoder);
     await link(temporary, target);
+    targetLinked = true;
     await unlink(temporary);
     onProgress(1);
     return { encoder: usedEncoder, outputBytes: info.size };
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
+    if (targetLinked) {
+      try {
+        await unlink(target);
+      } catch (cleanupError) {
+        const reason = error instanceof Error ? error.message : "Conversion failed";
+        const cleanupReason = cleanupError instanceof Error ? cleanupError.message : "unknown cleanup error";
+        throw new Error(`${reason}; partially published output could not be removed: ${target}: ${cleanupReason}`, {
+          cause: error
+        });
+      }
+    }
     throw error;
   }
 }

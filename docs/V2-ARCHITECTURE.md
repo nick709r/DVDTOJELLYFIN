@@ -1,11 +1,11 @@
 # AutoDisc v2 Platform Architecture
 
-**Status:** Current as of AutoDisc v1.13.0 on `main`. The v2 provider foundation,
-TV analysis/matching/workflow integration, TV dashboard and validation
-evidence, universal Review Centre, and audio-CD destination recovery are
-implemented. TVDB/TMDB TV metadata lookup, provider failover, provider-aware
-caching, audit records, and dashboard metrics are integrated with analysis.
-Real-disc validation and TV output execution remain outstanding.
+**Status:** Historical platform overview, extended by
+[TV-MANUAL-RECOVERY.md](./TV-MANUAL-RECOVERY.md). The v2 provider foundation,
+TV analysis/matching, validation evidence, universal Review Centre, and
+fingerprint-keyed TV metadata recovery are implemented. Explicitly confirmed
+episode mappings can drive DVD TV output; automatic suggestions remain
+analysis-only. Real-disc validation and provider coverage remain outstanding.
 
 **Implementation progress:** The source-provider seam now uses open media
 domain models, and source candidates dispatch through a registered
@@ -22,7 +22,8 @@ episode suggestions, returning unknown when confidence or separation is
 insufficient. The DVD workflow now calls `TvWorkflowService` for strongly
 identified TV discs; it stores a confidence-gated plan and holds the disc for
 review instead of sending it through movie output. SQLite migrations 6 and 7
-add feedback and processing-plan repositories. TV output remains disabled.
+add feedback and processing-plan repositories. Migration 19 adds durable
+detected/final classification, provider/series metadata, and episode mappings.
 Migration 8 stores end-to-end TV evidence and supports local dataset exchange
 and reports. See
 [TV-VALIDATION.md](./TV-VALIDATION.md) for the evidence format, tooling, and
@@ -31,11 +32,12 @@ Migration 9 adds the persistent universal Review Centre. Authenticated
 dashboard/API review actions expose filtering, details, and supported recovery;
 audio-CD publishing creates and verifies `Music/Artist/Album` destinations
 before atomic publication.
-AutoDisc 1.13.0 registers a `ConfiguredTvMetadataProvider` adapter with the
+AutoDisc registers a `ConfiguredTvMetadataProvider` adapter with the
 production `MetadataResolver`. Provider selection, fallback, health-aware
 failover, optional provider-aware caching, and lookup metrics are handled
 outside the analysis and matching engines. Metadata results contribute
-candidate evidence only; no automatic assignment or TV publishing is enabled.
+candidate evidence only; explicit user mappings, never automatic assignments,
+drive TV publishing.
 See
 [`TV-METADATA-SETTINGS.md`](./TV-METADATA-SETTINGS.md).
 See [V2-MIGRATION-REPORT-2026-10-19.md](./V2-MIGRATION-REPORT-2026-10-19.md)
@@ -86,8 +88,10 @@ flowchart LR
   AudioCD --> Diagnostics
   TvWorkflow --> TvAnalysis
   TvWorkflow --> Plan[Persisted TV Processing Plan]
-  Plan --> Review[Review state; execution disabled]
+  Plan --> Review[Review state; automatic output disabled]
   Review --> ReviewItems
+  ReviewItems --> Recovery[Explicit saved recovery mappings]
+  Recovery --> TvPublish[Acquire and publish mapped DVD episodes]
   AudioCD[Audio CD workflow] --> MusicFolders[Create Music / Artist directories]
   MusicFolders --> AlbumPublish[Atomic Artist / Album publication]
   AlbumPublish -. failure .-> ReviewItems

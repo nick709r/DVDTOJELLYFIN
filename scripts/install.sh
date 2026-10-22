@@ -90,6 +90,44 @@ else
   usermod --append --groups cdrom autodisc
 fi
 
+configured_path() {
+  key=$1
+  fallback=$2
+  case "$key" in
+    MOVIES_DIR) value=${MOVIES_DIR:-} ;;
+    TV_DIR) value=${TV_DIR:-} ;;
+    MUSIC_DIR) value=${MUSIC_DIR:-} ;;
+    *) echo "Unsupported library setting: $key" >&2; exit 1 ;;
+  esac
+  if [ -z "$value" ] && [ -r /etc/default/autodisc ]; then
+    value=$(awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' /etc/default/autodisc)
+    case "$value" in
+      \"*\") value=${value#\"}; value=${value%\"} ;;
+      \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+  fi
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+    "") printf '%s\n' "$fallback" ;;
+    *) echo "$key must be an absolute path" >&2; exit 1 ;;
+  esac
+}
+
+for library_path in \
+  "$(configured_path MOVIES_DIR /srv/jellyfin/Movies)" \
+  "$(configured_path TV_DIR /srv/jellyfin/TV)" \
+  "$(configured_path MUSIC_DIR /srv/jellyfin/Music)"; do
+  if [ "$library_path" = "/" ]; then
+    echo "A library path must not be the filesystem root." >&2
+    exit 1
+  fi
+  if [ ! -d "$library_path" ]; then
+    mkdir -p "$library_path"
+    chown autodisc:autodisc "$library_path"
+    chmod 0775 "$library_path"
+  fi
+done
+
 if systemctl is-active --quiet autodisc.service; then
   systemctl stop autodisc.service
 fi
@@ -105,9 +143,13 @@ cp -R "$ROOT/src" "$ROOT/web" /opt/autodisc/
 chown -R root:root /opt/autodisc
 
 cd /opt/autodisc
-npm ci --include=dev
+npm ci --include=dev --ignore-scripts --no-audit --no-fund
+native_prebuild="node_modules/better-sqlite3/prebuilds/linux-$(node -p 'process.arch').node"
+if [ ! -f "$native_prebuild" ]; then
+  npm rebuild better-sqlite3 --no-audit --no-fund
+fi
 npm run build
-npm prune --omit=dev
+npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
 install -o root -g root -m 0644 "$ROOT/service/autodisc.service" /etc/systemd/system/autodisc.service
 install -d -o root -g root -m 0755 /usr/local/libexec

@@ -1,8 +1,10 @@
 # TV Metadata Lookup
 
-AutoDisc v1.13.0 can retrieve TV series, season, and episode candidates during
-TV analysis. Metadata influences explainable suggestions only: it does not
-automatically assign episodes or publish TV files.
+AutoDisc can retrieve TV series, season, and episode candidates during TV
+analysis. These remain suggestions and never trigger automatic publishing.
+Reviewers can also perform provider-ID lookup/import and use the resulting
+episode catalog with manually confirmed track mappings; see
+[TV-MANUAL-RECOVERY.md](./TV-MANUAL-RECOVERY.md).
 
 ## Providers
 
@@ -15,6 +17,11 @@ vendor-specific logic in the analysis or matching engines.
 |---|---|
 | `tvdb` | TVDB v4 authentication, series search, season identification, and episode retrieval |
 | `tmdb-tv` | TMDB TV series search and season episode retrieval |
+
+Recovery wizard provider options additionally include direct TVDB/TMDB IDs,
+IMDb IDs resolved through TMDB, and Manual Entry. AniDB is selectable as a
+metadata source but direct AniDB lookup is not implemented and returns an
+explicit unsupported response.
 
 The preferred provider is tried first. The configured fallback is used when
 the preferred provider fails or has no results. Providers disabled by the
@@ -71,10 +78,13 @@ database migration.
   records.
 - `POST /api/v1/tv/metadata/cache/refresh` re-fetches cached metadata entries.
 - `DELETE /api/v1/tv/metadata/cache` clears all cached entries.
+- `POST /api/v1/tv/metadata/series/lookup` resolves a selected provider ID.
+- `POST /api/v1/tv/metadata/episodes/lookup` imports episodes for a provider ID
+  and season.
 - `PUT /api/v1/settings` validates and persists lookup, provider, and cache
   configuration.
 
 TV lookups use bounded provider requests. If all eligible providers fail, the
 workflow records provider failure evidence and retains its conservative
-review-only behavior. Provider results remain candidates; no automatic
-episode assignment or TV publishing is enabled.
+review-required behavior. Provider results remain candidates; only explicitly
+saved user mappings enable DVD TV episode output.

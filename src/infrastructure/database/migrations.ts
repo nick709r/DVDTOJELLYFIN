@@ -241,4 +241,189 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     }
   });
   markInterrupted();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS review_jobs (
+      id TEXT PRIMARY KEY,
+      original_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('processing', 'pending', 'retrying', 'completed', 'dismissed')),
+      disc_type TEXT NOT NULL,
+      disc_label TEXT,
+      failure_reason TEXT NOT NULL,
+      failure_stage TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      media_size INTEGER NOT NULL DEFAULT 0 CHECK (media_size >= 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resume_stage TEXT NOT NULL CHECK (resume_stage IN ('metadata', 'artwork', 'naming', 'import')),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      notification_active INTEGER NOT NULL DEFAULT 1 CHECK (notification_active IN (0, 1))
+    );
+    CREATE INDEX IF NOT EXISTS review_jobs_status_created
+      ON review_jobs(status, created_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (15, ?)")
+    .run(new Date().toISOString());
+  // Disk classification audit: append-only, intentionally no FK to jobs so history cleanup never deletes audit data.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS disk_classification_audit (
+      id TEXT PRIMARY KEY,
+      job_id TEXT UNIQUE,
+      created_at TEXT NOT NULL,
+      disk_name TEXT NOT NULL,
+      detected_type TEXT NOT NULL,
+      final_type TEXT NOT NULL,
+      confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+      review_status TEXT NOT NULL CHECK (review_status IN
+        ('auto_accepted', 'reviewed_no_change', 'manually_corrected', 'review_required')),
+      processing_status TEXT NOT NULL,
+      override_reason TEXT,
+      notes TEXT,
+      reviewed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS disk_classification_audit_created
+      ON disk_classification_audit(created_at);
+    INSERT OR IGNORE INTO disk_classification_audit
+      (id, job_id, created_at, disk_name, detected_type, final_type, review_status, processing_status)
+    SELECT 'legacy-' || id, id, started_at, COALESCE(title, disc_label, 'Unknown disc'), media_type, media_type,
+      'auto_accepted', status FROM jobs;
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (16, ?)")
+    .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS setup_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      setup_complete INTEGER NOT NULL CHECK (setup_complete IN (0, 1)),
+      admin_username TEXT,
+      admin_password_salt TEXT NOT NULL DEFAULT '',
+      admin_password_hash TEXT NOT NULL DEFAULT '',
+      setup_completed_at TEXT
+    );
+  `);
+  const savedAdminHash = db.prepare("SELECT value FROM settings WHERE key = 'adminPasswordHash'").get() as
+    { value: string } | undefined;
+  const savedAdminSalt = db.prepare("SELECT value FROM settings WHERE key = 'adminPasswordSalt'").get() as
+    { value: string } | undefined;
+  const legacyHash = savedAdminHash ? JSON.parse(savedAdminHash.value) as string : "";
+  const legacySalt = savedAdminSalt ? JSON.parse(savedAdminSalt.value) as string : "";
+  const setupComplete = Boolean(legacyHash);
+  db.prepare(`
+    INSERT OR IGNORE INTO setup_state
+      (id, setup_complete, admin_username, admin_password_salt, admin_password_hash, setup_completed_at)
+    VALUES (1, ?, ?, ?, ?, ?)
+  `).run(setupComplete ? 1 : 0, setupComplete ? "admin" : null, legacySalt, legacyHash,
+    setupComplete ? new Date().toISOString() : null);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (17, ?)")
+    .run(new Date().toISOString());
+  const classificationAuditColumns = db.pragma("table_info(disk_classification_audit)") as Array<{ name: string }>;
+  if (!classificationAuditColumns.some((column) => column.name === "reviewed_by")) {
+    db.exec("ALTER TABLE disk_classification_audit ADD COLUMN reviewed_by TEXT");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (18, ?)")
+    .run(new Date().toISOString());
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS disc_recovery (
+      fingerprint TEXT PRIMARY KEY,
+      detected_disc_type TEXT NOT NULL,
+      final_disc_type TEXT NOT NULL,
+      detected_media_type TEXT NOT NULL,
+      detected_confidence REAL CHECK (detected_confidence IS NULL OR detected_confidence BETWEEN 0 AND 1),
+      final_media_type TEXT NOT NULL,
+      disc_type_overridden INTEGER NOT NULL DEFAULT 0 CHECK (disc_type_overridden IN (0, 1)),
+      media_type_overridden INTEGER NOT NULL DEFAULT 0 CHECK (media_type_overridden IN (0, 1)),
+      metadata_provider TEXT NOT NULL DEFAULT 'manual',
+      provider_id TEXT,
+      series_name TEXT,
+      season_number INTEGER CHECK (season_number IS NULL OR season_number BETWEEN 0 AND 100),
+      mappings_json TEXT NOT NULL DEFAULT '[]',
+      notes TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS disc_recovery_updated ON disc_recovery(updated_at DESC);
+  `);
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (19, ?)")
+    .run(new Date().toISOString());
+  const recoveryColumns = db.pragma("table_info(disc_recovery)") as Array<{ name: string }>;
+  if (!recoveryColumns.some((column) => column.name === "imported_metadata_json")) {
+    db.exec("ALTER TABLE disc_recovery ADD COLUMN imported_metadata_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!recoveryColumns.some((column) => column.name === "artwork_references_json")) {
+    db.exec("ALTER TABLE disc_recovery ADD COLUMN artwork_references_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (20, ?)")
+    .run(new Date().toISOString());
+  const savedDestinations = db.prepare("SELECT value FROM settings WHERE key = 'outputDestinations'").get() as
+    { value: string } | undefined;
+  if (!savedDestinations) {
+    const savedSetting = (key: string): unknown => {
+      const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+      return row ? JSON.parse(row.value) as unknown : undefined;
+    };
+    const setting = (key: string, fallback: string): string => {
+      const value = savedSetting(key);
+      return typeof value === "string" ? value : fallback;
+    };
+    const profile = JSON.parse(JSON.stringify(defaults.outputDestinations.profiles[0])) as
+      typeof defaults.outputDestinations.profiles[number];
+    profile.jellyfin.paths = {
+      tv: setting("tvRootDir", defaults.tvRootDir),
+      movies: setting("moviesDir", defaults.moviesDir),
+      music: setting("musicDir", defaults.musicDir)
+    };
+    const lidarrWasEnabled = savedSetting("lidarrEnabled") === true;
+    if (lidarrWasEnabled) profile.routes.music = "lidarr";
+    const outputDestinations = { activeProfileId: profile.id, profiles: [profile] };
+    db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('outputDestinations', ?, ?)")
+      .run(JSON.stringify(outputDestinations), new Date().toISOString());
+  }
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (21, ?)")
+    .run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('automationMode', ?, ?)")
+    .run(JSON.stringify("regular_auto"), new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (22, ?)")
+    .run(new Date().toISOString());
+  // Existing administrators must choose a new password under the simplified password rules.
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 23").get()) {
+    const setupColumns = db.pragma("table_info(setup_state)") as Array<{ name: string }>;
+    if (!setupColumns.some((column) => column.name === "password_change_required")) {
+      db.exec("ALTER TABLE setup_state ADD COLUMN password_change_required INTEGER NOT NULL DEFAULT 0 CHECK (password_change_required IN (0, 1))");
+    }
+    db.exec("UPDATE setup_state SET password_change_required = 1 WHERE setup_complete = 1");
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (23, ?)")
+      .run(new Date().toISOString());
+  }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 24").get()) {
+    const columns = db.pragma("table_info(disc_recovery)") as Array<{ name: string }>;
+    const addColumn = (name: string, definition: string): void => {
+      if (!columns.some((column) => column.name === name)) db.exec(`ALTER TABLE disc_recovery ADD COLUMN ${name} ${definition}`);
+    };
+    addColumn("disc_number", "INTEGER CHECK (disc_number IS NULL OR disc_number BETWEEN 1 AND 100)");
+    addColumn("disc_name", "TEXT");
+    addColumn("identified_by", "TEXT");
+    addColumn("identification_diagnostics_json", "TEXT");
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (24, ?)")
+      .run(new Date().toISOString());
+  }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 25").get()) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tv_matching_tasks (
+        job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('awaiting-identification', 'awaiting-mapping', 'processing', 'completed')),
+        staging_path TEXT NOT NULL,
+        source_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        files_json TEXT NOT NULL,
+        assignments_json TEXT NOT NULL,
+        failure TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS tv_matching_tasks_status_updated
+        ON tv_matching_tasks(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS tv_matching_tasks_fingerprint
+        ON tv_matching_tasks(fingerprint);
+    `);
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (25, ?)")
+      .run(new Date().toISOString());
+  }
 }

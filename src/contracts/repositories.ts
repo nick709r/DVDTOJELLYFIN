@@ -5,6 +5,24 @@ import type {
 } from "../domain/television.js";
 import type { TvValidationEvidenceRepository } from "../domain/tv-validation.js";
 import type { ReviewItemRepository } from "../domain/reviews.js";
+import type { ClassificationAuditRepository } from "../domain/classification.js";
+import type { ReviewJobRepository } from "../domain/review-jobs.js";
+import type { DiscRecovery, DiscRecoveryRepository } from "../domain/disc-recovery.js";
+import type { TvMatchingTaskRepository } from "../domain/tv-matching.js";
+
+export interface SetupState {
+  setupComplete: boolean;
+  adminUsername: string | null;
+  setupCompletedAt: string | null;
+  passwordChangeRequired: boolean;
+}
+
+export interface SetupRepository {
+  get(): SetupState;
+  complete(username: string, salt: string, passwordHash: string): SetupState;
+  updatePassword(salt: string, passwordHash: string): void;
+  authenticate(username: string, password: string): boolean;
+}
 
 export interface SettingsRepository {
   get(): AppSettings;
@@ -15,7 +33,7 @@ export interface JobRepository {
   add(id: string, label: string | null, fingerprint?: string | null, mediaKind?: string): void;
   setStatus(id: string, status: JobStatus, message: string): void;
   update(id: string, patch: Partial<Pick<Job, "title" | "outputPath" | "encoder" | "outputBytes" | "progress" | "conversionSeconds">>): void;
-  finish(id: string, status: "review" | "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void;
+  finish(id: string, status: "review" | "awaiting-identification" | "completed" | "failed" | "cancelled" | "interrupted" | "deleted", error: string | null, fingerprint?: string): void;
   active(): Job | null;
   addWarning(id: string, message: string): void;
 }
@@ -43,6 +61,7 @@ export interface RecoveryRepository {
 }
 
 export interface AutoDiscRepositories {
+  setup: SetupRepository;
   settings: SettingsRepository;
   jobs: JobRepository;
   history: HistoryRepository;
@@ -52,5 +71,9 @@ export interface AutoDiscRepositories {
   tvProcessingPlans: TvProcessingPlanRepository;
   tvValidationEvidence: TvValidationEvidenceRepository;
   reviewItems: ReviewItemRepository;
+  reviewJobs: ReviewJobRepository;
+  classificationAudit: ClassificationAuditRepository;
+  discRecovery: DiscRecoveryRepository;
+  tvMatchingTasks: TvMatchingTaskRepository;
   close(): void;
 }

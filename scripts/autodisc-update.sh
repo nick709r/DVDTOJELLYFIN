@@ -151,9 +151,13 @@ setpriv --reuid=autodisc --regid=autodisc --init-groups --reset-env -- env HOME=
   manifest_version=$(node -p "require(\"$source_dir/package.json\").version")
   [ "$manifest_version" = "${requested_version#v}" ]
   cd "$source_dir"
-  npm ci --include=dev
+  npm ci --include=dev --ignore-scripts --no-audit --no-fund
+  native_prebuild="node_modules/better-sqlite3/prebuilds/linux-$(node -p 'process.arch').node"
+  if [ ! -f "$native_prebuild" ]; then
+    npm rebuild better-sqlite3 --no-audit --no-fund
+  fi
   npm run build
-  npm prune --omit=dev
+  npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 ' autodisc "$BUILD_DIR" "$version"
 
 set -- "$BUILD_DIR"/DVDTOJELLYFIN-*

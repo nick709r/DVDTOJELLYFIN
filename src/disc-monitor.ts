@@ -12,6 +12,7 @@ import type { MediaWorkflowRegistry } from "./application/media-workflow-registr
 import { discRemoved, getRuntimeStatus, setRuntimeStatus } from "./runtime-status.js";
 import { log as writeLog } from "./logger.js";
 import type { ReviewItem } from "./domain/reviews.js";
+import { ejectDisc } from "./media.js";
 
 let stopping = false;
 let seenInsertedDisc = false;
@@ -45,9 +46,39 @@ async function handleInsert(
   checking = true;
   beginDiscDiagnostics(jobs.getSettings().opticalDevice);
   setRuntimeStatus("inspecting");
+  const previousJobId = jobs.latestJob()?.id;
   try {
     pendingJob = processInsertedDisc(sources, workflows, jobs, metadata, signal);
     seenInsertedDisc = await pendingJob;
+    const settings = jobs.getSettings();
+    const latestJob = jobs.latestJob();
+    if (settings.automationMode === "full_auto" && latestJob && latestJob.id !== previousJobId &&
+      (latestJob.status === "failed" || latestJob.status === "review")) {
+      try {
+        await ejectDisc(settings.opticalDevice);
+        writeLog("info", "disc-monitor", "Full Auto ejected a disc after recording a processing issue", {
+          jobId: latestJob.id,
+          status: latestJob.status
+        });
+      } catch (error) {
+        const message = `Full Auto could not eject the disc: ${error instanceof Error ? error.message : "unknown eject failure"}`;
+        jobs.createReview({
+          category: "system_warning",
+          severity: "high",
+          title: "Automatic disc eject failed",
+          description: message,
+          relatedJobId: latestJob.id,
+          ...(latestJob.discLabel ? { relatedDisc: latestJob.discLabel } : {}),
+          relatedDrive: settings.opticalDevice,
+          suggestedActions: [
+            { type: "view-job", label: "View job details" },
+            { type: "open-settings", label: "Check optical drive settings" },
+            { type: "dismiss", label: "Dismiss" }
+          ]
+        });
+        writeLog("error", "disc-monitor", message, { jobId: latestJob.id });
+      }
+    }
     if (seenInsertedDisc) retryDelayMs = 2000;
     else if (!signal.aborted) {
       updateDiscDiagnostics({ status: "No processing job started", reason: "See the latest inspection diagnostics; detection will retry." });

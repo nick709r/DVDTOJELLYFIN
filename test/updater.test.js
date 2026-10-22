@@ -25,6 +25,10 @@ test("update check selects the highest stable version tag and ignores other tags
       { name: "v1.12.0" },
       { name: "v1.13.0" },
       { name: "v1.14.0" },
+      { name: "v1.15.2" },
+      { name: "v1.16.0" },
+      { name: "v1.17.0" },
+      { name: "v1.18.0" },
       { name: "v2.0.0-rc.1" },
       { name: "main" },
       { name: 2 }
@@ -32,9 +36,9 @@ test("update check selects the highest stable version tag and ignores other tags
   });
 
   assert.equal(requestedUrl, "https://api.github.com/repos/nick709r/DVDTOJELLYFIN/tags?per_page=100");
-  assert.equal(result.currentVersion, "1.13.0");
-  assert.equal(result.latestVersion, "v1.14.0");
-  assert.equal(result.updateAvailable, true);
+  assert.equal(result.currentVersion, "1.18.0");
+  assert.equal(result.latestVersion, "v1.18.0");
+  assert.equal(result.updateAvailable, false);
 });
 
 test("release notes fall back to the matching README release section", async () => {

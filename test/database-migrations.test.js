@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import test from "node:test";
+import { scryptSync } from "node:crypto";
 import { defaultSettings } from "../dist/infrastructure/database/default-settings.js";
 import { migrateDatabase } from "../dist/infrastructure/database/migrations.js";
 import { createSqliteRepositories } from "../dist/infrastructure/database/repositories.js";
@@ -46,13 +47,133 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 14);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 25);
+  assert.deepEqual(
+    db.pragma("table_info(tv_matching_tasks)").map((column) => column.name),
+    ["job_id", "fingerprint", "status", "staging_path", "source_json", "diagnostics_json", "files_json",
+      "assignments_json", "failure", "created_at", "updated_at"]
+  );
+  assert.deepEqual(
+    db.pragma("table_info(review_jobs)").map((column) => column.name),
+    ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",
+      "storage_path", "media_size", "created_at", "updated_at", "resume_stage", "metadata_json", "notification_active"]
+  );
+  assert.equal(db.prepare("SELECT setup_complete FROM setup_state WHERE id = 1").get().setup_complete, 0);
+  assert.ok(db.pragma("table_info(disk_classification_audit)").some((column) => column.name === "reviewed_by"));
+  assert.deepEqual(
+    db.pragma("table_info(disc_recovery)").map((column) => column.name),
+    ["fingerprint", "detected_disc_type", "final_disc_type", "detected_media_type", "detected_confidence",
+      "final_media_type", "disc_type_overridden", "media_type_overridden", "metadata_provider", "provider_id", "series_name",
+      "season_number", "mappings_json", "notes", "updated_at", "imported_metadata_json", "artwork_references_json",
+      "disc_number", "disc_name", "identified_by", "identification_diagnostics_json"]
+  );
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  const recovery = repositories.discRecovery;
+  recovery.recordDetection("recovery-disc", "dvd", "movie");
+  const updatedRecovery = recovery.update("recovery-disc", {
+    finalDiscType: "dvd",
+    finalMediaType: "tv_series",
+    metadataProvider: "manual",
+    seriesName: "Example Show",
+    seasonNumber: 1,
+    mappings: [{
+      trackId: "1",
+      episodes: [{ seriesId: "manual:Example Show", seasonNumber: 1, episodeNumber: 1, title: "Pilot" }]
+    }],
+    importedMetadata: { title: "Example Show", year: 2024 },
+    artworkReferences: [{ kind: "poster", url: "https://image.tmdb.org/t/p/original/poster.jpg" }]
+  });
+  assert.equal(updatedRecovery.detectedMediaType, "movie");
+  assert.equal(updatedRecovery.finalMediaType, "tv_series");
+  assert.equal(updatedRecovery.mediaTypeOverridden, true);
+  assert.equal(updatedRecovery.mappings[0].episodes[0].title, "Pilot");
+  assert.equal(updatedRecovery.importedMetadata.year, 2024);
+  assert.equal(updatedRecovery.artworkReferences[0].kind, "poster");
+  assert.throws(() => recovery.update("recovery-disc", { seasonNumber: 101 }), /Season number/);
+  assert.throws(() => recovery.update("recovery-disc", {
+    artworkReferences: [{ kind: "poster", url: "http://example.invalid/poster.jpg" }]
+  }), /Artwork references/);
+  repositories.jobs.add("staged-tv-job", "Example TV disc", "staged-tv-fingerprint", "dvd");
+  const task = repositories.tvMatchingTasks.create({
+    jobId: "staged-tv-job",
+    fingerprint: "staged-tv-fingerprint",
+    status: "awaiting-identification",
+    stagingPath: "/work/tv-staging/unidentified/staged-tv-job",
+    source: {
+      sourceId: "dvd0",
+      providerId: "source.video-dvd.makemkv",
+      mediaKind: "dvd",
+      label: "",
+      manifest: { mediaKind: "dvd", items: [], attributes: {} }
+    },
+    diagnostics: { status: "analysis-unavailable" },
+    files: {},
+    assignments: []
+  });
+  assert.equal(task.jobId, "staged-tv-job");
+  assert.equal(repositories.tvMatchingTasks.list().length, 1);
+  repositories.tvMatchingTasks.update(task.jobId, { failure: "temporary issue" });
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId).failure, "temporary issue");
+  repositories.tvMatchingTasks.update(task.jobId, { failure: null });
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId).failure, undefined);
+  assert.equal(repositories.tvMatchingTasks.deleteTemporaryRecords(task.jobId, task.fingerprint), true);
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId), undefined);
+  assert.equal(db.prepare("SELECT status FROM jobs WHERE id = ?").get(task.jobId).status, "deleted");
   db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
     "tvStoreAnalysisEvidence", "true", "2026-01-01T00:00:00.000Z"
   );
   db.prepare("DELETE FROM schema_migrations WHERE version = 13").run();
   migrateDatabase(db, defaultSettings);
   assert.equal(db.prepare("SELECT 1 FROM settings WHERE key = ?").get("tvStoreAnalysisEvidence"), undefined);
+  db.close();
+});
+
+test("setup state repository completes once and migrates legacy administrator credentials", () => {
+  const db = new Database(":memory:");
+  const salt = Buffer.from("legacy salt");
+  const password = "LegacyStrongPassword123!";
+  db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)");
+  const now = new Date().toISOString();
+  const insert = db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)");
+  insert.run("adminPasswordSalt", JSON.stringify(salt.toString("hex")), now);
+  insert.run("adminPasswordHash", JSON.stringify(scryptSync(password, salt, 64).toString("hex")), now);
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  assert.equal(repositories.setup.get().setupComplete, true);
+  assert.equal(repositories.setup.get().adminUsername, "admin");
+  assert.equal(repositories.setup.authenticate("admin", password), true);
+  assert.equal(repositories.setup.authenticate("admin", "wrong password"), false);
+  assert.equal(repositories.setup.get().passwordChangeRequired, true);
+  repositories.setup.updatePassword("00", "00");
+  assert.equal(repositories.setup.get().passwordChangeRequired, false);
+  migrateDatabase(db, defaultSettings);
+  assert.equal(repositories.setup.get().passwordChangeRequired, false);
+  assert.throws(() => repositories.setup.complete("other-admin", "salt", "hash"), /already been completed/);
+  repositories.close();
+});
+
+test("destination migration preserves saved legacy library paths and routes existing Lidarr users", () => {
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)");
+  const insert = db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)");
+  const updatedAt = new Date().toISOString();
+  insert.run("moviesDir", JSON.stringify("/legacy/Movies"), updatedAt);
+  insert.run("tvRootDir", JSON.stringify("/legacy/TV"), updatedAt);
+  insert.run("musicDir", JSON.stringify("/legacy/Music"), updatedAt);
+  insert.run("lidarrEnabled", JSON.stringify(true), updatedAt);
+
+  migrateDatabase(db, defaultSettings);
+  const destinations = JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'outputDestinations'").get().value);
+  const profile = destinations.profiles[0];
+  assert.equal(destinations.activeProfileId, profile.id);
+  assert.deepEqual(profile.jellyfin.paths, {
+    tv: "/legacy/TV",
+    movies: "/legacy/Movies",
+    music: "/legacy/Music"
+  });
+  assert.equal(profile.routes.music, "lidarr");
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 25);
   db.close();
 });
 
@@ -130,6 +251,35 @@ test("review item repository persists searchable lifecycle data and summary coun
   assert.equal(repositories.reviewItems.get(review.id).status, "resolved");
   assert.equal(repositories.reviewItems.resolveForDisc("review-disc", "Completed"), 0);
   assert.equal(repositories.reviewItems.summary().active, 1);
+  repositories.close();
+});
+
+test("review job repository persists queue status, metadata, and cleanup notifications", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  repositories.jobs.add("review-job", "Preserved DVD", "review-fingerprint", "dvd");
+  const reviewJob = repositories.reviewJobs.create({
+    id: "review-job",
+    originalJobId: "review-job",
+    discType: "dvd",
+    discLabel: "Preserved DVD",
+    failureReason: "Metadata lookup failed",
+    failureStage: "metadata",
+    storagePath: "/working/reviews/review-job",
+    mediaSize: 1024,
+    resumeStage: "metadata",
+    metadata: { title: "Corrected title" }
+  });
+  assert.equal(reviewJob.status, "pending");
+  assert.equal(reviewJob.metadata.title, "Corrected title");
+  assert.equal(repositories.reviewJobs.list().length, 1);
+  assert.equal(repositories.reviewJobs.update("review-job", {
+    status: "retrying",
+    notificationActive: false
+  }).notificationActive, false);
+  assert.equal(repositories.reviewJobs.delete("review-job"), true);
+  assert.equal(repositories.reviewJobs.get("review-job"), undefined);
   repositories.close();
 });
 

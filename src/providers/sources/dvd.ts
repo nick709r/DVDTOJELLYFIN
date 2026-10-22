@@ -1,6 +1,6 @@
 import type { MediaSourceCandidate, MediaSourceProvider, SourceAcquisitionOptions } from "../../contracts/media-source.js";
 import type { ProviderDescriptor } from "../../contracts/provider.js";
-import { inspectDisc, ripTitle } from "../../media.js";
+import { inspectDisc, readFilesystemVolumeName, ripTitle } from "../../media.js";
 import { executableAvailable } from "../../executable.js";
 
 const descriptor: ProviderDescriptor = {
@@ -27,6 +27,12 @@ export class MakeMkvDvdSourceProvider implements MediaSourceProvider {
 
   async inspect(sourceId: string, signal?: AbortSignal): Promise<MediaSourceCandidate> {
     const disc = await inspectDisc(`dev:${sourceId}`, signal);
+    const filesystemVolumeName = await readFilesystemVolumeName(sourceId, signal);
+    const attributes: Record<string, string> = {
+      ...(filesystemVolumeName ? { filesystemVolumeName } : {}),
+      ...(disc.makemkvName ? { makemkvDiscName: disc.makemkvName } : {}),
+      ...(disc.volumeName ? { dvdVolumeName: disc.volumeName } : {})
+    };
     return {
       providerId: descriptor.id,
       mediaKind: "dvd",
@@ -34,6 +40,7 @@ export class MakeMkvDvdSourceProvider implements MediaSourceProvider {
       label: disc.label,
       manifest: {
         mediaKind: "dvd",
+        ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
         items: disc.titles.map((title) => ({
           id: String(title.id),
           kind: "title",

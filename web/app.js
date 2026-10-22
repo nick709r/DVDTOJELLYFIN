@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null };
+const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null, tvDeleteJobId: null };
 const loginDialog = $("#login-dialog");
+const passwordChangeDialog = $("#password-change-dialog");
 const themeToggle = $("#theme-toggle");
 
 function setTheme(theme) {
@@ -35,6 +36,10 @@ async function api(path, options = {}) {
     if (!loginDialog.open) loginDialog.showModal();
     $("#auth-state").textContent = "Sign-in required";
     throw new Error(payload.error || "Sign-in required");
+  }
+  if (response.status === 403 && payload.passwordChangeRequired) {
+    if (!passwordChangeDialog.open) passwordChangeDialog.showModal();
+    throw new Error(payload.error);
   }
   if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
@@ -181,6 +186,117 @@ function diagnosticPairs(entries) {
   ).join("")}</dl>`;
 }
 
+const DISK_TYPE_LABELS = { dvd: "DVD", bluray: "Blu-ray", audio_cd: "CD Audio", cdrom: "CD-ROM", mixed_mode: "Mixed Mode", unknown: "Unknown" };
+const diskTypeLabel = (type) => DISK_TYPE_LABELS[type] || type;
+state.classification = null;
+state.diagnosticsFingerprint = null;
+
+async function renderClassification(record) {
+  state.classification = record || null;
+  const meta = await api("/api/v1/classification/audit?limit=1");
+  const form = $("#classification-form");
+  const m = (await api("/api/v1/classification/metrics")).metrics;
+  const corrections = m.corrections.map((c) => `${escapeHtml(diskTypeLabel(c.from))} → ${escapeHtml(diskTypeLabel(c.to))}: ${c.count}`).join(" · ") || "none";
+  $("#classification-metrics").innerHTML = diagnosticPairs([
+    ["Total processed", m.totalProcessed], ["Auto accepted", m.autoAccepted], ["Reviewed", m.reviewed],
+    ["Manual corrections", m.manualCorrections], ["Review required", m.reviewRequired]
+  ]) + `<p class="hint">Common corrections: ${corrections}</p>`;
+  if (!record) {
+    $("#classification-summary").textContent = "No disc selected.";
+    form.classList.add("hidden");
+    return;
+  }
+  const overridden = record.detectedType !== record.finalType;
+  $("#classification-summary").innerHTML = diagnosticPairs([
+    ["Original detection", diskTypeLabel(record.detectedType)],
+    ["Final type", diskTypeLabel(record.finalType) + (overridden ? " (manual override)" : "")],
+    ["Confidence", record.confidence === null ? "Not available" : record.confidence.toFixed(2)],
+    ["Review status", record.reviewStatus],
+    ["Override reason", record.overrideReason || "—"],
+    ["Reviewed by", record.reviewedBy || "—"],
+    ["Reviewed at", record.reviewedAt ? new Date(record.reviewedAt).toLocaleString() : "—"]
+  ]);
+  const types = [...new Set([...meta.diskTypes, record.detectedType, record.finalType])];
+  $("#classification-final").innerHTML = types.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(diskTypeLabel(t))}</option>`).join("");
+  $("#classification-final").value = record.finalType;
+  $("#classification-reason").innerHTML = '<option value="">Not needed (no change)</option>' +
+    meta.overrideReasons.map((r) => `<option value="${r}">${r}</option>`).join("");
+  $("#classification-reason").value = record.overrideReason || "";
+  form.elements.namedItem("notes").value = record.notes || "";
+  form.classList.remove("hidden");
+}
+
+async function renderDiscRecovery(payload) {
+  const form = $("#disc-recovery-form");
+  const recovery = payload.job?.discFingerprint
+    ? await api(`/api/v1/discs/recovery/${encodeURIComponent(payload.job.discFingerprint)}`)
+    : state.diagnosticsFingerprint
+      ? await api(`/api/v1/discs/recovery/${encodeURIComponent(state.diagnosticsFingerprint)}`)
+      : { recovery: null };
+  if (!recovery.recovery) {
+    form.classList.add("hidden");
+    return;
+  }
+  const item = recovery.recovery;
+  form.dataset.fingerprint = item.fingerprint;
+  const discTypes = [
+    ["cd", "CD"], ["dvd", "DVD"], ["bluray", "Blu-ray"], ["uhd_bluray", "UHD Blu-ray"],
+    ["data_disc", "Data Disc"], ["unknown", "Unknown"]
+  ];
+  form.elements.discType.innerHTML = discTypes.map(([value, label]) =>
+    `<option value="${value}">${label}</option>`).join("");
+  form.elements.discType.value = item.finalDiscType;
+  form.elements.mediaType.value = item.finalMediaType;
+  form.elements.metadataProvider.value = item.metadataProvider;
+  form.elements.providerId.value = item.providerId || "";
+  form.elements.seriesName.value = item.seriesName || "";
+  form.elements.seasonNumber.value = item.seasonNumber ?? "";
+  form.elements.notes.value = item.notes || "";
+  $("#disc-recovery-summary").textContent =
+    `Detected ${item.detectedDiscType} / ${item.detectedMediaType}; final ${item.finalDiscType} / ${item.finalMediaType}` +
+    `${item.detectedConfidence === null ? "" : ` · detection confidence ${Math.round(item.detectedConfidence * 100)}%`}` +
+    `${item.discTypeOverridden || item.mediaTypeOverridden ? " (manual override active)" : " (no override)"}.`;
+  form.classList.remove("hidden");
+}
+
+$("#classification-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    const record = (await api(`/api/v1/classification/audit/${encodeURIComponent(state.classification.id)}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ finalType: form.finalType.value, overrideReason: form.overrideReason.value || undefined, notes: form.notes.value || undefined })
+    })).record;
+    await renderClassification(record);
+    notify("Classification review saved.");
+  } catch (error) { notify(error.message, true); }
+});
+
+$("#disc-recovery-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    const season = form.elements.seasonNumber.value;
+    await api(`/api/v1/discs/recovery/${encodeURIComponent(form.dataset.fingerprint)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        discType: form.elements.discType.value,
+        mediaType: form.elements.mediaType.value,
+        metadataProvider: form.elements.metadataProvider.value,
+        providerId: form.elements.providerId.value.trim() || null,
+        seriesName: form.elements.seriesName.value.trim() || null,
+        seasonNumber: season === "" ? null : Number(season),
+        notes: form.elements.notes.value
+      })
+    });
+    notify("Media recovery saved. The new values take priority on the next disc detection.");
+    await loadDiagnostics($("#diagnostics-job").value);
+  } catch (error) {
+    notify(error.message, true);
+  }
+});
+
 function renderDiagnostics(payload) {
   const select = $("#diagnostics-job");
   const selectedId = payload.job?.id || (payload.liveOnly ? "" : state.diagnosticsJobId);
@@ -198,6 +314,7 @@ function renderDiagnostics(payload) {
   const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
   const events = timeline.map((item) => ({ ...item, data: parseDiagnosticMessage(item.message) }));
   const inspection = events.find((item) => item.stage === "disc-detected")?.data || live?.candidate || {};
+  state.diagnosticsFingerprint = job?.discFingerprint || inspection.fingerprint || live?.fingerprint || null;
   const scoreEvent = [...events].reverse().find((item) => item.stage === "tv-classification" &&
     Array.isArray(item.data.criteria) && item.data.criteria.some((criterion) => Number.isFinite(criterion.weight))) ||
     [...events].reverse().find((item) => item.stage === "tv-classification" &&
@@ -275,6 +392,23 @@ function renderDiagnostics(payload) {
   }
 
   const analysisEvent = [...events].reverse().find((item) => item.stage === "tv-analysis");
+  const identificationEvent = [...events].reverse().find((item) => item.stage === "tv-identification");
+  const stagedTask = payload.tvMatchingTask;
+  $("#diagnostics-identification").innerHTML = (identificationEvent
+    ? renderIdentificationDiagnostics(identificationEvent.data)
+    : '<div class="empty-state">TV identification was not run for this disc.</div>') +
+    (stagedTask ? `<h3>TV Matching staging</h3>${diagnosticPairs([
+      ["Task status", stagedTask.status],
+      ["Disc volume label", stagedTask.sourceLabel],
+      ["Filesystem volume name", stagedTask.filesystemVolumeName],
+      ["Fingerprint", stagedTask.fingerprint],
+      ["Staged episode count", stagedTask.episodeCount],
+      ["Failure", stagedTask.failure]
+    ])}<details><summary>Staged assignment and lookup diagnostics</summary><pre>${escapeHtml(JSON.stringify({
+      assignments: stagedTask.assignments,
+      diagnostics: stagedTask.diagnostics
+    }, null, 2))}</pre></details>` : "");
+  $("#diagnostics-identify").classList.toggle("hidden", !state.diagnosticsFingerprint);
   const analysis = analysisEvent?.data.analysis;
   const matching = analysisEvent?.data.matching;
   if (analysis) {
@@ -343,6 +477,8 @@ async function loadDiagnostics(jobId = "", liveOnly = false) {
   const query = liveOnly ? "?live=1" : jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
   const payload = await api(`/api/v1/diagnostics${query}`);
   renderDiagnostics(payload);
+  renderClassification(payload.classification).catch((error) => notify(error.message, true));
+  renderDiscRecovery(payload).catch((error) => notify(error.message, true));
 }
 
 async function refreshDashboard() {
@@ -356,8 +492,25 @@ async function refreshDashboard() {
   const lastFinished = ["completed", "failed", "cancelled"].includes(data.state) ? data.recent[0] : null;
   renderJob(data.active || lastFinished, data.state);
   renderJobList($("#recent-list"), data.recent);
+  renderLibraryHealth($("#library-dashboard-health"), data.libraries, false);
   await refreshChart(state.statsRange);
   await Promise.all([loadTvSummary(), loadTvMetadataMetrics()]);
+}
+
+function renderLibraryHealth(target, libraries, allowCreate) {
+  if (!target) return;
+  const names = { movies: "Movies", tv: "TV Shows", music: "Music" };
+  target.innerHTML = libraries.map((library) => {
+    const ready = library.exists && library.writable;
+    const label = !library.exists ? "Missing" : library.writable ? "Ready" : "Not writable";
+    return `<div class="library-health ${ready ? "ready" : "warning"}"><span>${ready ? "✓" : "⚠"} ${escapeHtml(names[library.type])} Library ${label}</span><span>${escapeHtml(library.path)} · Free space: ${formatBytes(library.freeBytes)}</span>${library.error ? `<small>${escapeHtml(library.error)}</small>` : ""}${allowCreate ? `<button class="button secondary create-library" data-library="${escapeHtml(library.type)}" type="button">${library.exists ? "Verify / repair folder" : "Create Folder"}</button>` : ""}</div>`;
+  }).join("");
+}
+
+async function refreshLibraryHealth() {
+  const { libraries } = await api("/api/library/health");
+  renderLibraryHealth($("#library-settings-health"), libraries, true);
+  renderLibraryHealth($("#library-dashboard-health"), libraries, false);
 }
 
 async function refreshHistory() {
@@ -507,7 +660,317 @@ async function loadTvMetadataSettings() {
     <p>${escapeHtml(data.matchingPolicy.reviewPolicy)}</p><p>${escapeHtml(data.matchingPolicy.matchingPolicy)}</p>`;
 }
 
-function renderTvPlanCard(plan, includeActions = false) {
+const identificationStatusLabels = {
+  matched: "✓ matched", "no-match": "– no match", skipped: "skipped", failed: "✗ failed", informational: "info"
+};
+
+function renderIdentificationDiagnostics(d) {
+  if (!d) return '<p class="hint">No identification diagnostics have been recorded for this disc yet.</p>';
+  const queries = d.queries || [];
+  const terms = [...new Set(queries.map((query) => query.query))];
+  const matchSummary = Object.entries(d.providerMatches || {}).map(([provider, count]) => `${provider}: ${count}`).join(", ");
+  const selected = d.selected
+    ? `${d.selected.title}${d.selected.year ? ` (${d.selected.year})` : ""} · ${d.selected.providerId} · via ${d.selected.origin}`
+    : "None - identify the disc manually";
+  return `<div class="tv-identification-diagnostics">${diagnosticPairs([
+    ["Disc volume label", d.volumeLabel || "(empty)"],
+    ["Filesystem volume name", d.filesystemVolumeName || "(unavailable)"],
+    ["MakeMKV disc name", d.makemkvDiscName || "(unavailable)"],
+    ["Fingerprint", d.fingerprint],
+    ["Metadata providers queried", (d.providersQueried || []).join(", ") || "None"],
+    ["Query terms used", terms.join(" | ") || "None (no usable disc name)"],
+    ["Matches per provider", matchSummary || "None"],
+    ["Selected", selected]
+  ])}
+    <h4>Identification pipeline</h4>
+    <div class="diagnostic-list">${(d.steps || []).map((step) =>
+      `<div><b>${escapeHtml(step.order)}. ${escapeHtml(step.name)}</b><span>${escapeHtml(identificationStatusLabels[step.status] || step.status)} · ${escapeHtml(step.detail)}</span></div>`).join("")}</div>
+    <h4>Name sources and normalized search variants</h4>
+    <div class="diagnostic-list">${(d.nameSources || []).map((source) =>
+      `<div><b>${escapeHtml(source.name)}</b><span>${source.raw ? `"${escapeHtml(source.raw)}" → ${source.variants?.length ? escapeHtml(source.variants.join(" | ")) : "no usable name"}` : "Not available"}</span></div>`).join("")}</div>
+    <h4>Queries sent</h4>
+    <div class="diagnostic-list">${queries.map((query) =>
+      `<div><b>${escapeHtml(query.query)}</b><span>${escapeHtml(query.providerId)} · ${escapeHtml(query.nameSource)} · ${escapeHtml(query.matches)} matches · ${escapeHtml(query.durationMs)} ms${query.failure ? ` · failed: ${escapeHtml(query.failure)}` : ""}</span></div>`).join("") || "<p class=\"empty-state\">No metadata query could be sent.</p>"}</div>
+    <h4>Series candidates</h4>
+    <div class="diagnostic-list">${(d.seriesCandidates || []).map((candidate) =>
+      `<div><b>${escapeHtml(candidate.title)}${candidate.year ? ` (${escapeHtml(candidate.year)})` : ""}</b><span>${escapeHtml(candidate.providerId)} · ${diagnosticConfidence(candidate.confidence)}</span></div>`).join("") || '<p class="empty-state">No series candidates.</p>'}</div>
+    <h4>Season candidates</h4>
+    <div class="diagnostic-list">${(d.seasonCandidates || []).map((candidate) =>
+      `<div><b>Season ${escapeHtml(candidate.seasonNumber)}</b><span>${escapeHtml(candidate.providerId)} · ${diagnosticConfidence(candidate.confidence)}</span></div>`).join("") || '<p class="empty-state">No season candidates.</p>'}</div>
+    ${(d.failures || []).map((failure) => `<div class="diagnostic-error">Lookup failure · ${escapeHtml(failure.providerId)} (${escapeHtml(failure.query)}): ${escapeHtml(failure.message)}</div>`).join("")}
+  </div>`;
+}
+
+const identifyDialog = $("#identify-disc-dialog");
+const identifyState = { planId: null, taskId: null, fingerprint: null, selected: null, existing: null };
+
+function fillNumberSelect(select, from, to, value, zeroLabel = "") {
+  const options = [];
+  for (let number = from; number <= to; number += 1) {
+    options.push(`<option value="${number}"${number === value ? " selected" : ""}>${number === 0 && zeroLabel ? zeroLabel : number}</option>`);
+  }
+  select.innerHTML = options.join("");
+}
+
+function showIdentifySelection(selected, season, disc, discName) {
+  identifyState.selected = selected;
+  $("#identify-assignment").classList.remove("hidden");
+  $("#identify-selected").innerHTML = `<b>${escapeHtml(selected.title)}${selected.year ? ` (${escapeHtml(selected.year)})` : ""}</b> · ${escapeHtml(selected.providerName || selected.provider)}`;
+  const maxSeason = Math.max(selected.seasonCount || 0, season || 0, 15);
+  fillNumberSelect($("#identify-season"), 0, maxSeason, season ?? 1, "0 - Specials");
+  fillNumberSelect($("#identify-disc"), 1, Math.max(disc || 0, 20), disc ?? 1);
+  $("#identify-disc-name").value = discName || "";
+  $("#identify-save").disabled = false;
+}
+
+function renderIdentifyResults(candidates) {
+  $("#identify-results").innerHTML = candidates.map((candidate, index) => `
+    <button type="button" class="identify-result" data-index="${index}">
+      ${candidate.posterUrl ? `<img src="${escapeHtml(candidate.posterUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="identify-poster-missing">No poster</span>'}
+      <span class="identify-result-body">
+        <b>${escapeHtml(candidate.title)}</b>
+        <small>${candidate.year ? escapeHtml(candidate.year) : "Year unknown"} · ${candidate.seasonCount ? `${escapeHtml(candidate.seasonCount)} season${candidate.seasonCount === 1 ? "" : "s"}` : "Seasons not reported"}</small>
+        <small>${escapeHtml(candidate.providerName)} · ${diagnosticConfidence(candidate.confidence)} match</small>
+        ${candidate.overview ? `<small class="identify-overview">${escapeHtml(candidate.overview.slice(0, 160))}</small>` : ""}
+      </span>
+    </button>`).join("");
+  identifyState.candidates = candidates;
+}
+
+async function runIdentifySearch() {
+  const query = $("#identify-search").value.trim();
+  if (!query) return;
+  const status = $("#identify-status");
+  status.textContent = "Searching metadata providers...";
+  $("#identify-results").innerHTML = "";
+  try {
+    const data = await api("/api/v1/tv/identify/search", { method: "POST", body: JSON.stringify({ query }) });
+    renderIdentifyResults(data.candidates);
+    const summary = data.queries.map((entry) => `${entry.providerId}: ${entry.failure ? `failed (${entry.failure})` : `${entry.matches} matches`} for "${entry.query}"`).join("; ");
+    status.textContent = data.candidates.length ? summary : `No series found. ${summary}`;
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function openIdentifyDialog({ planId = null, taskId = null, fingerprint = null, suggested = "", focus = "series" }) {
+  identifyState.planId = planId;
+  identifyState.taskId = taskId;
+  identifyState.selected = null;
+  identifyState.existing = null;
+  identifyState.candidates = [];
+  let existing = null;
+  if (taskId) {
+    const data = await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}`);
+    identifyState.fingerprint = data.task.fingerprint;
+    existing = data.recovery?.seriesName ? {
+      seriesName: data.recovery.seriesName, provider: data.recovery.metadataProvider,
+      providerId: data.recovery.providerId, seasonNumber: data.recovery.seasonNumber,
+      discNumber: data.recovery.discNumber, discName: data.recovery.discName
+    } : null;
+  } else if (planId) {
+    const data = await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/identification`);
+    identifyState.fingerprint = data.fingerprint;
+    existing = data.identification;
+  } else {
+    identifyState.fingerprint = fingerprint;
+    const { recovery } = await api(`/api/v1/discs/recovery/${encodeURIComponent(fingerprint)}`);
+    existing = recovery?.seriesName ? {
+      seriesName: recovery.seriesName, provider: recovery.metadataProvider, providerId: recovery.providerId,
+      seasonNumber: recovery.seasonNumber, discNumber: recovery.discNumber, discName: recovery.discName
+    } : null;
+  }
+  identifyState.existing = existing;
+  $("#identify-disc-context").textContent = taskId
+    ? `Disc fingerprint ${identifyState.fingerprint}. Identification will continue processing from the staged video without reinserting or re-ripping the disc.`
+    : `Disc fingerprint ${identifyState.fingerprint}. The identification is remembered and applied automatically whenever this disc is inserted again.`;
+  $("#identify-save").textContent = taskId ? "Identify And Continue" : "Save";
+  $("#identify-assignment").classList.add("hidden");
+  $("#identify-save").disabled = true;
+  $("#identify-results").innerHTML = "";
+  $("#identify-status").textContent = "Search by series title, TVDB ID (tvdb:12345), TMDB ID (tmdb:12345) or IMDb ID (tt1234567).";
+  $("#identify-search").value = existing?.seriesName || suggested || "";
+  if (existing) {
+    showIdentifySelection({
+      title: existing.seriesName, provider: existing.provider, providerName: existing.provider,
+      seriesId: existing.providerId, year: null, seasonCount: 0
+    }, existing.seasonNumber ?? 1, existing.discNumber ?? 1, existing.discName);
+  }
+  identifyDialog.showModal();
+  if (focus === "season" && existing) $("#identify-season").focus();
+  else if (focus === "disc" && existing) $("#identify-disc").focus();
+  else $("#identify-search").focus();
+  if (!existing && $("#identify-search").value) await runIdentifySearch();
+}
+
+$("#identify-search-button").addEventListener("click", () => runIdentifySearch());
+$("#identify-search").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runIdentifySearch();
+  }
+});
+$("#identify-results").addEventListener("click", (event) => {
+  const button = event.target.closest(".identify-result");
+  if (!button) return;
+  const candidate = identifyState.candidates[Number(button.dataset.index)];
+  const current = identifyState.existing;
+  showIdentifySelection(candidate, current?.seasonNumber ?? 1, current?.discNumber ?? 1, "");
+  $("#identify-results").querySelectorAll(".identify-result").forEach((item) => item.classList.toggle("selected", item === button));
+});
+$("#identify-cancel").addEventListener("click", () => identifyDialog.close());
+$("#identify-disc-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const selected = identifyState.selected;
+  if (!selected) return;
+  const save = $("#identify-save");
+  save.disabled = true;
+  try {
+    const body = {
+      seriesName: selected.title,
+      provider: selected.provider,
+      providerId: selected.seriesId || null,
+      seasonNumber: Number($("#identify-season").value),
+      discNumber: Number($("#identify-disc").value),
+      discName: $("#identify-disc-name").value.trim() || null,
+      ...(selected.year ? { year: selected.year } : {}),
+      ...(selected.posterUrl ? { posterUrl: selected.posterUrl } : {}),
+      ...(selected.overview ? { overview: selected.overview } : {})
+    };
+    const path = identifyState.planId
+      ? `/api/v1/tv/plans/${encodeURIComponent(identifyState.planId)}/identification`
+      : `/api/v1/discs/${encodeURIComponent(identifyState.fingerprint)}/identification`;
+    if (identifyState.taskId) {
+      await api(`/api/v1/tv/matching/${encodeURIComponent(identifyState.taskId)}/identification`, {
+        method: "PUT", body: JSON.stringify(body)
+      });
+      await api(`/api/v1/tv/matching/${encodeURIComponent(identifyState.taskId)}/continue`, { method: "POST" });
+    } else {
+      await api(path, { method: "PUT", body: JSON.stringify(body) });
+    }
+    identifyDialog.close();
+    notify(identifyState.taskId
+      ? `Identified ${selected.title}; processing is continuing from staged files.`
+      : `Saved: ${selected.title} season ${body.seasonNumber} disc ${body.discNumber}. This disc will be recognised automatically next time.`);
+    if (identifyState.taskId) await loadTvMatchingTasks();
+    if (state.page === "tv-reviews") await loadTvReviews();
+    if (state.page === "diagnostics") await loadDiagnostics($("#diagnostics-job").value);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    save.disabled = false;
+  }
+});
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".tv-identify");
+  if (!button) return;
+  openIdentifyDialog({
+    planId: button.dataset.planId || null,
+    taskId: button.dataset.taskId || null,
+    fingerprint: button.dataset.fingerprint || null,
+    suggested: button.dataset.suggested || "",
+    focus: button.dataset.focus || "series"
+  }).catch((error) => notify(error.message, true));
+});
+
+$("#diagnostics-identify").addEventListener("click", () => {
+  if (!state.diagnosticsFingerprint) return;
+  openIdentifyDialog({ fingerprint: state.diagnosticsFingerprint })
+    .catch((error) => notify(error.message, true));
+});
+
+$("#identify-disc-open").addEventListener("click", async () => {
+  try {
+    const { plans } = await api("/api/v1/tv/reviews?limit=1&state=awaiting-review");
+    if (!plans.length) {
+      notify("No TV disc is awaiting review. Open Disc Diagnostics for a disc and use Identify Disc there.", true);
+      return;
+    }
+    await openIdentifyDialog({ planId: plans[0].id, suggested: plans[0].series?.title || "" });
+  } catch (error) { notify(error.message, true); }
+});
+
+function renderTvIdentifyActions(plan, recovery) {
+  const identified = Boolean(recovery?.seriesName);
+  const suggested = escapeHtml(recovery?.seriesName || plan.series?.title || "");
+  const attrs = `data-plan-id="${escapeHtml(plan.id)}" data-suggested="${suggested}"`;
+  const saved = identified
+    ? `<p class="hint">Saved identification: <b>${escapeHtml(recovery.seriesName)}</b>${recovery.seasonNumber === null || recovery.seasonNumber === undefined ? "" : ` · Season ${escapeHtml(recovery.seasonNumber)}`}${recovery.discNumber ? ` · Disc ${escapeHtml(recovery.discNumber)}` : ""}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} (${recovery.identifiedBy === "user" ? "manual" : "saved mapping"}). It is applied automatically when this disc is inserted.</p>`
+    : "";
+  return `<div class="tv-identify-actions">
+    ${saved}
+    <div class="tv-actions">
+      <button type="button" class="button ${identified || plan.series ? "secondary" : "primary"} tv-identify" ${attrs} data-focus="series">${identified || plan.series ? "Change Series" : "Identify Series"}</button>
+      <button type="button" class="button secondary tv-identify" ${attrs} data-focus="season">Change Season</button>
+      <button type="button" class="button secondary tv-identify" ${attrs} data-focus="disc">Change Disc Number</button>
+    </div>
+    <details class="tv-identification-details"><summary>Why this series? Identification diagnostics</summary>${renderIdentificationDiagnostics(recovery?.identificationDiagnostics)}</details>
+  </div>`;
+}
+
+function renderTvRecoveryEditor(plan, recovery) {
+  const trackOptions = plan.assignments.map((assignment) =>
+    `<option value="${escapeHtml(assignment.itemId)}">${escapeHtml(assignment.itemTitle || `Track ${assignment.itemId}`)}</option>`).join("");
+  const mappings = recovery?.mappings?.length
+    ? recovery.mappings.flatMap((mapping) => mapping.episodes.map((episode) => ({
+      trackId: mapping.trackId, episode, seriesId: episode.seriesId
+    })))
+    : plan.assignments.flatMap((assignment) => assignment.episodes.map((episode) => ({
+      trackId: assignment.itemId, episode, seriesId: episode.seriesId
+    })));
+  const mappingRows = (mappings.length ? mappings : [{ trackId: plan.assignments[0]?.itemId || "", episode: {}, seriesId: plan.series?.id || "" }])
+    .map(({ trackId, episode, seriesId }) => `<div class="tv-episode-map-row" data-episode-map-row>
+      <label>Track<select data-map-track>${trackOptions.replace(`value="${escapeHtml(trackId)}"`, `value="${escapeHtml(trackId)}" selected`)}</select></label>
+      <label>Provider episode<select data-map-provider-episode><option value="">Manual mapping</option></select></label>
+      <label>Season<input data-map-season type="number" min="0" max="100" value="${escapeHtml(episode.seasonNumber ?? recovery?.seasonNumber ?? plan.season?.number ?? "")}"></label>
+      <label>Episode<input data-map-episode type="number" min="0" max="1000" value="${escapeHtml(episode.episodeNumber ?? "")}"></label>
+      <label>Episode title<input data-map-title maxlength="500" value="${escapeHtml(episode.title || "")}"></label>
+      <label>Air date<input data-map-air-date type="date" value="${escapeHtml(episode.airDate || "")}"></label>
+      <label>Episode notes<input data-map-notes maxlength="1000" value="${escapeHtml(episode.notes || "")}"></label>
+      <input data-map-series-id type="hidden" value="${escapeHtml(seriesId || plan.series?.id || "")}">
+      <button type="button" class="button secondary" data-action="remove-episode-map">Remove</button>
+    </div>`).join("");
+  const discType = recovery?.finalDiscType || "dvd";
+  const mediaType = recovery?.finalMediaType || "tv_series";
+  const provider = recovery?.metadataProvider || "manual";
+  return `<details class="tv-recovery-editor">
+    <summary>Manual classification, metadata & episode recovery</summary>
+    <p class="hint">Detected: ${escapeHtml(recovery?.detectedDiscType || "DVD")} / ${escapeHtml(recovery?.detectedMediaType || "TV series")} · Final: ${escapeHtml(discType)} / ${escapeHtml(mediaType)}${recovery?.mediaTypeOverridden || recovery?.discTypeOverridden ? " (manual override active)" : " (no override)"}</p>
+    <form class="tv-recovery-form" data-plan-id="${escapeHtml(plan.id)}">
+      <div class="tv-recovery-fields">
+        <label>Disc type<select name="discType">${[
+          ["cd", "CD"], ["dvd", "DVD"], ["bluray", "Blu-ray"], ["uhd_bluray", "UHD Blu-ray"], ["data_disc", "Data Disc"], ["unknown", "Unknown"]
+        ].map(([value, label]) => `<option value="${value}"${discType === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+        <label>Media type<select name="mediaType">${[
+          ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music Album"], ["audiobook", "Audiobook"],
+          ["music_video", "Music Video"], ["concert", "Concert"], ["documentary", "Documentary"], ["mixed_content", "Mixed Content"], ["other", "Other"]
+        ].map(([value, label]) => `<option value="${value}"${mediaType === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+        <label>Metadata provider<select name="metadataProvider">${[
+          ["tvdb", "TVDB"], ["tmdb", "TMDB"], ["imdb", "IMDb"], ["anidb", "AniDB"], ["manual", "Manual Entry"]
+        ].map(([value, label]) => `<option value="${value}"${provider === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+        <label>Provider ID<input name="providerId" maxlength="200" value="${escapeHtml(recovery?.providerId || "")}"></label>
+        <label>Series name<input name="seriesName" maxlength="200" value="${escapeHtml(recovery?.seriesName || plan.series?.title || "")}"></label>
+        <label>Season number<input name="seasonNumber" type="number" min="0" max="100" value="${escapeHtml(recovery?.seasonNumber ?? plan.season?.number ?? "")}"></label>
+      </div>
+      <div class="tv-actions">
+        <button type="button" class="button secondary" data-action="lookup-series">Lookup Series</button>
+        <button type="button" class="button secondary" data-action="import-series" disabled>Import Metadata</button>
+        <button type="button" class="button secondary" data-action="add-episode-map">Add episode mapping</button>
+      </div>
+      <div class="tv-series-lookup-result" aria-live="polite"></div>
+      <h4>Detected tracks (drag a track to a mapping, or use its dropdown)</h4>
+      <div class="tv-recovery-tracks">${plan.assignments.map((assignment) => `<div class="tv-recovery-track" draggable="true" data-track-id="${escapeHtml(assignment.itemId)}">${escapeHtml(assignment.itemTitle || `Track ${assignment.itemId}`)} · ${escapeHtml(assignment.itemId)}</div>`).join("")}</div>
+      <h4>Episode mapping</h4>
+      <div class="tv-episode-map-list">${mappingRows}</div>
+      <label>Notes<textarea name="notes" maxlength="2000">${escapeHtml(recovery?.notes || "")}</textarea></label>
+      <button type="submit" class="button primary">Save Metadata and Mappings</button>
+      <p class="hint">Saving applies the manual classification and mappings on the next disc detection. TV outputs use Series/Season NN/Series - SnnEnn - Episode Title.ext.</p>
+    </form>
+  </details>`;
+}
+
+function renderTvPlanCard(plan, includeActions = false, recovery = null, includeRecovery = false) {
   const editable = includeActions && !["approved", "rejected"].includes(plan.state);
   const series = plan.series?.title || "Unknown series";
   const season = plan.season ? `Season ${plan.season.number}` : "Unknown season";
@@ -533,6 +996,7 @@ function renderTvPlanCard(plan, includeActions = false) {
     <div class="tv-plan-heading"><div><b>${escapeHtml(series)}</b><span class="list-sub">${escapeHtml(season)} · ${escapeHtml(disc)} · ${new Date(plan.createdAt).toLocaleString()}</span></div>
     <span class="confidence-pill ${escapeHtml(plan.confidenceBand)}">${confidence}% · ${escapeHtml(confidenceLabel(plan.confidenceBand))}</span></div>
     <p>${plan.reviewReasons.map(escapeHtml).join(" · ") || "No additional review reasons."}</p>
+    ${includeRecovery ? renderTvIdentifyActions(plan, recovery) : ""}
     ${assignments || '<div class="empty-state">No episode assignments were generated.</div>'}
     <div class="tv-plan-foot"><span>State: ${escapeHtml(plan.state)} · ${plan.duplicateTracks.length} duplicates · ${plan.bonusFeatures.length} bonus · ${plan.commentaryTracks.length} commentary</span>
       <button class="button secondary tv-action" data-action="view-plan" data-plan-id="${escapeHtml(plan.id)}">Analysis details</button>
@@ -542,6 +1006,7 @@ function renderTvPlanCard(plan, includeActions = false) {
       <button class="button danger tv-action" data-action="reject-plan" data-plan-id="${escapeHtml(plan.id)}">Reject plan</button>
       <button class="button secondary tv-action" data-action="defer-plan" data-plan-id="${escapeHtml(plan.id)}">Defer</button>
     </div>` : ""}
+    ${includeRecovery ? renderTvRecoveryEditor(plan, recovery) : ""}
   </article>`;
 }
 
@@ -582,13 +1047,128 @@ async function loadTvMatching() {
     : '<div class="empty-state">No TV episode suggestions are available yet.</div>';
 }
 
+function renderTvMatchingTask(entry) {
+  const { task, recovery } = entry;
+  const series = recovery?.seriesName;
+  const runtime = task.assignments.length
+    ? Math.round(task.assignments.reduce((sum, assignment) => sum + assignment.durationSeconds, 0) /
+      task.assignments.length / 60)
+    : 0;
+  const assignments = task.assignments.map((assignment) => {
+    const suggestion = assignment.selectedEpisodes?.length
+      ? assignment.selectedEpisodes
+      : assignment.episodeCandidates[0]?.episodes || [];
+    const episodeNumbers = suggestion.map((episode) => episode.episodeNumber).join(", ");
+    const suggestionText = assignment.episodeCandidates.slice(0, 3).map((candidate) =>
+      `${candidate.episodes.map((episode) => `S${episode.seasonNumber}E${String(episode.episodeNumber).padStart(2, "0")}`).join("+")} (${Math.round(candidate.confidence * 100)}%)`
+    ).join(" · ");
+    return `<div class="tv-assignment">
+      <div><b>Track ${escapeHtml(assignment.trackId)} · ${escapeHtml(assignment.title)}</b><span>${formatDuration(assignment.durationSeconds)}</span></div>
+      <label>Episode number(s), comma-separated<input type="text" inputmode="numeric" data-track-id="${escapeHtml(assignment.trackId)}" value="${escapeHtml(episodeNumbers)}" placeholder="e.g. 1 or 1, 2"></label>
+      <small class="muted">${suggestionText ? `Suggestions: ${escapeHtml(suggestionText)}` : "No automatic episode suggestion."}</small>
+    </div>`;
+  }).join("");
+  const canMap = Boolean(series && recovery?.seasonNumber !== null && recovery?.discNumber !== null);
+  return `<article class="tv-plan-card tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
+    <div class="tv-plan-heading"><div><b>${escapeHtml(series || `${task.source.label || "Unidentified TV disc"}?`)}</b>
+      <span class="list-sub">${escapeHtml(task.assignments.length)} episodes · about ${runtime} minutes each · Source label: ${escapeHtml(task.source.label || "Unavailable")}</span></div>
+      <span class="result ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></div>
+    ${series ? `<p>Season ${escapeHtml(recovery.seasonNumber ?? "unknown")} · Disc ${escapeHtml(recovery.discNumber ?? "unknown")}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} · ${escapeHtml(recovery.metadataProvider || "manual")}</p>` : ""}
+    ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
+    <div class="tv-actions">
+      <button type="button" class="button primary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Series / Season / Disc" : "Identify"}</button>
+      ${canMap ? `<button type="button" class="button secondary tv-task-continue" data-job-id="${escapeHtml(task.jobId)}">${task.assignments.length ? "Save Mappings & Continue" : "Continue"}</button>` : ""}
+      <button type="button" class="button danger tv-task-delete" data-job-id="${escapeHtml(task.jobId)}">Delete</button>
+    </div>
+    ${canMap && assignments ? `<div class="tv-task-assignments">${assignments}</div>` : ""}
+    <details><summary>Disc diagnostics</summary><pre>${escapeHtml(JSON.stringify(task.diagnostics, null, 2))}</pre></details>
+  </article>`;
+}
+
+async function loadTvMatchingTasks() {
+  const { tasks } = await api("/api/v1/tv/matching");
+  $("#tv-matching-queue").innerHTML = tasks.length
+    ? tasks.map(renderTvMatchingTask).join("")
+    : '<div class="empty-state">No staged TV discs are awaiting identification.</div>';
+}
+
+const tvDeleteDialog = $("#tv-delete-dialog");
+function requestTvTaskDeletion(jobId) {
+  state.tvDeleteJobId = jobId;
+  if (!tvDeleteDialog.open) tvDeleteDialog.showModal();
+}
+
+$("#tv-delete-cancel").addEventListener("click", () => {
+  state.tvDeleteJobId = null;
+  tvDeleteDialog.close();
+});
+$("#tv-delete-confirm").addEventListener("click", async () => {
+  const jobId = state.tvDeleteJobId;
+  if (!jobId) return;
+  const button = $("#tv-delete-confirm");
+  button.disabled = true;
+  try {
+    await api(`/api/v1/history/${encodeURIComponent(jobId)}`, {
+      method: "DELETE", body: JSON.stringify({ confirmed: true })
+    });
+    tvDeleteDialog.close();
+    state.tvDeleteJobId = null;
+    await loadTvMatchingTasks();
+    await refreshHistory();
+    notify("Unmatched TV staging and temporary records were deleted. Published media was not affected.");
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#tv-matching-queue").addEventListener("click", async (event) => {
+  const deleteButton = event.target.closest(".tv-task-delete");
+  if (deleteButton) {
+    requestTvTaskDeletion(deleteButton.dataset.jobId);
+    return;
+  }
+  const continueButton = event.target.closest(".tv-task-continue");
+  if (!continueButton) return;
+  continueButton.disabled = true;
+  try {
+    const taskId = continueButton.dataset.jobId;
+    const card = continueButton.closest(".tv-matching-task");
+    const assignments = [...card.querySelectorAll("[data-track-id]")].map((input) => {
+      const episodeNumbers = input.value.split(",").map((value) => value.trim()).filter(Boolean)
+        .map(Number);
+      return { trackId: input.dataset.trackId, episodeNumbers };
+    });
+    if (assignments.some((assignment) => assignment.episodeNumbers.length === 0 ||
+      assignment.episodeNumbers.some((number) => !Number.isInteger(number) || number < 0 || number > 1000))) {
+      throw new Error("Enter valid episode numbers for each staged track; use commas for multi-episode tracks.");
+    }
+    if (assignments.length) {
+      await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
+        method: "PUT", body: JSON.stringify({ assignments })
+      });
+    }
+    await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/continue`, { method: "POST" });
+    notify("TV processing resumed from staged files.");
+    await loadTvMatchingTasks();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    continueButton.disabled = false;
+  }
+});
+
 async function loadTvReviews() {
   const selected = $("#tv-review-filter").value;
   const query = new URLSearchParams({ limit: "100" });
   if (selected) query.set("state", selected);
   const { plans } = await api(`/api/v1/tv/reviews?${query}`);
   $("#tv-review-list").innerHTML = plans.length
-    ? plans.map((plan) => `${renderTvPlanCard(plan, true)}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`).join("")
+    ? (await Promise.all(plans.map(async (plan) => {
+      const { recovery } = await api(`/api/v1/tv/plans/${encodeURIComponent(plan.id)}/recovery`);
+      return `${renderTvPlanCard(plan, true, recovery, true)}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`;
+    }))).join("")
     : '<div class="empty-state">No plans in this review state.</div>';
 }
 
@@ -610,6 +1190,9 @@ function renderReviewItem(item) {
       if (action.type === "retry" || action.type === "retry-after-correction") {
         return `<button class="button primary review-action" data-action="retry" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
       }
+      if (action.type === "approve-process") {
+        return `<button class="button primary review-action" data-action="approve-process" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
       if (action.type === "open-settings") {
         return `<button class="button secondary review-action" data-action="open-settings">${escapeHtml(action.label)}</button>`;
       }
@@ -618,6 +1201,9 @@ function renderReviewItem(item) {
       }
       if (action.type === "view-job") {
         return `<button class="button secondary review-action" data-action="view-job" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
+      }
+      if (action.type === "open-review") {
+        return `<button class="button secondary review-action" data-action="open-review">${escapeHtml(action.label)}</button>`;
       }
       if (action.type === "resolve") {
         return `<button class="button secondary review-action" data-action="resolve" data-review-id="${escapeHtml(item.id)}">${escapeHtml(action.label)}</button>`;
@@ -636,7 +1222,7 @@ function renderReviewItem(item) {
     ...(item.errorDetails || {})
   };
   return `<article class="review-item ${escapeHtml(item.severity)}">
-    <div class="review-heading"><div><span class="review-category">${escapeHtml(reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
+    <div class="review-heading"><div><span class="review-category">${escapeHtml(item.errorDetails?.approvalRequired ? "Disc approval" : reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
       <h3>${escapeHtml(item.title)}</h3><span class="list-sub">${escapeHtml(item.relatedDisc || "Disc not identified")}${item.relatedDrive ? ` · ${escapeHtml(item.relatedDrive)}` : ""} · ${new Date(item.createdAt).toLocaleString()}</span></div>
       <span class="review-status">${escapeHtml(item.status)}</span></div>
     <p>${escapeHtml(item.description)}</p>
@@ -646,6 +1232,40 @@ function renderReviewItem(item) {
     <div class="tv-actions">${actions}</div>
     <div class="review-job-details" data-review-details="${escapeHtml(item.id)}"></div>
   </article>`;
+}
+
+function renderReviewJob(item) {
+  const title = typeof item.metadata?.title === "string" && item.metadata.title
+    ? item.metadata.title
+    : item.discLabel || item.originalJobId;
+  const actions = item.status === "pending"
+    ? `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Open Review</button>
+      <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">Approve &amp; Continue</button>
+      <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
+      <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
+    : ["completed", "dismissed"].includes(item.status)
+      ? `<button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
+        <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
+      : "";
+  return `<article class="review-item">
+    <div class="review-heading"><div><h3>${escapeHtml(title)}</h3>
+      <span class="list-sub">${escapeHtml(item.discType)}${item.discLabel ? ` · ${escapeHtml(item.discLabel)}` : ""} · ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div>
+      <span class="review-status">${escapeHtml(item.status)}</span></div>
+    <p>${escapeHtml(item.failureReason || "Processing requires review")} · Stage: ${escapeHtml(item.failureStage || "unknown")}</p>
+    <p class="list-sub">Storage used: ${escapeHtml(formatBytes(item.mediaSize))} · Resume stage: ${escapeHtml(item.resumeStage)}</p>
+    <div class="tv-actions">${actions}</div>
+    ${item.status === "pending" ? `<div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
+      <label>Title<input type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : title)}"></label>
+      <button class="button secondary review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">Save Metadata</button>
+    </div>` : ""}
+  </article>`;
+}
+
+async function loadReviewJobs() {
+  const { reviewJobs } = await api("/api/v1/review-jobs");
+  $("#review-jobs-list").innerHTML = reviewJobs.length
+    ? reviewJobs.map(renderReviewJob).join("")
+    : '<div class="empty-state">No extracted media is waiting for review.</div>';
 }
 
 async function loadReviewCentre() {
@@ -672,6 +1292,7 @@ async function loadReviewCentre() {
   $("#review-list").innerHTML = items.length
     ? items.map(renderReviewItem).join("")
     : '<div class="empty-state">No review items match the selected filters.</div>';
+  await loadReviewJobs();
 }
 
 async function loadTvValidation() {
@@ -765,15 +1386,40 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["moviesDir", "musicDir", "tvRootDir", "workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
+  for (const key of ["workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
+  form.elements.namedItem("automationMode").value = data.settings.automationMode || "regular_auto";
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
   form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
   form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
+  state.outputDestinations = data.settings.outputDestinations;
+  state.legacyOutputPaths = { tv: data.settings.tvRootDir, movies: data.settings.moviesDir, music: data.settings.musicDir };
+  renderOutputProfiles();
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
+  const retentionDays = data.settings.tvStagingRetentionDays;
+  const retentionChoice = form.elements.namedItem("tvStagingRetentionChoice");
+  const standardRetentions = [7, 30, 90];
+  retentionChoice.value = retentionDays === null ? "never" :
+    standardRetentions.includes(retentionDays) ? String(retentionDays) : "custom";
+  form.elements.namedItem("tvStagingRetentionCustomDays").value =
+    retentionDays !== null && !standardRetentions.includes(retentionDays) ? retentionDays : "";
+  updateTvStagingRetentionFields();
+  const libraryMetadata = data.settings.libraryMetadata;
+  for (const key of [
+    "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
+    "downloadMusicMetadata", "downloadCastInformation", "downloadRatings", "downloadArtwork",
+    "downloadSeasonArtwork", "downloadEpisodeImages", "downloadFanart", "downloadLogos",
+    "downloadBackdrops", "downloadBanners", "generateNfo"
+  ]) form.elements.namedItem(key).checked = libraryMetadata[key];
+  for (const key of [
+    "nfoFormat", "libraryStructure", "seriesFolderTemplate", "seasonFolderTemplate",
+    "episodeFileTemplate", "movieFolderTemplate", "movieFileTemplate", "artistFolderTemplate",
+    "albumFolderTemplate"
+  ]) form.elements.namedItem(key).value = libraryMetadata[key];
+  updateLibraryTemplateFields(form);
   await loadTvMetadataSettings();
   $("#lidarr-key-status").textContent = data.settings.lidarrApiKeyConfigured
     ? "A Lidarr API key is saved. It is never displayed."
@@ -783,12 +1429,198 @@ async function loadSettings() {
     : "No metadata API key is saved; lookup will use the disc label until one is configured.";
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
+  await refreshLibraryHealth();
+  updateOutputPreview();
   await refreshUpdateStatus();
   const encoders = await api("/api/v1/encoders");
   $("#encoder-capability").textContent = encoders.encoders.error
     ? encoders.encoders.error
     : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
 }
+
+function updateTvStagingRetentionFields() {
+  const form = $("#settings-form");
+  const choice = form.elements.namedItem("tvStagingRetentionChoice").value;
+  const custom = choice === "custom";
+  $("#tv-staging-custom-label").classList.toggle("hidden", !custom);
+  form.elements.namedItem("tvStagingRetentionCustomDays").required = custom;
+}
+
+function activeOutputProfile() {
+  return state.outputDestinations?.profiles.find((profile) => profile.id === state.outputDestinations.activeProfileId) ||
+    state.outputDestinations?.profiles[0];
+}
+
+function saveOutputProfileForm() {
+  const profile = activeOutputProfile();
+  if (!profile) return;
+  const form = $("#settings-form");
+  const value = (name) => form.elements.namedItem(name).value.trim();
+  profile.name = $("#output-profile-name").value.trim() || "Output Profile";
+  profile.routes = {
+    tv: value("routeTv"),
+    movies: value("routeMovies"),
+    music: value("routeMusic")
+  };
+  profile.jellyfin = {
+    root: value("jellyfinRoot"),
+    paths: { tv: value("jellyfinTvPath"), movies: value("jellyfinMoviesPath"), music: value("jellyfinMusicPath") }
+  };
+  profile.sonarr = { seriesRoot: value("sonarrSeriesRoot") };
+  profile.radarr = { movieRoot: value("radarrMovieRoot") };
+  profile.lidarr = { artistRoot: value("lidarrArtistRoot") };
+  profile.folder = { tv: value("folderTv"), movies: value("folderMovies"), music: value("folderMusic") };
+}
+
+function renderOutputProfiles() {
+  if (!state.outputDestinations?.profiles?.length) return;
+  const select = $("#output-profile-select");
+  select.innerHTML = state.outputDestinations.profiles.map((profile) =>
+    `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`).join("");
+  select.value = state.outputDestinations.activeProfileId;
+  loadOutputProfileForm();
+}
+
+function loadOutputProfileForm() {
+  const profile = activeOutputProfile();
+  if (!profile) return;
+  const form = $("#settings-form");
+  $("#output-profile-name").value = profile.name;
+  const fields = {
+    routeTv: profile.routes.tv,
+    routeMovies: profile.routes.movies,
+    routeMusic: profile.routes.music,
+    jellyfinRoot: profile.jellyfin.root,
+    jellyfinTvPath: profile.jellyfin.paths.tv,
+    jellyfinMoviesPath: profile.jellyfin.paths.movies,
+    jellyfinMusicPath: profile.jellyfin.paths.music,
+    sonarrSeriesRoot: profile.sonarr.seriesRoot,
+    radarrMovieRoot: profile.radarr.movieRoot,
+    lidarrArtistRoot: profile.lidarr.artistRoot,
+    folderTv: profile.folder.tv,
+    folderMovies: profile.folder.movies,
+    folderMusic: profile.folder.music
+  };
+  for (const [name, value] of Object.entries(fields)) form.elements.namedItem(name).value = value;
+  updateOutputRouteFields();
+}
+
+function updateOutputRouteFields() {
+  const form = $("#settings-form");
+  const routes = {
+    tv: form.elements.namedItem("routeTv").value,
+    movies: form.elements.namedItem("routeMovies").value,
+    music: form.elements.namedItem("routeMusic").value
+  };
+  const targets = Object.values(routes);
+  for (const group of form.querySelectorAll("[data-route-group]")) {
+    group.classList.toggle("hidden", !targets.includes(group.dataset.routeGroup));
+  }
+  $("#settings-form").elements.namedItem("jellyfinRoot").closest("label")
+    .classList.toggle("hidden", !targets.includes("jellyfin"));
+  for (const label of form.querySelectorAll("[data-route-for]")) {
+    label.classList.toggle("hidden", routes[label.dataset.routeFor] !== label.dataset.routeTarget);
+  }
+  const lidarrEnabled = form.elements.namedItem("lidarrEnabled").checked;
+  $("#lidarr-settings-card").classList.toggle("hidden", !lidarrEnabled && routes.music !== "lidarr");
+  updateOutputPreview();
+}
+
+function outputPathForPreview(media) {
+  const form = $("#settings-form");
+  const routeName = media === "tv" ? "routeTv" : media === "movies" ? "routeMovies" : "routeMusic";
+  const target = form.elements.namedItem(routeName).value;
+  const name = (field) => form.elements.namedItem(field).value.trim();
+  if (target === "jellyfin") {
+    const override = name(media === "tv" ? "jellyfinTvPath" : media === "movies" ? "jellyfinMoviesPath" : "jellyfinMusicPath");
+    const root = name("jellyfinRoot");
+    if (override) return override;
+    if (root) return joinPreviewPath(root, media === "tv" ? "TV Shows" : media === "movies" ? "Movies" : "Music");
+    return state.legacyOutputPaths[media] || "(set a library path)";
+  }
+  if (target === "sonarr") return name("sonarrSeriesRoot") || "(set Sonarr series root)";
+  if (target === "radarr") return name("radarrMovieRoot") || "(set Radarr movie root)";
+  if (target === "lidarr") return name("lidarrArtistRoot") || "(set Lidarr artist root)";
+  return name(media === "tv" ? "folderTv" : media === "movies" ? "folderMovies" : "folderMusic") || "(set folder path)";
+}
+
+function joinPreviewPath(base, child) {
+  const separator = base.includes("\\") && !base.includes("/") ? "\\" : "/";
+  return `${base.replace(/[\\/]+$/, "")}${separator}${child}`;
+}
+
+function previewTemplate(template, values) {
+  return template.replace(/\{([^}]+)\}/g, (match, key) => String(values[key] ?? match));
+}
+
+function updateOutputPreview() {
+  const form = $("#settings-form");
+  if (!form || !state.outputDestinations) return;
+  const library = {};
+  for (const key of ["seriesFolderTemplate", "seasonFolderTemplate", "episodeFileTemplate", "movieFolderTemplate", "movieFileTemplate", "artistFolderTemplate", "albumFolderTemplate"]) {
+    const input = form.elements.namedItem(key);
+    if (input) library[key] = input.value;
+  }
+  const sample = { "Series Name": "Example Series", "Movie Title": "Example Movie", Year: 2024, "Season Number:00": "01", Season: "01", "Season:00": "01", Episode: "01", "Episode:00": "01", "Episode Title": "Pilot", Artist: "Example Artist", Album: "Example Album" };
+  const tvBase = outputPathForPreview("tv");
+  const tvSeries = previewTemplate(library.seriesFolderTemplate || "{Series Name} ({Year})", sample);
+  const tvSeason = previewTemplate(library.seasonFolderTemplate || "Season {Season Number:00}", sample);
+  const tvPath = joinPreviewPath(joinPreviewPath(joinPreviewPath(tvBase, tvSeries), tvSeason), previewTemplate(library.episodeFileTemplate || "{Series Name} - S{Season:00}E{Episode:00} - {Episode Title}", sample) + `.${form.elements.namedItem("format").value}`);
+  const movieBase = outputPathForPreview("movies");
+  const movieFolder = previewTemplate(library.movieFolderTemplate || "{Movie Title} ({Year})", sample);
+  const movieName = previewTemplate(library.movieFileTemplate || "{Movie Title} ({Year})", sample);
+  const moviePath = joinPreviewPath(joinPreviewPath(movieBase, movieFolder), `${movieName}.${form.elements.namedItem("format").value}`);
+  const musicBase = outputPathForPreview("music");
+  const artist = previewTemplate(library.artistFolderTemplate || "{Artist}", sample);
+  const album = previewTemplate(library.albumFolderTemplate || "{Album} ({Year})", sample);
+  const musicPath = joinPreviewPath(joinPreviewPath(joinPreviewPath(musicBase, artist), album), "01 - Example Track.flac");
+  const targetLabels = { jellyfin: "Jellyfin", sonarr: "Sonarr-compatible folder", radarr: "Radarr-compatible folder", lidarr: "Lidarr", folder: "Generic folder" };
+  const routeTarget = (media) => form.elements.namedItem(media === "tv" ? "routeTv" : media === "movies" ? "routeMovies" : "routeMusic").value;
+  const rows = [
+    ["TV Series · Example Series", "tv", tvPath],
+    ["Movie · Example Movie", "movies", moviePath],
+    ["Music Album · Example Album", "music", musicPath]
+  ];
+  const importEnabled = form.elements.namedItem("automaticImport").checked;
+  const metadata = [
+    form.elements.namedItem("downloadArtwork").checked ? "Artwork" : "",
+    form.elements.namedItem("generateNfo").checked ? "NFO files" : "",
+    form.elements.namedItem("downloadSeriesMetadata").checked || form.elements.namedItem("downloadMovieMetadata").checked || form.elements.namedItem("downloadMusicMetadata").checked ? "Metadata" : ""
+  ].filter(Boolean);
+  $("#output-preview").innerHTML = rows.map(([label, media, path]) =>
+    `<div class="output-preview-row"><b>${escapeHtml(label)}</b><span>${escapeHtml(path)}</span><small>Publishing mode: ${escapeHtml(targetLabels[routeTarget(media)])} · ${escapeHtml(importEnabled && metadata.length ? metadata.join(", ") : "Metadata import disabled")}</small></div>`
+  ).join("");
+}
+
+async function loadDirectoryPicker(path) {
+  const error = $("#directory-picker-error");
+  const list = $("#directory-picker-list");
+  error.textContent = "";
+  list.textContent = "Loading folders…";
+  try {
+    const result = await api(`/api/v1/directories?path=${encodeURIComponent(path)}`);
+    $("#directory-picker-path").value = result.path;
+    list.innerHTML = [
+      ...(result.parentPath ? [`<button class="directory-choice" type="button" data-directory-path="${escapeHtml(result.parentPath)}">.. (parent folder)</button>`] : []),
+      ...result.directories.map((directory) =>
+        `<button class="directory-choice" type="button" data-directory-path="${escapeHtml(directory.path)}">${escapeHtml(directory.name)}</button>`)
+    ].join("") || '<p class="muted">No visible subfolders.</p>';
+  } catch (cause) {
+    list.textContent = "";
+    error.textContent = cause.message;
+  }
+}
+
+function updateLibraryTemplateFields(form = $("#settings-form")) {
+  const custom = form.elements.namedItem("libraryStructure").value === "custom";
+  for (const input of form.querySelectorAll('[name$="Template"]')) input.disabled = !custom;
+}
+
+$("#settings-form").elements.namedItem("libraryStructure").addEventListener("change", () => {
+  updateLibraryTemplateFields();
+});
+$("#settings-form").addEventListener("input", updateOutputPreview);
+$("#settings-form").addEventListener("change", updateOutputPreview);
 
 async function refreshUpdateStatus() {
   const data = await api("/api/v1/updates/status");
@@ -908,6 +1740,7 @@ function updateStreams() {
     if (previous && !active) {
       if (state.page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
       if (state.page === "history") refreshHistory().catch((error) => notify(error.message, true));
+      if (state.page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
       if (state.page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
       if (state.page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
       if (state.page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
@@ -936,6 +1769,7 @@ function showPage(page) {
     dashboard: "Dashboard",
     diagnostics: "Disc Diagnostics",
     history: "History",
+    "tv-matching": "TV Matching",
     "tv-analysis": "TV Analysis",
     "episode-matching": "Episode Matching",
     "tv-reviews": "Review Centre",
@@ -948,6 +1782,7 @@ function showPage(page) {
   if (page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
   if (page === "diagnostics") loadDiagnostics().catch((error) => notify(error.message, true));
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
+  if (page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
   if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
   if (page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
   if (page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
@@ -963,6 +1798,7 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
   refreshChart(button.dataset.range).catch((error) => notify(error.message, true));
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
+$("#refresh-tv-matching").addEventListener("click", () => loadTvMatchingTasks().catch((error) => notify(error.message, true)));
 $("#refresh-diagnostics").addEventListener("click", () => loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true)));
 $("#diagnostics-job").addEventListener("change", () => {
   const jobId = $("#diagnostics-job").value;
@@ -972,6 +1808,25 @@ $("#tv-analysis-confidence").addEventListener("change", () => loadTvAnalysis().c
 $("#tv-analysis-state").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-review-filter").addEventListener("change", () => loadTvReviews().catch((error) => notify(error.message, true)));
 $("#refresh-reviews").addEventListener("click", () => loadReviewCentre().catch((error) => notify(error.message, true)));
+$("#library-settings-health").addEventListener("click", async (event) => {
+  const button = event.target.closest(".create-library");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const result = await api("/api/library/create", {
+      method: "POST",
+      body: JSON.stringify({ type: button.dataset.library })
+    });
+    notify(`${result.type} library folder is ready at ${result.path}.`);
+    await refreshLibraryHealth();
+  } catch (error) {
+    notify(error.message, true);
+    await refreshLibraryHealth().catch(() => {});
+  } finally {
+    button.disabled = false;
+  }
+});
+
 ["review-category", "review-severity", "review-status", "review-from", "review-to"].forEach((id) =>
   $(`#${id}`).addEventListener("change", () => loadReviewCentre().catch((error) => notify(error.message, true))));
 
@@ -983,6 +1838,11 @@ $("#review-list").addEventListener("click", async (event) => {
     const action = button.dataset.action;
     if (action === "open-settings") {
       showPage("settings");
+      return;
+    }
+    if (action === "open-review") {
+      showPage("tv-reviews");
+      $("#review-jobs-list").scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
     if (action === "enter-metadata") {
@@ -998,9 +1858,56 @@ $("#review-list").addEventListener("click", async (event) => {
       container.innerHTML = `<details open><summary>Related job and logs</summary>${job ? `<p>${escapeHtml(job.job.title || job.job.discLabel || job.job.id)} · ${escapeHtml(job.job.status)}</p><pre>${escapeHtml(JSON.stringify(job.timeline, null, 2))}</pre>` : "<p>Related job is no longer available.</p>"}</details>`;
       return;
     }
-    const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" : "dismiss";
+    const endpoint = action === "retry" ? "retry" : action === "resolve" ? "resolve" :
+      action === "approve-process" ? "approve-process" : "dismiss";
     const result = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}/${endpoint}`, { method: "POST" });
-    notify(result.message || `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`);
+    notify(result.message || (action === "approve-process" ? "Disc approved and processing completed." :
+      `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`));
+    await loadReviewCentre();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#review-jobs-list").addEventListener("click", async (event) => {
+  const button = event.target.closest(".review-job-action");
+  if (!button) return;
+  const id = button.dataset.id;
+  const action = button.dataset.action;
+  const card = button.closest(".review-item");
+  button.disabled = true;
+  try {
+    if (action === "open") {
+      card.querySelector(".review-job-editor").classList.toggle("hidden");
+      return;
+    }
+    if (action === "save") {
+      const title = card.querySelector("input").value.trim();
+      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
+        method: "POST",
+        body: JSON.stringify({ title })
+      });
+      notify("Review metadata saved.");
+    } else if (action === "continue") {
+      const editor = card.querySelector(".review-job-editor");
+      if (!editor.classList.contains("hidden")) {
+        const title = card.querySelector("input").value.trim();
+        await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
+          method: "POST",
+          body: JSON.stringify({ title })
+        });
+      }
+      const result = await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/continue`, { method: "POST" });
+      notify(result.message);
+    } else if (action === "delete") {
+      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      notify("Review and preserved media deleted.");
+    } else if (action === "clear") {
+      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/clear-notification`, { method: "POST" });
+      notify("Review notification cleared and temporary files removed.");
+    }
     await loadReviewCentre();
   } catch (error) {
     notify(error.message, true);
@@ -1033,11 +1940,30 @@ document.addEventListener("click", async (event) => {
       const action = button.dataset.action.replace("-plan", "");
       const reason = action === "reject" ? prompt("Why is this TV plan being rejected?") : "";
       if (action === "reject" && !reason?.trim()) return;
+      const recoveryResponse = await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/recovery`);
+      const manualMappings = new Map((recoveryResponse.recovery?.mappings || []).map((mapping) =>
+        [mapping.trackId, mapping.episodes]));
+      const mappingsToApply = (recoveryResponse.recovery?.mediaTypeOverridden &&
+        recoveryResponse.recovery.finalMediaType === "tv_series")
+        ? (recoveryResponse.recovery.mappings || [])
+        : [];
+      for (const mapping of mappingsToApply) {
+        await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/corrections`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "assign-episodes",
+            itemId: mapping.trackId,
+            episodes: mapping.episodes,
+            reviewer: "admin",
+            reason: "Applied saved manual recovery mapping"
+          })
+        });
+      }
       const result = await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/review`, {
         method: "POST",
         body: JSON.stringify({ action, reviewer: "admin", ...(reason ? { reason } : {}) })
       });
-      notify(`TV plan ${result.plan.state}. Media execution remains disabled.`);
+      notify(`TV plan ${result.plan.state}. Automatic execution remains disabled; manual recovery mappings can be processed.`);
       await Promise.all([loadTvReviews(), loadTvSummary()]);
       return;
     }
@@ -1082,6 +2008,192 @@ document.addEventListener("click", async (event) => {
   } finally {
     button.disabled = false;
   }
+});
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest(".tv-recovery-form [data-action]");
+  if (!button) return;
+  const form = button.closest(".tv-recovery-form");
+  const action = button.dataset.action;
+  if (action === "add-episode-map") {
+    const list = form.querySelector(".tv-episode-map-list");
+    const template = list.querySelector("[data-episode-map-row]");
+    if (!template) return;
+    const row = template.cloneNode(true);
+    row.querySelector("[data-map-track]").selectedIndex = 0;
+    row.querySelector("[data-map-provider-episode]").selectedIndex = 0;
+    row.querySelector("[data-map-season]").value = form.elements.seasonNumber.value;
+    row.querySelector("[data-map-episode]").value = "";
+    row.querySelector("[data-map-title]").value = "";
+    row.querySelector("[data-map-air-date]").value = "";
+    row.querySelector("[data-map-notes]").value = "";
+    list.append(row);
+    return;
+  }
+  if (action === "remove-episode-map") {
+    button.closest("[data-episode-map-row]")?.remove();
+    return;
+  }
+  if (action === "import-series") {
+    if (!form.dataset.lookupResult) return;
+    button.disabled = true;
+    try {
+      const candidate = JSON.parse(form.dataset.lookupResult).series;
+      form.elements.seriesName.value = candidate.title;
+      const metadataSeriesId = candidate.metadata?.seriesId || candidate.id;
+      form.querySelectorAll("[data-map-series-id]").forEach((input) => { input.value = metadataSeriesId; });
+      if (!form.elements.providerId.value) form.elements.providerId.value = candidate.id;
+      const provider = form.elements.metadataProvider.value;
+      if (provider !== "manual") {
+        const seasonNumber = Number(form.elements.seasonNumber.value);
+        if (!Number.isInteger(seasonNumber) || seasonNumber < 0) {
+          throw new Error("Enter a season number before importing episode metadata.");
+        }
+        const { episodes } = await api("/api/v1/tv/metadata/episodes/lookup", {
+          method: "POST",
+          body: JSON.stringify({
+            provider,
+            providerId: form.elements.providerId.value.trim(),
+            seasonNumber
+          })
+        });
+        form.dataset.providerEpisodes = JSON.stringify(episodes);
+        const options = `<option value="">Manual mapping</option>${episodes.map((episode) =>
+          `<option value="${escapeHtml(JSON.stringify(episode))}">S${String(episode.seasonNumber).padStart(2, "0")}E${String(episode.episodeNumber).padStart(2, "0")} · ${escapeHtml(episode.title)}</option>`).join("")}`;
+        form.querySelectorAll("[data-map-provider-episode]").forEach((select) => { select.innerHTML = options; });
+        notify(`Imported ${episodes.length} episode metadata entries for ${candidate.title}. Select an episode for each track, then save.`);
+      } else {
+        notify(`Imported manual series metadata for ${candidate.title}. Save to persist it.`);
+      }
+    } catch (error) {
+      notify(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (action === "lookup-series") {
+    const provider = form.elements.metadataProvider.value;
+    const providerId = form.elements.providerId.value.trim();
+    const seriesName = form.elements.seriesName.value.trim();
+    if (provider !== "manual" && !providerId) {
+      notify("Enter a provider ID before looking up the series.", true);
+      return;
+    }
+    button.disabled = true;
+    try {
+      const { series } = await api("/api/v1/tv/metadata/series/lookup", {
+        method: "POST",
+        body: JSON.stringify({ provider, providerId, seriesName })
+      });
+      form.dataset.lookupResult = JSON.stringify({ series });
+      const preview = form.querySelector(".tv-series-lookup-result");
+      preview.innerHTML = `<div class="tv-series-preview"><b>${escapeHtml(series.title)}</b>${series.metadata?.year ? ` (${escapeHtml(series.metadata.year)})` : ""}<p>${escapeHtml(series.metadata?.overview || "No provider overview supplied.")}</p></div>`;
+      form.querySelector('[data-action="import-series"]').disabled = false;
+    } catch (error) {
+      notify(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+});
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest(".tv-recovery-form");
+  if (!form) return;
+  event.preventDefault();
+  const button = form.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    const mappingsByTrack = new Map();
+    for (const row of form.querySelectorAll("[data-episode-map-row]")) {
+      const trackId = row.querySelector("[data-map-track]").value;
+      const seasonValue = row.querySelector("[data-map-season]").value;
+      const episodeValue = row.querySelector("[data-map-episode]").value;
+      const title = row.querySelector("[data-map-title]").value.trim();
+      if (!episodeValue && !title) continue;
+      if (!trackId || !/^\d+$/.test(seasonValue) || !/^\d+$/.test(episodeValue)) {
+        throw new Error("Each episode mapping needs a track, season number, and episode number.");
+      }
+      const seriesId = row.querySelector("[data-map-series-id]").value ||
+        form.elements.providerId.value.trim() || `manual:${form.elements.seriesName.value.trim()}`;
+      if (!mappingsByTrack.has(trackId)) mappingsByTrack.set(trackId, []);
+      mappingsByTrack.get(trackId).push({
+        seriesId,
+        seasonNumber: Number(seasonValue),
+        episodeNumber: Number(episodeValue),
+        ...(title ? { title } : {}),
+        ...(row.querySelector("[data-map-air-date]").value
+          ? { airDate: row.querySelector("[data-map-air-date]").value } : {}),
+        ...(row.querySelector("[data-map-notes]").value.trim()
+          ? { notes: row.querySelector("[data-map-notes]").value.trim() } : {})
+      });
+    }
+    const seasonValue = form.elements.seasonNumber.value;
+    const importedSeries = form.dataset.lookupResult
+      ? JSON.parse(form.dataset.lookupResult).series
+      : null;
+    await api(`/api/v1/tv/plans/${encodeURIComponent(form.dataset.planId)}/recovery`, {
+      method: "PUT",
+      body: JSON.stringify({
+        discType: form.elements.discType.value,
+        mediaType: form.elements.mediaType.value,
+        metadataProvider: form.elements.metadataProvider.value,
+        providerId: form.elements.providerId.value.trim() || null,
+        seriesName: form.elements.seriesName.value.trim() || null,
+        seasonNumber: seasonValue === "" ? null : Number(seasonValue),
+        mappings: [...mappingsByTrack].map(([trackId, episodes]) => ({ trackId, episodes })),
+        ...(importedSeries ? {
+          importedMetadata: { ...(importedSeries.metadata || {}), entityType: importedSeries.entityType },
+          artworkReferences: importedSeries.metadata?.artwork || []
+        } : {}),
+        notes: form.elements.notes.value
+      })
+    });
+    notify("Manual recovery saved. The next detection will use these classification and episode decisions.");
+    await loadTvReviews();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-map-provider-episode]");
+  if (!select?.value) return;
+  const episode = JSON.parse(select.value);
+  const row = select.closest("[data-episode-map-row]");
+  row.querySelector("[data-map-season]").value = episode.seasonNumber;
+  row.querySelector("[data-map-episode]").value = episode.episodeNumber;
+  row.querySelector("[data-map-title]").value = episode.title || "";
+  row.querySelector("[data-map-air-date]").value = episode.airDate || "";
+  row.querySelector("[data-map-series-id]").value = episode.seriesId;
+});
+
+document.addEventListener("dragstart", (event) => {
+  const track = event.target.closest(".tv-recovery-track");
+  if (!track || !event.dataTransfer) return;
+  event.dataTransfer.setData("text/plain", track.dataset.trackId);
+  event.dataTransfer.effectAllowed = "copy";
+});
+document.addEventListener("dragover", (event) => {
+  const row = event.target.closest("[data-episode-map-row]");
+  if (!row) return;
+  event.preventDefault();
+  row.classList.add("drag-target");
+});
+document.addEventListener("dragleave", (event) => {
+  event.target.closest("[data-episode-map-row]")?.classList.remove("drag-target");
+});
+document.addEventListener("drop", (event) => {
+  const row = event.target.closest("[data-episode-map-row]");
+  if (!row || !event.dataTransfer) return;
+  event.preventDefault();
+  const trackId = event.dataTransfer.getData("text/plain");
+  const select = row.querySelector("[data-map-track]");
+  if ([...select.options].some((option) => option.value === trackId)) select.value = trackId;
+  row.classList.remove("drag-target");
 });
 
 $("#export-tv-validation").addEventListener("click", async () => {
@@ -1194,7 +2306,18 @@ $("#music-metadata-form").addEventListener("submit", async (event) => {
 });
 $("#history-list").addEventListener("click", async (event) => {
   const button = event.target.closest(".remove-job");
-  if (!button || !confirm("Remove this entry from history? The finished media file will not be deleted.")) return;
+  if (!button) return;
+  try {
+    const { tasks } = await api("/api/v1/tv/matching");
+    if (tasks.some(({ task }) => task.jobId === button.dataset.jobId)) {
+      requestTvTaskDeletion(button.dataset.jobId);
+      return;
+    }
+  } catch (error) {
+    notify(error.message, true);
+    return;
+  }
+  if (!confirm("Remove this entry from history? The finished media file will not be deleted.")) return;
   button.disabled = true;
   try {
     await api(`/api/v1/history/${encodeURIComponent(button.dataset.jobId)}`, { method: "DELETE" });
@@ -1233,14 +2356,97 @@ $("#check-updates").addEventListener("click", async () => {
   }
 });
 
+$("#output-profile-select").addEventListener("change", () => {
+  saveOutputProfileForm();
+  state.outputDestinations.activeProfileId = $("#output-profile-select").value;
+  loadOutputProfileForm();
+});
+
+$("#output-profile-name").addEventListener("input", () => {
+  const profile = activeOutputProfile();
+  if (!profile) return;
+  profile.name = $("#output-profile-name").value.trim() || "Output Profile";
+  const option = [...$("#output-profile-select").options].find((item) => item.value === profile.id);
+  if (option) option.textContent = profile.name;
+});
+
+$("#output-profile-new").addEventListener("click", () => {
+  saveOutputProfileForm();
+  const id = `profile-${Date.now()}`;
+  const active = activeOutputProfile();
+  const profile = active ? structuredClone(active) : null;
+  if (!profile) return;
+  profile.id = id;
+  profile.name = "New Profile";
+  state.outputDestinations.profiles.push(profile);
+  state.outputDestinations.activeProfileId = id;
+  renderOutputProfiles();
+  $("#output-profile-name").focus();
+});
+
+$("#output-profile-delete").addEventListener("click", () => {
+  if (state.outputDestinations.profiles.length <= 1) {
+    notify("At least one output profile is required.", true);
+    return;
+  }
+  state.outputDestinations.profiles = state.outputDestinations.profiles
+    .filter((profile) => profile.id !== state.outputDestinations.activeProfileId);
+  state.outputDestinations.activeProfileId = state.outputDestinations.profiles[0].id;
+  renderOutputProfiles();
+});
+
+["routeTv", "routeMovies", "routeMusic"].forEach((name) =>
+  $("#settings-form").elements.namedItem(name).addEventListener("change", updateOutputRouteFields));
+$("#settings-form").elements.namedItem("lidarrEnabled").addEventListener("change", updateOutputRouteFields);
+
+for (const name of [
+  "jellyfinRoot", "jellyfinTvPath", "jellyfinMoviesPath", "jellyfinMusicPath",
+  "sonarrSeriesRoot", "radarrMovieRoot", "lidarrArtistRoot",
+  "folderTv", "folderMovies", "folderMusic"
+]) {
+  const input = $("#settings-form").elements.namedItem(name);
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.className = "button secondary directory-browse";
+  browse.dataset.browseFor = name;
+  browse.textContent = "Browse";
+  input.insertAdjacentElement("afterend", browse);
+}
+
+$("#settings-form").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-browse-for]");
+  if (!button) return;
+  state.directoryPickerTarget = button.dataset.browseFor;
+  const currentPath = $("#settings-form").elements.namedItem(state.directoryPickerTarget).value || "/";
+  $("#directory-picker").showModal();
+  loadDirectoryPicker(currentPath);
+});
+
+$("#directory-picker-close").addEventListener("click", () => $("#directory-picker").close());
+$("#directory-picker-go").addEventListener("click", () => loadDirectoryPicker($("#directory-picker-path").value));
+$("#directory-picker-path").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    loadDirectoryPicker(event.currentTarget.value);
+  }
+});
+$("#directory-picker-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-directory-path]");
+  if (button) loadDirectoryPicker(button.dataset.directoryPath);
+});
+$("#directory-picker-select").addEventListener("click", () => {
+  if (!state.directoryPickerTarget) return;
+  $("#settings-form").elements.namedItem(state.directoryPickerTarget).value = $("#directory-picker-path").value;
+  $("#directory-picker").close();
+});
+
 $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const values = new FormData(form);
+  saveOutputProfileForm();
   const patch = {
-    moviesDir: values.get("moviesDir"),
-    musicDir: values.get("musicDir"),
-    tvRootDir: values.get("tvRootDir"),
+    outputDestinations: state.outputDestinations,
     workDir: values.get("workDir"),
     opticalDevice: values.get("opticalDevice"),
     format: values.get("format"),
@@ -1248,11 +2454,43 @@ $("#settings-form").addEventListener("submit", async (event) => {
     preset: values.get("preset"),
     encoder: values.get("encoder"),
     autoEject: form.elements.namedItem("autoEject").checked,
+    automationMode: values.get("automationMode"),
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
     musicBrainzContactEmail: values.get("musicBrainzContactEmail"),
+    libraryMetadata: {
+      automaticImport: form.elements.namedItem("automaticImport").checked,
+      downloadSeriesMetadata: form.elements.namedItem("downloadSeriesMetadata").checked,
+      downloadEpisodeMetadata: form.elements.namedItem("downloadEpisodeMetadata").checked,
+      downloadMovieMetadata: form.elements.namedItem("downloadMovieMetadata").checked,
+      downloadMusicMetadata: form.elements.namedItem("downloadMusicMetadata").checked,
+      downloadCastInformation: form.elements.namedItem("downloadCastInformation").checked,
+      downloadRatings: form.elements.namedItem("downloadRatings").checked,
+      downloadArtwork: form.elements.namedItem("downloadArtwork").checked,
+      downloadSeasonArtwork: form.elements.namedItem("downloadSeasonArtwork").checked,
+      downloadEpisodeImages: form.elements.namedItem("downloadEpisodeImages").checked,
+      downloadFanart: form.elements.namedItem("downloadFanart").checked,
+      downloadLogos: form.elements.namedItem("downloadLogos").checked,
+      downloadBackdrops: form.elements.namedItem("downloadBackdrops").checked,
+      downloadBanners: form.elements.namedItem("downloadBanners").checked,
+      generateNfo: form.elements.namedItem("generateNfo").checked,
+      nfoFormat: values.get("nfoFormat"),
+      libraryStructure: values.get("libraryStructure"),
+      seriesFolderTemplate: form.elements.namedItem("seriesFolderTemplate").value,
+      seasonFolderTemplate: form.elements.namedItem("seasonFolderTemplate").value,
+      episodeFileTemplate: form.elements.namedItem("episodeFileTemplate").value,
+      movieFolderTemplate: form.elements.namedItem("movieFolderTemplate").value,
+      movieFileTemplate: form.elements.namedItem("movieFileTemplate").value,
+      artistFolderTemplate: form.elements.namedItem("artistFolderTemplate").value,
+      albumFolderTemplate: form.elements.namedItem("albumFolderTemplate").value
+    },
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
+    tvStagingRetentionDays: values.get("tvStagingRetentionChoice") === "never"
+      ? null
+      : values.get("tvStagingRetentionChoice") === "custom"
+        ? Number(values.get("tvStagingRetentionCustomDays"))
+        : Number(values.get("tvStagingRetentionChoice")),
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
     tvMetadataLookupEnabled: form.elements.namedItem("tvMetadataLookupEnabled").checked,
     tvMetadataPreferredProviderId: values.get("tvMetadataPreferredProviderId"),
@@ -1263,8 +2501,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
       [...form.querySelectorAll(".tv-metadata-provider-enabled")].map((input) =>
         [input.dataset.providerId, input.checked])
     ),
-    lidarrUrl: values.get("lidarrUrl"),
-    lidarrImportDir: values.get("lidarrImportDir"),
     metadataProvider: "tmdb",
     logLevel: values.get("logLevel")
   };
@@ -1276,6 +2512,8 @@ $("#settings-form").addEventListener("submit", async (event) => {
     else if (input.value) providerApiKeys[providerId] = input.value;
   }
   patch.tvMetadataProviderApiKeys = providerApiKeys;
+  if (values.get("lidarrUrl") || patch.lidarrEnabled) patch.lidarrUrl = values.get("lidarrUrl");
+  if (values.get("lidarrImportDir") || patch.lidarrEnabled) patch.lidarrImportDir = values.get("lidarrImportDir");
   if (values.get("metadataApiKey")) patch.metadataApiKey = values.get("metadataApiKey");
   if (form.elements.namedItem("clearMetadataKey").checked) patch.metadataApiKey = "";
   if (values.get("lidarrApiKey")) patch.lidarrApiKey = values.get("lidarrApiKey");
@@ -1283,6 +2521,15 @@ $("#settings-form").addEventListener("submit", async (event) => {
   if (values.get("adminPassword")) patch.adminPassword = values.get("adminPassword");
   try {
     await api("/api/v1/settings", { method: "PUT", body: JSON.stringify(patch) });
+    const savedSettings = await api("/api/v1/settings");
+    state.outputDestinations = savedSettings.settings.outputDestinations;
+    state.legacyOutputPaths = {
+      tv: savedSettings.settings.tvRootDir,
+      movies: savedSettings.settings.moviesDir,
+      music: savedSettings.settings.musicDir
+    };
+      renderOutputProfiles();
+    await refreshLibraryHealth();
     form.elements.namedItem("adminPassword").value = "";
     form.elements.namedItem("metadataApiKey").value = "";
     form.elements.namedItem("clearMetadataKey").checked = false;
@@ -1303,11 +2550,15 @@ $("#settings-form").addEventListener("submit", async (event) => {
   }
 });
 
+$("#settings-form").elements.namedItem("tvStagingRetentionChoice")
+  .addEventListener("change", updateTvStagingRetentionFields);
+
 $("#check-paths").addEventListener("click", async () => {
   const button = $("#check-paths");
   const status = $("#paths-status");
   const form = $("#settings-form");
   const values = new FormData(form);
+  saveOutputProfileForm();
   button.disabled = true;
   status.classList.remove("hidden");
   status.textContent = "Checking configured folders and optical drive permissions…";
@@ -1315,9 +2566,7 @@ $("#check-paths").addEventListener("click", async () => {
     const result = await api("/api/v1/paths/check", {
       method: "POST",
       body: JSON.stringify({
-        moviesDir: values.get("moviesDir"),
-        musicDir: values.get("musicDir"),
-        tvRootDir: values.get("tvRootDir"),
+        outputDestinations: state.outputDestinations,
         workDir: values.get("workDir"),
         opticalDevice: values.get("opticalDevice"),
         lidarrImportDir: values.get("lidarrImportDir"),
@@ -1425,18 +2674,42 @@ $("#login-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget;
   const values = new FormData(form);
   try {
-    await api("/api/v1/login", {
+    const login = await api("/api/v1/login", {
       method: "POST",
       body: JSON.stringify({ username: values.get("username"), password: values.get("password") })
     });
     form.elements.namedItem("password").value = "";
     loginDialog.close();
     $("#login-error").textContent = "";
+    if (login.passwordChangeRequired) {
+      passwordChangeDialog.showModal();
+      return;
+    }
     await loadSettings();
     await refreshDashboard();
     updateStreams();
   } catch (error) {
     $("#login-error").textContent = error.message;
+  }
+});
+
+$("#password-change-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  try {
+    await api("/api/v1/account/password", {
+      method: "POST",
+      body: JSON.stringify({ password: values.get("password"), confirmPassword: values.get("confirmPassword") })
+    });
+    form.reset();
+    $("#password-change-error").textContent = "";
+    passwordChangeDialog.close();
+    await loadSettings();
+    await refreshDashboard();
+    updateStreams();
+  } catch (error) {
+    $("#password-change-error").textContent = error.message;
   }
 });
 
@@ -1456,10 +2729,6 @@ async function initialize() {
       notices.push("DVD ripping is unavailable because AutoDisc cannot find an executable makemkvcon on the service PATH. Install MakeMKV or make sure its command is available to the AutoDisc service; music CD ripping is unaffected.");
     }
     const status = await api("/api/v1/status");
-    if (!status.passwordConfigured) {
-      $("#auth-state").textContent = "Password not configured";
-      notices.push("Admin password is unset. Anyone who can reach the service can administer it; restrict access to your trusted LAN and configure a password in Settings. Do not expose port 8787 to the internet.");
-    }
     if (notices.length) {
       $("#warning").textContent = notices.join(" ");
       $("#warning").classList.remove("hidden");

@@ -10,6 +10,11 @@ of scope. The v1.9.2 follow-up now includes TVDB/TMDB TV metadata lookup,
 provider failover, caching, and audit metrics; see
 [TV-METADATA-SETTINGS.md](./TV-METADATA-SETTINGS.md).
 
+> Historical snapshot: this report describes the v1.9.0 state as of 2026-10-19.
+> v1.15.2 later added explicitly mapped DVD TV episode publishing and manual
+> metadata recovery. Automatic TV suggestions still do not trigger publishing;
+> see [TV-MANUAL-RECOVERY.md](./TV-MANUAL-RECOVERY.md) for current behavior.
+
 ## Updated architecture diagram
 
 ```mermaid

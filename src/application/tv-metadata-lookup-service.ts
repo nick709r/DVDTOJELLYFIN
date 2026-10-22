@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type { MetadataIdentificationInput, MetadataProvider, MetadataProviderCandidate } from "../contracts/metadata-provider.js";
 import type { ProviderDescriptor, ProviderHealth, ProviderContext } from "../contracts/provider.js";
 import type { AppSettings } from "../model.js";
+import type { TvSeriesSearchCandidate, TvSeriesSearchProviderResult } from "../domain/tv-identification.js";
 import {
   TvMetadataProviderRegistry,
   type TvMetadataLookupInput
@@ -126,6 +127,103 @@ export class TvMetadataLookupService {
     }
     if (failures.length) throw new Error(failures.join("; "));
     return [];
+  }
+
+  /** Queries every enabled, keyed provider independently (no short-circuit) so the UI and pipeline can compare them. */
+  async searchSeries(query: string, signal?: AbortSignal): Promise<TvSeriesSearchProviderResult[]> {
+    const settings = this.getSettings();
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    if (!settings.tvMetadataLookupEnabled) {
+      return [{ providerId: "all", query: trimmed, durationMs: 0, candidates: [], failure: "TV metadata lookup is disabled in settings" }];
+    }
+    const results: TvSeriesSearchProviderResult[] = [];
+    const providerIds = this.registry.listIds().filter((id) => this.registry.has(id));
+    for (const providerId of providerIds) {
+      const startedAt = Date.now();
+      if (!settings.tvMetadataProviderEnabled[providerId]) continue;
+      const apiKey = settings.tvMetadataProviderApiKeys[providerId] ?? "";
+      if (!apiKey) {
+        results.push({ providerId, query: trimmed, durationMs: 0, candidates: [], failure: "API key is not configured" });
+        continue;
+      }
+      try {
+        const found = await this.searchOneProvider(providerId, trimmed, apiKey);
+        this.audit(providerId, { entityType: "series", query: trimmed }, true, false, false, true, Date.now() - startedAt, null, null);
+        results.push({
+          providerId,
+          query: trimmed,
+          durationMs: Date.now() - startedAt,
+          candidates: found.map((item) => this.toSeriesCandidate(providerId, item))
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown provider search failure";
+        this.audit(providerId, { entityType: "series", query: trimmed }, false, false, false, true, Date.now() - startedAt, classifyFailure(message), message);
+        results.push({ providerId, query: trimmed, durationMs: Date.now() - startedAt, candidates: [], failure: message });
+      }
+      if (signal?.aborted) break;
+    }
+    return results;
+  }
+
+  private async searchOneProvider(providerId: string, query: string, apiKey: string): Promise<readonly MetadataProviderCandidate[]> {
+    const tvdb = query.match(/^tvdb\s*[:=#-]?\s*(\d+)$/i);
+    const tmdb = query.match(/^tmdb\s*[:=#-]?\s*(\d+)$/i);
+    const imdb = query.match(/^(tt\d{5,})$/i);
+    if (tvdb || tmdb) {
+      const wanted = tvdb ? "tvdb" : "tmdb-tv";
+      if (providerId !== wanted) return [];
+      const found = await this.registry.lookupById(providerId, (tvdb ?? tmdb)![1]!, apiKey, this.fetcher);
+      return found ? [found] : [];
+    }
+    if (imdb) {
+      if (providerId !== "tmdb-tv") return [];
+      const found = await this.registry.lookupImdbId(imdb[1]!.toLowerCase(), apiKey, this.fetcher);
+      return found ? [found] : [];
+    }
+    return this.registry.lookup(providerId, { entityType: "series", query }, apiKey, this.fetcher);
+  }
+
+  private toSeriesCandidate(providerId: string, item: MetadataProviderCandidate): TvSeriesSearchCandidate {
+    const metadata = item.metadata as Record<string, unknown>;
+    const artwork = Array.isArray(metadata.artwork) ? metadata.artwork as Array<{ kind?: string; url?: string }> : [];
+    const poster = artwork.find((asset) => asset.kind === "poster" && typeof asset.url === "string")?.url;
+    const providerName = this.registry.list(this.getSettings()).find((entry) => entry.id === providerId)?.name ?? providerId;
+    const seriesId = String(metadata.seriesId ?? item.id);
+    return {
+      provider: providerId,
+      providerName,
+      seriesId,
+      title: item.title,
+      ...(typeof metadata.year === "number" ? { year: metadata.year } : {}),
+      ...(typeof metadata.overview === "string" ? { overview: metadata.overview } : {}),
+      ...(poster ? { posterUrl: poster } : {}),
+      ...(typeof metadata.numberOfSeasons === "number" ? { seasonCount: metadata.numberOfSeasons } : {}),
+      confidence: item.confidence,
+      identifiers: { ...(item.identifiers ?? {}), [providerId]: seriesId }
+    };
+  }
+
+  /** Episode counts per season for a series; seasons that fail to load are omitted. */
+  async seasonEpisodeCounts(series: { providerId: string; seriesId: string }, signal?: AbortSignal): Promise<Map<number, number>> {
+    const settings = this.getSettings();
+    const apiKey = settings.tvMetadataProviderApiKeys[series.providerId] ?? "";
+    const counts = new Map<number, number>();
+    if (!apiKey || !settings.tvMetadataLookupEnabled || !settings.tvMetadataProviderEnabled[series.providerId]) return counts;
+    for (let season = 1; season <= 20; season += 1) {
+      if (signal?.aborted) break;
+      try {
+        const episodes = await this.registry.lookupEpisodesById(series.providerId, series.seriesId, season, apiKey, this.fetcher);
+        if (episodes.length === 0) {
+          if (season > 1) break;
+          continue;
+        }
+        counts.set(season, episodes.length);
+      } catch {
+        break;
+      }
+    }
+    return counts;
   }
 
   private audit(
