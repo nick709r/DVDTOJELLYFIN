@@ -11,7 +11,7 @@ test("disc recovery API preserves detections and gives saved manual values prece
   process.env.TV_ROOT_DIR = path.join(root, "TV");
   process.env.WORK_DIR = path.join(root, "work");
   const { app } = await import("../dist/server.js");
-  const { repositories } = await import("../dist/db.js");
+  const { db, repositories } = await import("../dist/db.js");
   try {
     const setup = await app.inject({
       method: "POST",
@@ -127,6 +127,57 @@ test("disc recovery API preserves detections and gives saved manual values prece
     const overridden = await inject({ method: "GET", url: "/api/v1/discs/overridden" });
     assert.equal(overridden.statusCode, 200);
     assert.equal(overridden.json().discs[0].fingerprint, "fingerprint-recovery");
+
+    const fingerprint = "f".repeat(64);
+    repositories.discRecovery.recordDetection(fingerprint, "dvd", "tv_series");
+    repositories.discRecovery.update(fingerprint, {
+      seriesName: "Forget Me",
+      seasonNumber: 1,
+      mappings: [{
+        trackId: "1",
+        episodes: [{ seriesId: "manual:Forget Me", seasonNumber: 1, episodeNumber: 1, title: "Pilot" }]
+      }]
+    });
+    const review = repositories.reviewItems.create({
+      category: "tv_review",
+      severity: "medium",
+      title: "TV match needs review",
+      description: "Review the unidentified disc.",
+      discFingerprint: fingerprint,
+      suggestedActions: [{ type: "dismiss", label: "Dismiss" }]
+    });
+    repositories.tvEpisodeFeedback.record({
+      fingerprint,
+      itemSignature: "item-1",
+      outcome: "accepted",
+      episodes: [{ seriesId: "manual:Forget Me", seasonNumber: 1, episodeNumber: 1, title: "Pilot" }]
+    });
+    db.prepare("UPDATE drive_state SET last_fingerprint = ?, processed_at = ? WHERE id = 1")
+      .run(fingerprint, new Date().toISOString());
+    db.prepare(`INSERT INTO tv_processing_plans (id, fingerprint, state, plan_json, created_at)
+      VALUES (?, ?, 'ready', '{}', ?)`).run("forget-plan", fingerprint, new Date().toISOString());
+    db.prepare(`INSERT INTO tv_validation_evidence (id, fingerprint, captured_at, origin, evidence_json)
+      VALUES (?, ?, ?, 'imported', '{}')`).run("forget-evidence", fingerprint, new Date().toISOString());
+    const diagnostics = await import("../dist/diagnostics.js");
+    diagnostics.beginDiscDiagnostics("/dev/test");
+    diagnostics.updateDiscDiagnostics({ fingerprint });
+
+    const forgotten = await inject({ method: "POST", url: `/api/v1/discs/${fingerprint}/forget` });
+    assert.equal(forgotten.statusCode, 200);
+    assert.equal(forgotten.json().fingerprint, fingerprint);
+    assert.equal(repositories.discRecovery.get(fingerprint), undefined);
+    assert.equal(repositories.tvEpisodeFeedback.listForFingerprint(fingerprint).length, 0);
+    assert.equal(repositories.reviewItems.get(review.id), undefined);
+    assert.equal(db.prepare("SELECT last_fingerprint FROM drive_state WHERE id = 1").get().last_fingerprint, null);
+    assert.equal(db.prepare("SELECT 1 FROM tv_processing_plans WHERE fingerprint = ?").get(fingerprint), undefined);
+    assert.equal(db.prepare("SELECT 1 FROM tv_validation_evidence WHERE fingerprint = ?").get(fingerprint), undefined);
+    assert.equal(repositories.recovery.lastDiscFingerprint(), null);
+    assert.equal(diagnostics.getLiveDiscDiagnostics(), null);
+    assert.equal((await inject({ method: "POST", url: `/api/v1/discs/${fingerprint}/forget` })).statusCode, 404);
+    const resumedJobId = "a072f579-f2f2-4a68-87ca-53a14a27f23f";
+    repositories.jobs.add(resumedJobId, "Reinserted disc", fingerprint, "dvd");
+    assert.equal(repositories.jobs.active()?.id, resumedJobId);
+    assert.equal((await inject({ method: "POST", url: `/api/v1/discs/${fingerprint}/forget` })).statusCode, 409);
   } finally {
     await app.close();
     repositories.close();

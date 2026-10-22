@@ -67,7 +67,8 @@ export class SqliteJobRepository implements JobRepository {
 
   active(): Job | null {
     return this.db.prepare(`
-      SELECT id, status, media_type AS mediaType, disc_label AS discLabel, title, output_path AS outputPath,
+      SELECT id, status, media_type AS mediaType, disc_fingerprint AS discFingerprint,
+        disc_label AS discLabel, title, output_path AS outputPath,
         encoder, output_bytes AS outputBytes, started_at AS startedAt,
         finished_at AS finishedAt, duration_seconds AS durationSeconds,
         conversion_seconds AS conversionSeconds, progress, error

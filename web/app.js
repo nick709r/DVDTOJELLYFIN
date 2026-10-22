@@ -1093,7 +1093,7 @@ async function loadTvMatchingTasks() {
 }
 
 const forgetDiscDialog = $("#forget-disc-dialog");
-let forgetDiscJobId = null;
+let forgetDiscRequestPath = null;
 document.addEventListener("click", (event) => {
   const button = event.target.closest(".forget-disc, #forget-diagnostics-disc");
   if (!button) return;
@@ -1103,23 +1103,23 @@ document.addEventListener("click", (event) => {
       ? { fingerprint: button.dataset.fingerprint }
       : { jobId: $("#diagnostics-job").value };
   if (!target.jobId && !target.fingerprint) { notify("Select a disc to forget.", true); return; }
-  forgetDiscJobId = target.jobId
+  forgetDiscRequestPath = target.jobId
     ? `/api/v1/history/${encodeURIComponent(target.jobId)}/forget`
     : `/api/v1/discs/${encodeURIComponent(target.fingerprint)}/forget`;
   forgetDiscDialog.showModal();
 });
 $("#forget-disc-cancel").addEventListener("click", () => {
-  forgetDiscJobId = null;
+  forgetDiscRequestPath = null;
   forgetDiscDialog.close();
 });
 $("#forget-disc-confirm").addEventListener("click", async () => {
-  if (!forgetDiscJobId) return;
+  if (!forgetDiscRequestPath) return;
   const button = $("#forget-disc-confirm");
   button.disabled = true;
   try {
-    await api(forgetDiscJobId, { method: "POST" });
+    await api(forgetDiscRequestPath, { method: "POST" });
     forgetDiscDialog.close();
-    forgetDiscJobId = null;
+    forgetDiscRequestPath = null;
     state.diagnosticsJobId = "";
     notify("Disc forgotten.");
     await Promise.all([refreshDashboard(), refreshHistory(), loadReviewCentre(), loadDiagnostics("")]);

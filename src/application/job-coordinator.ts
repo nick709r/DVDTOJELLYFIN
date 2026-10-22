@@ -178,7 +178,7 @@ export class JobCoordinator {
     return {
       id,
       mediaKind,
-      fingerprint,
+      fingerprint: fingerprint ?? job.discFingerprint,
       discLabel,
       signal,
       throwIfCancelled() {
@@ -223,8 +223,11 @@ export class JobCoordinator {
   }
 
   complete(context: JobContext, fingerprint?: string): JobResult {
-    this.repositories.jobs.finish(context.id, "completed", null, fingerprint);
-    if (fingerprint) this.repositories.reviewItems.resolveForDisc(fingerprint, "Related disc processing completed successfully");
+    const completedFingerprint = fingerprint ?? context.fingerprint;
+    this.repositories.jobs.finish(context.id, "completed", null, completedFingerprint ?? undefined);
+    if (completedFingerprint) {
+      this.repositories.reviewItems.resolveForDisc(completedFingerprint, "Related disc processing completed successfully");
+    }
     this.publisher.publish(context.id, "completed");
     return { jobId: context.id, status: "completed" };
   }

@@ -126,6 +126,7 @@ export interface Job {
   id: string;
   status: JobStatus;
   mediaType: string;
+  discFingerprint: string | null;
   discLabel: string | null;
   title: string | null;
   outputPath: string | null;

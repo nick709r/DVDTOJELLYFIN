@@ -15,7 +15,8 @@ export class SqliteForgetDiscService implements ForgetDiscService {
         ? this.db.prepare("SELECT id, status FROM jobs WHERE id = ? OR disc_fingerprint = ?").all(discId, fingerprint)
         : job ? [{ id: job.id, status: job.status }] : []) as Array<{ id: string; status: string }>;
       const represented = job || (fingerprint && this.db.prepare(`
-        SELECT 1 FROM review_items WHERE disc_fingerprint = ?
+        SELECT 1 FROM jobs WHERE disc_fingerprint = ?
+        UNION ALL SELECT 1 FROM review_items WHERE disc_fingerprint = ?
         UNION ALL SELECT 1 FROM disc_recovery WHERE fingerprint = ?
         UNION ALL SELECT 1 FROM tv_matching_tasks WHERE fingerprint = ?
         UNION ALL SELECT 1 FROM tv_episode_feedback WHERE fingerprint = ?
@@ -23,7 +24,7 @@ export class SqliteForgetDiscService implements ForgetDiscService {
         UNION ALL SELECT 1 FROM tv_validation_evidence WHERE fingerprint = ?
         UNION ALL SELECT 1 FROM drive_state WHERE last_fingerprint = ?
         LIMIT 1
-      `).get(fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint));
+      `).get(fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint));
       if (!represented) throw new Error("Disc not found");
       if (jobs.some((row) => ACTIVE.includes(row.status))) throw new Error("An active disc job cannot be forgotten");
 
