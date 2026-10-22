@@ -355,8 +355,8 @@
             </div>
           </article>
           <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
-            <label>New admin password<input name="adminPassword" type="password" minlength="12" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
-            <p class="hint">The administrator username is configured during first-run setup. Passwords must include lowercase, uppercase, a number, and a symbol.</p>
+            <label>New admin password            <input name="adminPassword" type="password" minlength="4" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
+                        <p class="hint">The administrator username is configured during first-run setup. Passwords must be at least 4 characters.</p>
             <label>Logging level<select name="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
           </article>
           <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>
@@ -371,6 +371,16 @@
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
         <p id="login-error" class="error-text"></p>
         <button class="button primary" type="submit">Sign in</button>
+      </form>
+    </dialog>
+    <dialog id="password-change-dialog">
+      <form id="password-change-form" method="dialog">
+        <p class="eyebrow">SECURITY</p><h2>Set a new password</h2>
+        <p class="muted">Password rules are now simpler. Choose a new password (at least 4 characters) to continue.</p>
+        <label>New password<input name="password" type="password" minlength="4" maxlength="256" autocomplete="new-password" required></label>
+        <label>Confirm new password<input name="confirmPassword" type="password" minlength="4" maxlength="256" autocomplete="new-password" required></label>
+        <p id="password-change-error" class="error-text"></p>
+        <button class="button primary" type="submit">Save password</button>
       </form>
     </dialog>
     <dialog id="directory-picker" class="directory-picker">

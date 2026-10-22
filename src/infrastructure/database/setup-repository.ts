@@ -6,6 +6,7 @@ interface SetupRow {
   setup_complete: number;
   admin_username: string | null;
   setup_completed_at: string | null;
+  password_change_required: number;
 }
 
 export class SqliteSetupRepository implements SetupRepository {
@@ -13,14 +14,15 @@ export class SqliteSetupRepository implements SetupRepository {
 
   get(): SetupState {
     const row = this.db.prepare(`
-      SELECT setup_complete, admin_username, setup_completed_at
+      SELECT setup_complete, admin_username, setup_completed_at, password_change_required
       FROM setup_state WHERE id = 1
     `).get() as SetupRow | undefined;
     if (!row) throw new Error("Persistent setup state is missing");
     return {
       setupComplete: row.setup_complete === 1,
       adminUsername: row.admin_username,
-      setupCompletedAt: row.setup_completed_at
+      setupCompletedAt: row.setup_completed_at,
+      passwordChangeRequired: row.password_change_required === 1
     };
   }
 
@@ -38,7 +40,7 @@ export class SqliteSetupRepository implements SetupRepository {
 
   updatePassword(salt: string, passwordHash: string): void {
     const result = this.db.prepare(`
-      UPDATE setup_state SET admin_password_salt = ?, admin_password_hash = ?
+      UPDATE setup_state SET admin_password_salt = ?, admin_password_hash = ?, password_change_required = 0
       WHERE id = 1 AND setup_complete = 1
     `).run(salt, passwordHash);
     if (result.changes !== 1) throw new Error("Administrator account is not configured");

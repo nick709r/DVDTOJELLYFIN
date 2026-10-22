@@ -17,13 +17,13 @@
       <form id="setup-form">
         <section id="setup-account-step">
           <label>Username<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" autocomplete="username" required></label>
-          <label>Password<input name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
-          <p class="hint">Use 12–256 characters with lowercase, uppercase, a number, and a symbol. Do not include your username.</p>
+          <label>Password          <input name="password" type="password" minlength="4" maxlength="256" autocomplete="new-password" required></label>
+                    <p class="hint">Use at least 4 characters. No numbers or symbols required.</p>
           <button id="setup-continue" type="button">Continue</button>
         </section>
         <section id="setup-confirm-step" hidden>
           <p class="hint">Confirm the administrator password to save your account and complete setup.</p>
-          <label>Confirm password<input name="confirmPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password"></label>
+          <label>Confirm password<input name="confirmPassword" type="password" minlength="4" maxlength="256" autocomplete="new-password"></label>
           <button id="setup-back" class="secondary" type="button">Back</button>
           <button id="setup-submit" type="submit">Save credentials</button>
         </section>
@@ -37,9 +37,6 @@
       const passwordField=form.elements.namedItem("password"), confirmationField=form.elements.confirmPassword;
       document.querySelector("#setup-continue").addEventListener("click",()=>{error.textContent="";usernameField.required=true;passwordField.required=true;
         if(!form.reportValidity())return;
-        if(!/[a-z]/.test(passwordField.value)||!/[A-Z]/.test(passwordField.value)||!/\d/.test(passwordField.value)||!/[^A-Za-z0-9]/.test(passwordField.value)||passwordField.value.toLowerCase().includes(usernameField.value.toLowerCase())){
-          error.textContent="Use a password with lowercase, uppercase, a number, and a symbol; do not include your username.";return;
-        }
         accountStep.hidden=true;confirmStep.hidden=false;confirmationField.required=true;stepLabel.textContent="FIRST-RUN SETUP · STEP 2 OF 2";confirmationField.focus();
       });
       document.querySelector("#setup-back").addEventListener("click",()=>{error.textContent="";confirmStep.hidden=true;accountStep.hidden=false;confirmationField.required=false;stepLabel.textContent="FIRST-RUN SETUP · STEP 1 OF 2";});

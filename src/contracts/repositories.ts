@@ -13,6 +13,7 @@ export interface SetupState {
   setupComplete: boolean;
   adminUsername: string | null;
   setupCompletedAt: string | null;
+  passwordChangeRequired: boolean;
 }
 
 export interface SetupRepository {

@@ -113,6 +113,9 @@ app.addHook("preHandler", async (request, reply) => {
   if (passwordConfigured() && !isAuthenticated(request)) {
     return reply.code(401).send({ error: "Authentication required" });
   }
+  if (repositories.setup.get().passwordChangeRequired && !passwordChangeAllowedPaths.has(request.url.split("?")[0] ?? "")) {
+    return reply.code(403).send({ error: "You must set a new password before continuing", passwordChangeRequired: true });
+  }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && request.headers.origin) {
     try {
       const origin = new URL(request.headers.origin);
@@ -131,10 +134,12 @@ app.register(fastifyStatic, { root: staticRoot, prefix: "/", index: false });
 app.register(fastifyRateLimit, { global: false });
 
 function validAdministratorPassword(password: string): boolean {
-  return password.length >= 12 && password.length <= 256 &&
-    /[a-z]/.test(password) && /[A-Z]/.test(password) &&
-    /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
+  return password.length >= 4 && password.length <= 256;
 }
+
+const passwordRuleMessage = "Password must be at least 4 characters";
+
+const passwordChangeAllowedPaths = new Set(["/api/v1/account/password", "/api/v1/logout", "/api/v1/setup/status"]);
 
 app.get("/api/v1/setup/status", async () => ({
   setupComplete: repositories.setup.get().setupComplete
@@ -162,10 +167,7 @@ app.post<{ Body: unknown }>("/api/v1/setup", async (request, reply) => {
     return reply.code(400).send({ error: "Username must be 3 to 32 letters, numbers, periods, underscores, or hyphens" });
   }
   if (typeof body.password !== "string" || !validAdministratorPassword(body.password)) {
-    return reply.code(400).send({ error: "Password must be 12 to 256 characters and include lowercase, uppercase, a number, and a symbol" });
-  }
-  if (body.password.toLocaleLowerCase().includes(body.username.toLocaleLowerCase())) {
-    return reply.code(400).send({ error: "Password must not contain the administrator username" });
+    return reply.code(400).send({ error: passwordRuleMessage });
   }
   if (body.confirmPassword !== body.password) {
     return reply.code(400).send({ error: "Password confirmation does not match" });
@@ -231,6 +233,26 @@ app.post<{ Body: { username?: string; password?: string } }>("/api/v1/login", as
   const token = randomBytes(32).toString("hex");
   sessions.set(token, Date.now() + 12 * 60 * 60 * 1000);
   setSessionCookie(reply, token, 12 * 60 * 60);
+  return reply.send({ ok: true, passwordChangeRequired: repositories.setup.get().passwordChangeRequired });
+});
+
+app.post<{ Body: { password?: unknown; confirmPassword?: unknown } }>("/api/v1/account/password", async (request, reply) => {
+  const state = repositories.setup.get();
+  const { password, confirmPassword } = request.body ?? {};
+  if (typeof password !== "string" || !validAdministratorPassword(password)) {
+    return reply.code(400).send({ error: passwordRuleMessage });
+  }
+  if (confirmPassword !== password) {
+    return reply.code(400).send({ error: "Password confirmation does not match" });
+  }
+  if (state.adminUsername && repositories.setup.authenticate(state.adminUsername, password)) {
+    return reply.code(400).send({ error: "Choose a password different from the current one" });
+  }
+  const salt = randomBytes(16);
+  repositories.setup.updatePassword(salt.toString("hex"), scryptSync(password, salt, 64).toString("hex"));
+  const current = sessionToken(request);
+  for (const token of [...sessions.keys()]) if (token !== current) sessions.delete(token);
+  app.log.info("Administrator password changed");
   return reply.send({ ok: true });
 });
 
@@ -1853,7 +1875,7 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   }
   if ("adminPassword" in body) {
     if (typeof body.adminPassword !== "string" || !validAdministratorPassword(body.adminPassword)) {
-      return reply.code(400).send({ error: "Password must be 12 to 256 characters and include lowercase, uppercase, a number, and a symbol" });
+      return reply.code(400).send({ error: passwordRuleMessage });
     }
   }
   if ("logLevel" in body) {

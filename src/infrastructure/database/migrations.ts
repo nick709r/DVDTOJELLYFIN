@@ -381,4 +381,14 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     .run(JSON.stringify("regular_auto"), new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (22, ?)")
     .run(new Date().toISOString());
+  // Existing administrators must choose a new password under the simplified password rules.
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 23").get()) {
+    const setupColumns = db.pragma("table_info(setup_state)") as Array<{ name: string }>;
+    if (!setupColumns.some((column) => column.name === "password_change_required")) {
+      db.exec("ALTER TABLE setup_state ADD COLUMN password_change_required INTEGER NOT NULL DEFAULT 0 CHECK (password_change_required IN (0, 1))");
+    }
+    db.exec("UPDATE setup_state SET password_change_required = 1 WHERE setup_complete = 1");
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (23, ?)")
+      .run(new Date().toISOString());
+  }
 }

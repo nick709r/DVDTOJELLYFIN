@@ -30,7 +30,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
 
 2. (Optional) Install MakeMKV separately to enable DVD ripping — AutoDisc does not bundle MakeMKV. When MakeMKV is installed and `makemkvcon` is on the service PATH, DVD ripping is enabled.
 
-3. Open AutoDisc for first-run setup. Until the administrator account is created, only the setup page and setup API are available; disc processing is disabled. Setup requires a strong username and password. For a headless server, use an SSH tunnel:
+3. Open AutoDisc for first-run setup. Until the administrator account is created, only the setup page and setup API are available; disc processing is disabled. Setup requires a username and a password of at least 4 characters (no special characters or numbers required). For a headless server, use an SSH tunnel:
 
 ```sh
 ssh -L 8787:127.0.0.1:8787 user@server
@@ -66,6 +66,14 @@ sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
 That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
 
 ## Release history
+
+### Version 1.17.0
+
+- Simplify administrator passwords to a 4-character minimum with no complexity
+  requirements.
+- Migration 23 requires existing administrators to set a new password the first
+  time they sign in after upgrading. Other API access is blocked until they do
+  (`POST /api/v1/account/password`); fresh installs are not affected.
 
 ### Version 1.16.0
 

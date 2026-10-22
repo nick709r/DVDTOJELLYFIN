@@ -47,7 +47,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 22);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 23);
   assert.deepEqual(
     db.pragma("table_info(review_jobs)").map((column) => column.name),
     ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",
@@ -110,6 +110,11 @@ test("setup state repository completes once and migrates legacy administrator cr
   assert.equal(repositories.setup.get().adminUsername, "admin");
   assert.equal(repositories.setup.authenticate("admin", password), true);
   assert.equal(repositories.setup.authenticate("admin", "wrong password"), false);
+  assert.equal(repositories.setup.get().passwordChangeRequired, true);
+  repositories.setup.updatePassword("00", "00");
+  assert.equal(repositories.setup.get().passwordChangeRequired, false);
+  migrateDatabase(db, defaultSettings);
+  assert.equal(repositories.setup.get().passwordChangeRequired, false);
   assert.throws(() => repositories.setup.complete("other-admin", "salt", "hash"), /already been completed/);
   repositories.close();
 });
@@ -135,7 +140,7 @@ test("destination migration preserves saved legacy library paths and routes exis
   });
   assert.equal(profile.routes.music, "lidarr");
   assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
-  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 22);
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 23);
   db.close();
 });
 

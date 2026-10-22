@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null };
 const loginDialog = $("#login-dialog");
+const passwordChangeDialog = $("#password-change-dialog");
 const themeToggle = $("#theme-toggle");
 
 function setTheme(theme) {
@@ -35,6 +36,10 @@ async function api(path, options = {}) {
     if (!loginDialog.open) loginDialog.showModal();
     $("#auth-state").textContent = "Sign-in required";
     throw new Error(payload.error || "Sign-in required");
+  }
+  if (response.status === 403 && payload.passwordChangeRequired) {
+    if (!passwordChangeDialog.open) passwordChangeDialog.showModal();
+    throw new Error(payload.error);
   }
   if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
@@ -2251,18 +2256,42 @@ $("#login-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget;
   const values = new FormData(form);
   try {
-    await api("/api/v1/login", {
+    const login = await api("/api/v1/login", {
       method: "POST",
       body: JSON.stringify({ username: values.get("username"), password: values.get("password") })
     });
     form.elements.namedItem("password").value = "";
     loginDialog.close();
     $("#login-error").textContent = "";
+    if (login.passwordChangeRequired) {
+      passwordChangeDialog.showModal();
+      return;
+    }
     await loadSettings();
     await refreshDashboard();
     updateStreams();
   } catch (error) {
     $("#login-error").textContent = error.message;
+  }
+});
+
+$("#password-change-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  try {
+    await api("/api/v1/account/password", {
+      method: "POST",
+      body: JSON.stringify({ password: values.get("password"), confirmPassword: values.get("confirmPassword") })
+    });
+    form.reset();
+    $("#password-change-error").textContent = "";
+    passwordChangeDialog.close();
+    await loadSettings();
+    await refreshDashboard();
+    updateStreams();
+  } catch (error) {
+    $("#password-change-error").textContent = error.message;
   }
 });
 
