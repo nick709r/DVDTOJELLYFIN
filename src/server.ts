@@ -328,6 +328,16 @@ app.get<{ Querystring: { limit?: string } }>("/api/v1/history", async (request) 
   return { jobs: listJobs(limit) };
 });
 
+app.post<{ Params: { id: string } }>("/api/v1/history/:id/forget", async (request, reply) => {
+  try {
+    return { ok: true, ...repositories.forgetDisc.forgetDisc(request.params.id) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Disc could not be forgotten";
+    request.log.error({ err: error, discId: request.params.id }, "Forget disc failed");
+    return reply.code(message === "Disc not found" ? 404 : 409).send({ error: message });
+  }
+});
+
 app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/history/:id", async (request, reply) => {
   if (activeJob()?.id === request.params.id) {
     return reply.code(409).send({ error: "An active job cannot be removed from history" });

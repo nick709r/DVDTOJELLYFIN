@@ -60,6 +60,16 @@ export interface RecoveryRepository {
   clearInsertedDisc(): void;
 }
 
+export interface ForgetDiscResult {
+  discId: string;
+  fingerprint: string | null;
+  removed: Record<string, number>;
+}
+
+export interface ForgetDiscService {
+  forgetDisc(discId: string): ForgetDiscResult;
+}
+
 export interface AutoDiscRepositories {
   setup: SetupRepository;
   settings: SettingsRepository;
@@ -75,5 +85,6 @@ export interface AutoDiscRepositories {
   classificationAudit: ClassificationAuditRepository;
   discRecovery: DiscRecoveryRepository;
   tvMatchingTasks: TvMatchingTaskRepository;
+  forgetDisc: ForgetDiscService;
   close(): void;
 }
