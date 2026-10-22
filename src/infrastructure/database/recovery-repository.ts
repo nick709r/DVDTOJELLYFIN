@@ -1,13 +1,16 @@
 import type Database from "better-sqlite3";
 import type { RecoveryRepository } from "../../contracts/repositories.js";
+import type { JobStatus } from "../../model.js";
 import type { SqliteEventRepository } from "./event-repository.js";
 import type { ClassificationAuditRepository } from "../../domain/classification.js";
+import type { ReviewItemRepository } from "../../domain/reviews.js";
 
 export class SqliteRecoveryRepository implements RecoveryRepository {
   constructor(
     private readonly db: Database.Database,
     private readonly events: SqliteEventRepository,
-    private readonly audit?: ClassificationAuditRepository
+    private readonly audit?: ClassificationAuditRepository,
+    private readonly reviewItems?: ReviewItemRepository
   ) {}
 
   interruptedOutputs(): Array<{ id: string; outputPath: string; mediaType: string }> {
@@ -25,8 +28,8 @@ export class SqliteRecoveryRepository implements RecoveryRepository {
     `).all() as Array<{ id: string; outputPath: string | null; mediaType: string; discFingerprint: string | null }>;
   }
 
-  jobIds(): string[] {
-    return (this.db.prepare("SELECT id FROM jobs").all() as Array<{ id: string }>).map((row) => row.id);
+  jobStates(): Array<{ id: string; status: JobStatus }> {
+    return this.db.prepare("SELECT id, status FROM jobs").all() as Array<{ id: string; status: JobStatus }>;
   }
 
   recoverPublished(id: string, outputBytes: number): boolean {
@@ -44,11 +47,12 @@ export class SqliteRecoveryRepository implements RecoveryRepository {
       if (fingerprint?.value) {
         this.db.prepare("UPDATE drive_state SET last_fingerprint = ?, processed_at = ? WHERE id = 1")
           .run(fingerprint.value, now);
-        this.db.prepare(`
-          UPDATE review_items SET status = 'resolved', resolved_at = ?, resolution_details = ?
-          WHERE disc_fingerprint = ? AND status IN ('active', 'retrying')
-        `).run(now, "Related disc processing completed successfully", fingerprint.value);
       }
+      this.db.prepare(`
+        UPDATE review_items SET status = 'resolved', resolved_at = ?, resolution_details = ?
+        WHERE (related_job_id = ? OR (? IS NOT NULL AND disc_fingerprint = ?))
+          AND status IN ('active', 'retrying')
+      `).run(now, "Related disc processing completed successfully", id, fingerprint?.value ?? null, fingerprint?.value ?? null);
       this.audit?.setProcessingStatus(id, "completed");
       this.events.add(id, "completed", "info", "Recovered validated media published before service restart");
       return true;
@@ -67,6 +71,25 @@ export class SqliteRecoveryRepository implements RecoveryRepository {
       if (result.changes !== 1) return false;
       this.audit?.setProcessingStatus(id, "failed");
       this.events.add(id, "failed", "error", reason);
+      const job = this.db.prepare(`
+        SELECT media_type AS mediaType, disc_fingerprint AS fingerprint, disc_label AS label
+        FROM jobs WHERE id = ?
+      `).get(id) as { mediaType: string; fingerprint: string | null; label: string | null } | undefined;
+      const tvTask = this.db.prepare("SELECT 1 FROM tv_matching_tasks WHERE job_id = ?").get(id);
+      this.reviewItems?.create({
+        category: tvTask ? "tv_review" : job?.mediaType === "audio_cd" ? "cd_review" : "processing_failure",
+        severity: "high",
+        title: tvTask ? "TV matching was interrupted" : "Interrupted processing needs attention",
+        description: reason,
+        relatedJobId: id,
+        ...(job?.label ? { relatedDisc: job.label } : {}),
+        ...(job?.fingerprint ? { discFingerprint: job.fingerprint } : {}),
+        errorDetails: { code: "interrupted_recovery_failed", recoverable: true },
+        suggestedActions: [
+          { type: "retry", label: "Retry processing" },
+          { type: "view-job", label: "View job details" }
+        ]
+      });
       return true;
     })();
   }

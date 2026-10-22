@@ -216,6 +216,28 @@ test("job initialization is atomic and terminal states reject later processing t
   repositories.close();
 });
 
+test("active Review Centre entries are deduplicated by job and category", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  repositories.jobs.add("review-dedup-job", "Test source", "review-dedup-fingerprint");
+  const input = {
+    category: "processing_failure",
+    severity: "high",
+    title: "Processing failed",
+    description: "First failure",
+    relatedJobId: "review-dedup-job",
+    discFingerprint: "review-dedup-fingerprint",
+    suggestedActions: [{ type: "retry", label: "Retry" }]
+  };
+  const first = repositories.reviewItems.create(input);
+  const second = repositories.reviewItems.create({ ...input, description: "Repeated failure" });
+  assert.equal(second.id, first.id);
+  assert.equal(repositories.reviewItems.list({ status: "active" }).length, 1);
+  assert.equal(second.description, "Repeated failure");
+  repositories.close();
+});
+
 test("review item repository persists searchable lifecycle data and summary counts", () => {
   const db = new Database(":memory:");
   migrateDatabase(db, defaultSettings);

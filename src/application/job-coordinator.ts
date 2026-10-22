@@ -239,6 +239,7 @@ export class JobCoordinator {
   complete(context: JobContext, fingerprint?: string): JobResult {
     const completedFingerprint = fingerprint ?? context.fingerprint;
     this.repositories.jobs.finish(context.id, "completed", null, completedFingerprint ?? undefined);
+    this.resolveJobReviews(context.id, "Related disc processing completed successfully");
     if (completedFingerprint) {
       this.repositories.reviewItems.resolveForDisc(completedFingerprint, "Related disc processing completed successfully");
     }
@@ -383,6 +384,7 @@ export class JobCoordinator {
   }
 
   resolveJobReviews(jobId: string, resolutionDetails: string): void {
+    if (!this.repositories.reviewItems?.list || !this.repositories.reviewItems?.updateStatus) return;
     for (const review of this.repositories.reviewItems.list({ status: "active", limit: 1000 })) {
       if (review.relatedJobId === jobId) {
         this.repositories.reviewItems.updateStatus(review.id, "resolved", resolutionDetails);

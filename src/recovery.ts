@@ -3,11 +3,17 @@ import { join, resolve } from "node:path";
 import type { AutoDiscRepositories } from "./contracts/repositories.js";
 import { mediaDuration } from "./encoding.js";
 import { log } from "./logger.js";
+import { outputPath } from "./output-destinations.js";
 
 const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const partialOutput = new RegExp(`^\\.autodisc-${uuid}\\.(mp4|mkv)$`, "i");
-const partialAlbumDirectory = new RegExp(`^\\.autodisc-${uuid}$`, "i");
+const partialOutput = new RegExp(`^\\.autodisc-(${uuid})\\.(mp4|mkv)$`, "i");
+const partialAlbumDirectory = new RegExp(`^\\.autodisc-(${uuid})$`, "i");
+
+function cleanableJob(status: string | undefined): boolean {
+  return status === undefined ||
+    ["completed", "failed", "cancelled", "ignored", "deleted"].includes(status);
+}
 
 export async function recoverTemporaryFiles(repositories: AutoDiscRepositories): Promise<void> {
   const settings = repositories.settings.get();
@@ -15,68 +21,6 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
   let removedOutputs = 0;
   let recoveredJobs = 0;
   let failedJobs = 0;
-  const knownJobs = new Set(repositories.recovery.jobIds());
-  const workEntries = await readdir(settings.workDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  });
-  for (const entry of workEntries) {
-    if (entry.isDirectory() && uuidDirectory.test(entry.name) && !knownJobs.has(entry.name)) {
-      await rm(join(settings.workDir, entry.name), { recursive: true, force: true });
-      removedWorkdirs += 1;
-    }
-  }
-  const outputEntries = await readdir(settings.moviesDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  });
-  for (const entry of outputEntries) {
-    if (entry.isFile() && partialOutput.test(entry.name)) {
-      await rm(join(settings.moviesDir, entry.name), { force: true });
-      removedOutputs += 1;
-    } else if (entry.isDirectory()) {
-      const movieDirectory = join(settings.moviesDir, entry.name);
-      const children = await readdir(movieDirectory, { withFileTypes: true });
-      let removedPartial = false;
-      for (const child of children) {
-        if (child.isFile() && partialOutput.test(child.name)) {
-          await rm(join(movieDirectory, child.name), { force: true });
-          removedOutputs += 1;
-          removedPartial = true;
-        }
-      }
-      if (removedPartial) {
-        try {
-          await rmdir(movieDirectory);
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== "ENOTEMPTY" && code !== "ENOENT") throw error;
-        }
-      }
-    }
-  }
-  const musicEntries = await readdir(settings.musicDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  });
-  for (const entry of musicEntries) {
-    if (entry.isDirectory() && partialAlbumDirectory.test(entry.name)) {
-      await rm(join(settings.musicDir, entry.name), { recursive: true, force: true });
-      removedOutputs += 1;
-    }
-  }
-  if (resolve(settings.lidarrImportDir) !== resolve(settings.musicDir)) {
-    const importEntries = await readdir(settings.lidarrImportDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return [];
-      throw error;
-    });
-    for (const entry of importEntries) {
-      if (entry.isDirectory() && partialAlbumDirectory.test(entry.name)) {
-        await rm(join(settings.lidarrImportDir, entry.name), { recursive: true, force: true });
-        removedOutputs += 1;
-      }
-    }
-  }
   for (const job of repositories.recovery.interruptedJobs()) {
     try {
       if (!job.outputPath) throw new Error("No published output path was recorded");
@@ -110,6 +54,74 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
         jobId: job.id,
         error: error instanceof Error ? error.message : "unknown validation error"
       });
+    }
+  }
+  const jobStates = new Map(repositories.recovery.jobStates().map((job) => [job.id, job.status]));
+  const workEntries = await readdir(settings.workDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of workEntries) {
+    if (entry.isDirectory() && uuidDirectory.test(entry.name) && cleanableJob(jobStates.get(entry.name))) {
+      await rm(join(settings.workDir, entry.name), { recursive: true, force: true });
+      removedWorkdirs += 1;
+    }
+  }
+  const profileSettings = settings.outputDestinations.profiles.map((profile) => ({
+    ...settings,
+    outputDestinations: { ...settings.outputDestinations, activeProfileId: profile.id }
+  }));
+  const movieRoots = [...new Set([settings.moviesDir, ...profileSettings.map((profile) => outputPath(profile, "movies"))]
+    .map((path) => resolve(path)))];
+  const musicRoots = [...new Set([
+    settings.musicDir,
+    settings.lidarrImportDir,
+    ...profileSettings.map((profile) => outputPath(profile, "music"))
+  ].filter(Boolean).map((path) => resolve(path)))];
+  for (const movieRoot of movieRoots) {
+    const outputEntries = await readdir(movieRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of outputEntries) {
+      const partialFile = entry.isFile() ? partialOutput.exec(entry.name) : null;
+      if (partialFile?.[1] && cleanableJob(jobStates.get(partialFile[1]))) {
+        await rm(join(movieRoot, entry.name), { force: true });
+        removedOutputs += 1;
+      } else if (entry.isDirectory()) {
+        const movieDirectory = join(movieRoot, entry.name);
+        const children = await readdir(movieDirectory, { withFileTypes: true });
+        let removedPartial = false;
+        for (const child of children) {
+          const partialChild = child.isFile() ? partialOutput.exec(child.name) : null;
+          if (partialChild?.[1] && cleanableJob(jobStates.get(partialChild[1]))) {
+            await rm(join(movieDirectory, child.name), { force: true });
+            removedOutputs += 1;
+            removedPartial = true;
+          }
+        }
+        if (removedPartial) {
+          try {
+            await rmdir(movieDirectory);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== "ENOTEMPTY" && code !== "ENOENT") throw error;
+          }
+        }
+      }
+    }
+  }
+  for (const musicRoot of musicRoots) {
+    const musicEntries = await readdir(musicRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of musicEntries) {
+      const partialAlbum = entry.isDirectory() ? partialAlbumDirectory.exec(entry.name) : null;
+      if (partialAlbum?.[1] && cleanableJob(jobStates.get(partialAlbum[1]))) {
+        await rm(join(musicRoot, entry.name), { recursive: true, force: true });
+        removedOutputs += 1;
+      }
     }
   }
   log("info", "recovery", "Startup filesystem and interrupted-job reconciliation completed", {

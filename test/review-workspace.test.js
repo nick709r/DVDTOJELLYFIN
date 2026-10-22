@@ -32,6 +32,10 @@ test("review workspace preserves verified media, persists review metadata, and c
   assert.equal(created.job.status, "processing");
   assert.equal((await stat(created.mediaPath)).size, 2048);
   assert.equal(await readFile(join(created.job.storagePath, "review.json"), "utf8").then((json) => JSON.parse(json).ripCompleted), true);
+  await workspaces.recoverProcessing();
+  assert.equal(repositories.reviewJobs.get(jobId).status, "pending");
+  assert.match(repositories.reviewJobs.get(jobId).failureReason, /restarted/i);
+  assert.equal((await stat(created.mediaPath)).size, 2048);
 
   const pending = await workspaces.markPending(jobId, {
     reason: "Metadata provider unavailable",
