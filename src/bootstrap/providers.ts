@@ -42,6 +42,7 @@ export async function createProviderRuntime(
   tvValidation: TvValidationService;
   tvReview: TvReviewService;
   reviewWorkspaces: ReviewWorkspaceService;
+  dvdWorkflow: DvdWorkflow;
   jobs: JobCoordinator;
 }> {
   const registry = new ProviderRegistry<Provider>({
@@ -90,7 +91,13 @@ export async function createProviderRuntime(
     metadata,
     repositories.tvEpisodeFeedback,
     repositories.tvProcessingPlans,
-    tvValidation
+    tvValidation,
+    undefined,
+    undefined,
+    {
+      seriesSearch: (query, signal) => tvMetadataLookupService.searchSeries(query, signal),
+      seasonEpisodeCounts: (series, signal) => tvMetadataLookupService.seasonEpisodeCounts(series, signal)
+    }
   );
   const tvReview = new TvReviewService(
     repositories.tvEpisodeFeedback,
@@ -99,7 +106,8 @@ export async function createProviderRuntime(
   const reviewWorkspaces = new ReviewWorkspaceService(repositories.reviewJobs);
   const workflows = new MediaWorkflowRegistry();
   workflows.register(new AudioCdWorkflow());
-  workflows.register(new DvdWorkflow(tvWorkflow, reviewWorkspaces));
+  const dvdWorkflow = new DvdWorkflow(tvWorkflow, reviewWorkspaces, undefined, undefined, jobs);
+  workflows.register(dvdWorkflow);
 
   return {
     registry,
@@ -111,6 +119,7 @@ export async function createProviderRuntime(
     tvValidation,
     tvReview,
     reviewWorkspaces,
+    dvdWorkflow,
     jobs
   };
 }

@@ -16,6 +16,7 @@ Run it as a web dashboard for hands-on control, or as a headless Linux service f
 - [Media Support](#media-support)
 - [Automation Modes](#automation-modes)
 - [Review Centre](#review-centre)
+- [TV Matching](#tv-matching)
 - [Destination Profiles](#destination-profiles)
 - [Explainable Classification](#explainable-classification)
 - [Disc Fingerprinting](#disc-fingerprinting)
@@ -39,7 +40,7 @@ AutoDisc is a platform for the **automatic ingestion and organisation of optical
 | Media | Workflow |
 | --- | --- |
 | DVD Movies | Detect, classify, identify, rip, encode, publish |
-| DVD TV Series | Episodic analysis, series and episode mapping, review, publish |
+| DVD TV Series | Episodic analysis, staging, series and episode mapping, publish |
 | Audio CDs | Rip to tagged FLAC, MusicBrainz lookup, publish |
 
 **Designed for extension**
@@ -58,7 +59,8 @@ AutoDisc is built on a provider and workflow model, so new media types and metad
 
 - **Automatic disc detection**: udev-driven insertion events with a periodic presence check and retry/backoff for drives that are slow to become readable.
 - **Movie classification**: separates feature films from other DVD content.
-- **TV classification**: episodic structure and runtime analysis, held for review rather than published as movies when uncertain.
+- **TV classification**: episodic structure and runtime analysis, with unidentified discs ripped to a TV staging area rather than published as movies.
+- **TV Matching**: identify staged series, assign season and disc details, map episodes, and continue publishing without reinserting or re-ripping the disc.
 - **Audio CD processing**: lossless FLAC ripping with tagging and MusicBrainz lookup.
 - **Disc diagnostics**: a live view of detection, classification, metadata and processing.
 - **Explainable decisions**: confidence scores with per-criterion evidence.
@@ -99,8 +101,8 @@ AutoDisc is built on a provider and workflow model, so new media types and metad
 2. **Analysis**: titles, runtimes, track structure and disc labels are gathered.
 3. **Classification**: the disc is identified as a movie, a TV series or music, with a confidence score.
 4. **Metadata**: providers supply titles, years, series, episodes, albums and artwork.
-5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Centre.
-6. **Processing**: ripping, encoding or extraction, depending on the media type.
+5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Centre. Unidentified TV discs continue ripping into the TV staging area and create a TV Matching task.
+6. **Processing**: ripping, encoding or extraction, depending on the media type. Staged TV content waits for identification and episode mapping.
 7. **Publishing**: finished media is placed in the destination profile's folder structure.
 
 ---
@@ -121,12 +123,14 @@ TV discs are treated as a first-class workflow, not an afterthought.
 - **Episodic detection**: multi-title discs with episode-shaped content are recognised as likely TV.
 - **Runtime analysis**: title durations are compared to find consistent episode lengths and to separate extras from episodes.
 - **Season workflows**: confirmed episodes are published into series and season folders (for example `Series/Season 01/…`).
-- **Review workflows**: uncertain discs, including two-episode discs and unknown series, are held for review and not published as movies.
+- **Unidentified series**: the disc is ripped to TV staging and queued for TV Matching instead of blocking the rip or being published as a movie.
+- **Identify and continue**: search by title or TVDB, TMDB or IMDb ID; assign a series, season and disc; map episodes; then publish the staged files without reinsertion or re-ripping.
+- **Staging safety**: unmatched content is retained by default, can be discarded with staged-only cleanup, and supports configurable retention.
 - **Fingerprint mapping**: a confirmed disc-to-series and track-to-episode mapping is stored against the disc fingerprint for reuse.
 
 Metadata comes from TVDB and TMDB, with configurable provider preference, fallback, health-aware failover and caching. Series can also be recovered by direct TVDB, TMDB or IMDb ID.
 
-> Automatic episode suggestions never publish by themselves. Publication requires an explicitly confirmed mapping, and TV matching is still being validated against a broad range of real discs.
+> Automatic episode suggestions never publish by themselves. Publication requires an explicitly confirmed mapping. Unidentified discs can be recovered from the TV Matching queue using their staged content.
 
 ### Music
 
@@ -150,7 +154,7 @@ Choose how much autonomy AutoDisc has. Each output profile has its own mode.
 
 **Examples**
 
-- *Regular Auto*: a clearly identified movie DVD is ripped and published. A disc that looks like TV but cannot be mapped is held for you.
+- *Regular Auto*: a clearly identified movie DVD is ripped and published. A disc that looks like TV but cannot be mapped is ripped to staging and queued for identification.
 - *Full Auto*: you load a box set overnight. Discs that fail to read are logged to Review and ejected, and the rest keep going. You fix the exceptions in the morning.
 - *Review-Based*: each inserted disc appears as a pending item. You check the classification, correct it if needed, then approve processing.
 
@@ -170,6 +174,22 @@ It collects:
 - **Recovery actions**: retry where safe, set provider IDs, map tracks to episodes, enter metadata manually, fix folders and retry
 
 Every manual correction is recorded with the administrator and time. The original detection is never overwritten, and an append-only audit trail with text and JSON export supports later analysis.
+
+---
+
+## TV Matching
+
+TV discs whose series cannot be identified automatically are ripped into a
+temporary staging area and added to the TV Matching queue. The queue retains
+episode counts, runtimes, source labels and diagnostics while the media remains
+unpublished.
+
+Identify the series by title, TVDB ID, TMDB ID or IMDb ID, then choose the
+season and disc number and map the staged titles to episodes. **Identify And
+Continue** processes and publishes the existing staged files; the disc does
+not need to be reinserted or re-ripped. Staged content is kept indefinitely by
+default. Deleting a matching task removes only its temporary staged content,
+and optional retention can be configured in days.
 
 ---
 

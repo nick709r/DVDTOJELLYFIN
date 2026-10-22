@@ -5,6 +5,16 @@ metadata, and track-to-episode mappings by disc fingerprint. These user values
 take precedence over automatic classification and episode suggestions. The
 detected values remain stored and are never rewritten by an override.
 
+## Identify Disc (series, season and disc number)
+
+TV identification no longer depends on the disc label. `TvWorkflowService.prepare` works through, in order: user-saved identification, saved fingerprint mapping, optical volume label, filesystem volume name, MakeMKV disc name, DVD metadata, TVDB search, TMDB search, runtime/structure analysis and episode-count matching. Names are normalized (`fresh-off-the-boat`, `Fresh_Off_The_Boat` and `FRESH OFF THE BOAT` all become `Fresh Off The Boat`; season/disc markers are stripped) and several search variants are tried. An empty label does not stop the pipeline.
+
+If automatic matching fails, use **Identify Disc** (Review Centre header, Disc Diagnostics, or **Identify Series / Change Series / Change Season / Change Disc Number** on a TV review card). Search by title, `tvdb:ID`, `tmdb:ID` or an IMDb ID (`tt…`), choose a result, pick the season and disc number (optional disc name) and save. The mapping is stored against the disc fingerprint and is applied automatically when the disc is inserted again. Episode-to-title mapping still requires confirmation and execution stays disabled.
+
+Identification diagnostics (volume label, filesystem name, fingerprint, queries, per-provider matches, failures, candidates, the 10 pipeline steps) appear in the review card and in Disc Diagnostics.
+
+API: `POST /api/v1/tv/identify/search`, `GET|PUT /api/v1/tv/plans/:id/identification`, `PUT /api/v1/discs/:fingerprint/identification`.
+
 ## Review workflow
 
 1. Open **Review Centre** for a TV plan, or **Disc Diagnostics** for a recently

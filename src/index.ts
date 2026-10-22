@@ -1,7 +1,7 @@
 import { getSettings, repositories } from "./db.js";
 import { configureLogLevel, log } from "./logger.js";
 import { startDiscMonitor } from "./disc-monitor.js";
-import { setDiscApprovalAction, setReviewJobActions, startServer, stopServer } from "./server.js";
+import { setDiscApprovalAction, setReviewJobActions, setTvMatchingActions, startServer, stopServer } from "./server.js";
 import { recoverTemporaryFiles } from "./recovery.js";
 import { createProviderRuntime } from "./bootstrap/providers.js";
 import { JobCoordinator } from "./application/job-coordinator.js";
@@ -31,6 +31,10 @@ async function main(): Promise<void> {
     updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch),
     remove: (id) => providerRuntime!.reviewWorkspaces.remove(id)
   });
+  setTvMatchingActions({
+    continue: (jobId) => providerRuntime!.dvdWorkflow.continueTvMatching(jobId),
+    remove: (jobId) => providerRuntime!.dvdWorkflow.removeTvMatchingTask(jobId)
+  });
   setDiscApprovalAction(async (item) => {
     if (providerRuntime!.jobs.activeJob()) throw new Error("Wait for the active disc job to finish before approving another disc");
     const signature = item.errorDetails?.detectionSignature;
@@ -48,6 +52,23 @@ async function main(): Promise<void> {
   configureLogLevel(getSettings().logLevel);
   await recoverTemporaryFiles(repositories);
   await providerRuntime.reviewWorkspaces.recoverProcessing();
+  try {
+    providerRuntime.dvdWorkflow.recoverInterruptedTvMatchingTasks();
+    await providerRuntime.dvdWorkflow.recoverOrphanedTvStagingDirectories();
+    await providerRuntime.dvdWorkflow.pruneExpiredTvMatchingTasks();
+  } catch (error) {
+    log("error", "tv-staging", "TV staging recovery failed during startup", {
+      error: error instanceof Error ? error.message : "unknown TV staging recovery failure"
+    });
+  }
+  const retentionTimer = setInterval(() => {
+    void providerRuntime?.dvdWorkflow.pruneExpiredTvMatchingTasks().catch((error: unknown) => {
+      log("error", "tv-staging", "TV staging retention cleanup failed", {
+        error: error instanceof Error ? error.message : "unknown retention cleanup failure"
+      });
+    });
+  }, 6 * 60 * 60 * 1000);
+  retentionTimer.unref();
   await startServer();
   const shutdownController = new AbortController();
   const stopMonitor = startDiscMonitor(
@@ -65,6 +86,7 @@ async function main(): Promise<void> {
     shutdownController.abort();
     shuttingDown = (async () => {
       await stopMonitor();
+      clearInterval(retentionTimer);
       await stopServer();
       await providerRuntime?.registry.disposeAll();
       repositories.close();

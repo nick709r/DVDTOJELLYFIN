@@ -18,6 +18,8 @@ function durationSeconds(value: string): number {
 
 export interface DiscInfo {
   label: string;
+  makemkvName?: string;
+  volumeName?: string;
   titles: DiscTitle[];
 }
 
@@ -32,6 +34,8 @@ export async function inspectDisc(device: string, signal?: AbortSignal): Promise
   });
   const titleValues = new Map<number, { name: string; durationSeconds: number }>();
   let label = "";
+  let makemkvName = "";
+  let volumeName = "";
   for (const line of result.stdout.split(/\r?\n/)) {
     const fields = line.match(/^(CINFO|TINFO):(\d+),(\d+),\d+,(.*)$/);
     if (!fields) continue;
@@ -40,6 +44,8 @@ export async function inspectDisc(device: string, signal?: AbortSignal): Promise
     const attributeId = Number(fields[3]);
     const value = unquote(fields[4] ?? "");
     if (kind === "CINFO" && attributeId === 2) label = value;
+    if (kind === "CINFO" && attributeId === 30) makemkvName = value;
+    if (kind === "CINFO" && attributeId === 32) volumeName = value;
     if (kind !== "TINFO") continue;
     const current = titleValues.get(itemId) ?? { name: "", durationSeconds: 0 };
     if (attributeId === 2) current.name = value;
@@ -49,7 +55,27 @@ export async function inspectDisc(device: string, signal?: AbortSignal): Promise
   const titles = [...titleValues.entries()]
     .map(([id, value]) => ({ id, name: value.name, durationSeconds: value.durationSeconds }))
     .filter((title) => title.durationSeconds > 0);
-  return { label, titles };
+  return {
+    label,
+    ...(makemkvName ? { makemkvName } : {}),
+    ...(volumeName ? { volumeName } : {}),
+    titles
+  };
+}
+
+/** Best-effort filesystem volume name; returns null when unavailable (non-Linux, no lsblk, no media). */
+export async function readFilesystemVolumeName(device: string, signal?: AbortSignal): Promise<string | null> {
+  if (!/^\/dev\/[A-Za-z0-9._\/-]+$/.test(device)) return null;
+  try {
+    const result = await runProcess("lsblk", ["-no", "LABEL", device], {
+      timeoutMs: 10_000,
+      ...(signal ? { signal } : {})
+    });
+    const name = result.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0);
+    return name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function ripTitle(device: string, titleId: number, workDir: string, signal?: AbortSignal): Promise<string> {

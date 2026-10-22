@@ -47,7 +47,12 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 23);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 25);
+  assert.deepEqual(
+    db.pragma("table_info(tv_matching_tasks)").map((column) => column.name),
+    ["job_id", "fingerprint", "status", "staging_path", "source_json", "diagnostics_json", "files_json",
+      "assignments_json", "failure", "created_at", "updated_at"]
+  );
   assert.deepEqual(
     db.pragma("table_info(review_jobs)").map((column) => column.name),
     ["id", "original_job_id", "status", "disc_type", "disc_label", "failure_reason", "failure_stage",
@@ -59,9 +64,11 @@ test("database migrations preserve legacy job history and add current columns", 
     db.pragma("table_info(disc_recovery)").map((column) => column.name),
     ["fingerprint", "detected_disc_type", "final_disc_type", "detected_media_type", "detected_confidence",
       "final_media_type", "disc_type_overridden", "media_type_overridden", "metadata_provider", "provider_id", "series_name",
-      "season_number", "mappings_json", "notes", "updated_at", "imported_metadata_json", "artwork_references_json"]
+      "season_number", "mappings_json", "notes", "updated_at", "imported_metadata_json", "artwork_references_json",
+      "disc_number", "disc_name", "identified_by", "identification_diagnostics_json"]
   );
-  const recovery = createSqliteRepositories(db, defaultSettings).discRecovery;
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  const recovery = repositories.discRecovery;
   recovery.recordDetection("recovery-disc", "dvd", "movie");
   const updatedRecovery = recovery.update("recovery-disc", {
     finalDiscType: "dvd",
@@ -86,6 +93,32 @@ test("database migrations preserve legacy job history and add current columns", 
   assert.throws(() => recovery.update("recovery-disc", {
     artworkReferences: [{ kind: "poster", url: "http://example.invalid/poster.jpg" }]
   }), /Artwork references/);
+  repositories.jobs.add("staged-tv-job", "Example TV disc", "staged-tv-fingerprint", "dvd");
+  const task = repositories.tvMatchingTasks.create({
+    jobId: "staged-tv-job",
+    fingerprint: "staged-tv-fingerprint",
+    status: "awaiting-identification",
+    stagingPath: "/work/tv-staging/unidentified/staged-tv-job",
+    source: {
+      sourceId: "dvd0",
+      providerId: "source.video-dvd.makemkv",
+      mediaKind: "dvd",
+      label: "",
+      manifest: { mediaKind: "dvd", items: [], attributes: {} }
+    },
+    diagnostics: { status: "analysis-unavailable" },
+    files: {},
+    assignments: []
+  });
+  assert.equal(task.jobId, "staged-tv-job");
+  assert.equal(repositories.tvMatchingTasks.list().length, 1);
+  repositories.tvMatchingTasks.update(task.jobId, { failure: "temporary issue" });
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId).failure, "temporary issue");
+  repositories.tvMatchingTasks.update(task.jobId, { failure: null });
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId).failure, undefined);
+  assert.equal(repositories.tvMatchingTasks.deleteTemporaryRecords(task.jobId, task.fingerprint), true);
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId), undefined);
+  assert.equal(db.prepare("SELECT status FROM jobs WHERE id = ?").get(task.jobId).status, "deleted");
   db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
     "tvStoreAnalysisEvidence", "true", "2026-01-01T00:00:00.000Z"
   );
@@ -140,7 +173,7 @@ test("destination migration preserves saved legacy library paths and routes exis
   });
   assert.equal(profile.routes.music, "lidarr");
   assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
-  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 23);
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 25);
   db.close();
 });
 

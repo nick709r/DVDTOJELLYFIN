@@ -301,57 +301,16 @@ test("DVD with no usable titles logs why no job was created", async () => {
   assert.equal(messages[0].titleItemCount, 0);
 });
 
-test("DVD workflow holds potential TV discs for review and never invokes movie acquisition", async () => {
-  const service = createTvService({ candidates: metadataCandidates() });
-  const workflow = new DvdWorkflow(service);
-  const calls = [];
-  const context = { id: "job-tv" };
-  const jobs = {
-    getSettings: () => ({ workDir: "unused", moviesDir: "unused", autoEject: true }),
-    lastDiscFingerprint: () => null,
-    recordDiscDetection: (fingerprint, discType, mediaType) => detectedRecovery(fingerprint, discType, mediaType),
-    begin: (...args) => { calls.push(["begin", ...args]); return context; },
-    update: (...args) => calls.push(["update", ...args]),
-    record: (...args) => calls.push(["record", ...args]),
-    holdForReview: (...args) => calls.push(["review", ...args]),
-    wasJobCancelled: () => false
-  };
-  let acquireCalls = 0;
-  const source = {
-    provider: {},
-    candidate: {
-      providerId: "source.video-dvd.makemkv",
-      sourceId: "drive-1",
-      mediaKind: "dvd",
-      label: "Example Show Season 1 Disc 1",
-      manifest: tvSource().manifest
-    }
-  };
-
-  assert.equal(await workflow.process({
-    source,
-    sources: {
-      acquire: async () => { acquireCalls += 1; throw new Error("Movie ripping must not run"); }
-    },
-    jobs,
-    metadata: { resolve: async () => { throw new Error("Movie metadata lookup must not run"); } },
-    signal: new AbortController().signal,
-    devicePath: "/dev/sr0"
-  }), true);
-  assert.equal(acquireCalls, 0);
-  assert.ok(calls.some(([name]) => name === "review"));
-  assert.ok(calls.some(([name, contextArg]) => name === "record" && contextArg === context));
-  const classificationEvent = calls.find(([name, contextArg, stage]) =>
-    name === "record" && contextArg === context && stage === "tv-classification"
-  );
-  assert.ok(classificationEvent);
-  const classificationDetails = JSON.parse(classificationEvent[4]);
-  assert.equal(classificationDetails.decision, "tv");
-  assert.deepEqual(classificationDetails.criteria.map(({ passed }) => passed), [true, true, false, true, true]);
-  const review = calls.find(([name]) => name === "review");
-  assert.ok(review);
-  assert.equal(review[3].classification, "tv");
-  assert.equal(review[3].confidence, classificationDetails.confidence);
+test("TV prefilter retains its explainable classification for episode-length discs", () => {
+  const assessment = assessTvDisc({
+    sourceId: "drive-1",
+    providerId: "source.video-dvd.makemkv",
+    mediaKind: "dvd",
+    label: "Example Show Season 1 Disc 1",
+    manifest: tvSource().manifest
+  });
+  assert.equal(assessment.classification, "tv");
+  assert.deepEqual(assessment.criteria.map(({ passed }) => passed), [true, true, false, true, true]);
 });
 
 test("manual TV recovery maps and publishes each selected disc track", async () => {
@@ -389,6 +348,7 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
       libraryMetadata: defaultSettings.libraryMetadata
     }),
     lastDiscFingerprint: () => null,
+    listDiscRecoveries: () => [],
     recordDiscDetection: () => recovery,
     begin: () => jobContext,
     record: (...args) => jobCalls.push(["record", ...args]),
@@ -448,58 +408,23 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
   }
 });
 
-test("DVD workflow routes an unlabeled two-episode disc to review instead of movie processing", async () => {
-  const service = createTvService();
-  const workflow = new DvdWorkflow(service);
-  const calls = [];
-  const context = { id: "job-uncertain-tv" };
-  const jobs = {
-    getSettings: () => ({ tvDetectionEnabled: true }),
-    lastDiscFingerprint: () => null,
-    recordDiscDetection: (fingerprint, discType, mediaType) => detectedRecovery(fingerprint, discType, mediaType),
-    begin: (...args) => { calls.push(["begin", ...args]); return context; },
-    update: (...args) => calls.push(["update", ...args]),
-    record: (...args) => calls.push(["record", ...args]),
-    holdForReview: (...args) => calls.push(["review", ...args]),
-    wasJobCancelled: () => false
-  };
-  let acquireCalls = 0;
-  const source = {
-    provider: {},
-    candidate: {
-      providerId: "source.video-dvd.makemkv",
-      sourceId: "drive-1",
+test("unlabeled two-episode DVD remains a TV review candidate", () => {
+  const assessment = assessTvDisc({
+    sourceId: "drive-1",
+    providerId: "source.video-dvd.makemkv",
+    mediaKind: "dvd",
+    label: "DISC_01",
+    manifest: {
       mediaKind: "dvd",
-      label: "DISC_01",
-      manifest: {
-        mediaKind: "dvd",
-        items: [
-          { id: "1", kind: "title", title: "Title 1", durationSeconds: 1320 },
-          { id: "2", kind: "title", title: "Title 2", durationSeconds: 1350 }
-        ]
-      }
+      items: [
+        { id: "1", kind: "title", title: "Title 1", durationSeconds: 1320 },
+        { id: "2", kind: "title", title: "Title 2", durationSeconds: 1350 }
+      ]
     }
-  };
-
-  assert.equal(await workflow.process({
-    source,
-    sources: { acquire: async () => { acquireCalls += 1; throw new Error("Movie ripping must not run"); } },
-    jobs,
-    metadata: {},
-    signal: new AbortController().signal,
-    devicePath: "/dev/sr0"
-  }), true);
-  assert.equal(acquireCalls, 0);
-  assert.ok(calls.some(([name, contextArg, stage]) =>
-    name === "record" && contextArg === context && stage === "tv-classification"
-  ));
-  const review = calls.find(([name]) => name === "review");
-  assert.ok(review);
-  assert.match(review[2], /TV review candidate/);
-  assert.match(review[2], /0\.35/);
-  assert.equal(review[3].classification, "review");
-  assert.equal(review[3].confidence, 0.35);
-  assert.deepEqual(review[3].criteria.map(({ passed }) => passed), [false, true, false, true, true]);
+  });
+  assert.equal(assessment.classification, "review");
+  assert.equal(assessment.confidence, 0.35);
+  assert.deepEqual(assessment.criteria.map(({ passed }) => passed), [false, true, false, true, true]);
 });
 
 test("DVD workflow classifies an ordinary feature as Movie and does not invoke TV analysis", async () => {
@@ -517,6 +442,7 @@ test("DVD workflow classifies an ordinary feature as Movie and does not invoke T
   const jobs = {
     getSettings: () => ({ tvDetectionEnabled: true, workDir: blockedWorkDir, moviesDir: root }),
     lastDiscFingerprint: () => null,
+    listDiscRecoveries: () => [],
     recordDiscDetection: (fingerprint, discType, mediaType) => detectedRecovery(fingerprint, discType, mediaType),
     begin: () => ({ id: "job-confirmed-movie" }),
     record: (...args) => calls.push(["record", ...args]),

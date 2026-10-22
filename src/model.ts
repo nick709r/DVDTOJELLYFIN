@@ -4,11 +4,13 @@ export type JobStatus =
   | "converting"
   | "publishing"
   | "review"
+  | "awaiting-identification"
   | "completed"
   | "failed"
   | "cancelled"
   | "ignored"
-  | "interrupted";
+  | "interrupted"
+  | "deleted";
 
 export type EncoderChoice = "auto" | "nvidia" | "software";
 export type OutputFormat = "mp4" | "mkv";
@@ -98,6 +100,7 @@ export interface AppSettings {
   adminPasswordSalt: string;
   adminPasswordHash: string;
   tvDetectionEnabled: boolean;
+  tvStagingRetentionDays: number | null;
   tvValidationLoggingEnabled: boolean;
   tvMetadataLookupEnabled: boolean;
   tvMetadataPreferredProviderId: string;

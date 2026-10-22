@@ -3,6 +3,7 @@ import type { JobCancellationControl } from "../contracts/job-control.js";
 import type { Job, JobStatus } from "../model.js";
 import type { ReviewItemInput, ReviewItem } from "../domain/reviews.js";
 import type { DiscRecovery, DiscRecoveryUpdate, DiscType, MediaType } from "../domain/disc-recovery.js";
+import type { TvMatchingTask, TvMatchingTaskInput } from "../domain/tv-matching.js";
 
 export interface JobStep {
   id: string;
@@ -77,6 +78,10 @@ export class JobCoordinator {
     return this.repositories.history.list(1)[0];
   }
 
+  getJob(id: string): Job | undefined {
+    return this.repositories.history.get(id);
+  }
+
   hasActiveDiscApproval(signature: string): boolean {
     return this.repositories.reviewItems.list({ category: "configuration_issue", status: "active", limit: 250 })
       .some((item) => item.errorDetails?.detectionSignature === signature);
@@ -96,6 +101,31 @@ export class JobCoordinator {
 
   updateDiscRecovery(fingerprint: string, patch: DiscRecoveryUpdate): DiscRecovery | undefined {
     return this.repositories.discRecovery.update(fingerprint, patch);
+  }
+
+  createTvMatchingTask(input: TvMatchingTaskInput): TvMatchingTask {
+    return this.repositories.tvMatchingTasks.create(input);
+  }
+
+  getTvMatchingTask(jobId: string): TvMatchingTask | undefined {
+    return this.repositories.tvMatchingTasks.get(jobId);
+  }
+
+  listTvMatchingTasks(): TvMatchingTask[] {
+    return this.repositories.tvMatchingTasks.list();
+  }
+
+  updateTvMatchingTask(jobId: string, patch: Partial<Pick<TvMatchingTask,
+    "status" | "stagingPath" | "diagnostics" | "files" | "assignments">> & { failure?: string | null }): TvMatchingTask | undefined {
+    return this.repositories.tvMatchingTasks.update(jobId, patch);
+  }
+
+  deleteTvMatchingTask(jobId: string): boolean {
+    return this.repositories.tvMatchingTasks.delete(jobId);
+  }
+
+  deleteTvMatchingRecords(jobId: string, fingerprint: string): boolean {
+    return this.repositories.tvMatchingTasks.deleteTemporaryRecords(jobId, fingerprint);
   }
 
   listDiscRecoveries(limit = 100): DiscRecovery[] {
@@ -138,7 +168,8 @@ export class JobCoordinator {
     signal: AbortSignal
   ): JobContext {
     const job = this.repositories.history.get(id);
-    if (!job || (job.status !== "review" && job.status !== "failed")) {
+    if (!job || (job.status !== "review" && job.status !== "awaiting-identification" &&
+      job.status !== "failed" && job.status !== "interrupted")) {
       throw new Error(`Job ${id} is not available to resume`);
     }
     this.cancellation.register(id);
@@ -201,6 +232,26 @@ export class JobCoordinator {
   finishForReview(context: JobContext, message: string): void {
     this.repositories.jobs.finish(context.id, "review", message);
     this.publisher.publish(context.id, "review");
+  }
+
+  finishForIdentification(context: JobContext, message: string): void {
+    this.repositories.jobs.finish(context.id, "awaiting-identification", message);
+    this.createReview({
+      category: "tv_review",
+      severity: "medium",
+      title: "TV disc awaiting identification",
+      description: message,
+      relatedJobId: context.id,
+      ...(context.discLabel ? { relatedDisc: context.discLabel } : {}),
+      ...(context.fingerprint ? { discFingerprint: context.fingerprint } : {}),
+      suggestedActions: [{ type: "view-job", label: "Open TV Matching" }]
+    });
+    this.publisher.publish(context.id, "awaiting-identification");
+  }
+
+  interruptTvMatching(jobId: string, message: string): void {
+    this.repositories.jobs.finish(jobId, "interrupted", message);
+    this.publisher.publish(jobId, "interrupted");
   }
 
   holdForReview(

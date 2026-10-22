@@ -391,4 +391,39 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (23, ?)")
       .run(new Date().toISOString());
   }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 24").get()) {
+    const columns = db.pragma("table_info(disc_recovery)") as Array<{ name: string }>;
+    const addColumn = (name: string, definition: string): void => {
+      if (!columns.some((column) => column.name === name)) db.exec(`ALTER TABLE disc_recovery ADD COLUMN ${name} ${definition}`);
+    };
+    addColumn("disc_number", "INTEGER CHECK (disc_number IS NULL OR disc_number BETWEEN 1 AND 100)");
+    addColumn("disc_name", "TEXT");
+    addColumn("identified_by", "TEXT");
+    addColumn("identification_diagnostics_json", "TEXT");
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (24, ?)")
+      .run(new Date().toISOString());
+  }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 25").get()) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tv_matching_tasks (
+        job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('awaiting-identification', 'awaiting-mapping', 'processing', 'completed')),
+        staging_path TEXT NOT NULL,
+        source_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        files_json TEXT NOT NULL,
+        assignments_json TEXT NOT NULL,
+        failure TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS tv_matching_tasks_status_updated
+        ON tv_matching_tasks(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS tv_matching_tasks_fingerprint
+        ON tv_matching_tasks(fingerprint);
+    `);
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (25, ?)")
+      .run(new Date().toISOString());
+  }
 }

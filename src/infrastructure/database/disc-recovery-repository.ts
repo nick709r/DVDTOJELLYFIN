@@ -23,11 +23,25 @@ interface RecoveryRow {
   provider_id: string | null;
   series_name: string | null;
   season_number: number | null;
+  disc_number: number | null;
+  disc_name: string | null;
+  identified_by: "user" | null;
+  identification_diagnostics_json: string | null;
   mappings_json: string;
   imported_metadata_json: string;
   artwork_references_json: string;
   notes: string | null;
   updated_at: string;
+}
+
+function parseDiagnostics(row: RecoveryRow): Record<string, unknown> | null {
+  if (!row.identification_diagnostics_json) return null;
+  try {
+    const parsed = JSON.parse(row.identification_diagnostics_json) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }
 
 function mapRow(row: RecoveryRow | undefined): DiscRecovery | undefined {
@@ -64,6 +78,10 @@ function mapRow(row: RecoveryRow | undefined): DiscRecovery | undefined {
     providerId: row.provider_id,
     seriesName: row.series_name,
     seasonNumber: row.season_number,
+    discNumber: row.disc_number ?? null,
+    discName: row.disc_name ?? null,
+    identifiedBy: row.identified_by ?? null,
+    identificationDiagnostics: parseDiagnostics(row),
     mappings,
     importedMetadata,
     artworkReferences,
@@ -93,6 +111,17 @@ function validatePatch(patch: DiscRecoveryUpdate): void {
   if (patch.seasonNumber !== undefined && patch.seasonNumber !== null &&
     (!Number.isInteger(patch.seasonNumber) || patch.seasonNumber < 0 || patch.seasonNumber > 100)) {
     throw new Error("Season number must be an integer from 0 to 100");
+  }
+  if (patch.discNumber !== undefined && patch.discNumber !== null &&
+    (!Number.isInteger(patch.discNumber) || patch.discNumber < 1 || patch.discNumber > 100)) {
+    throw new Error("Disc number must be an integer from 1 to 100");
+  }
+  if (patch.discName !== undefined && patch.discName !== null && patch.discName.length > 200) {
+    throw new Error("Disc name must not exceed 200 characters");
+  }
+  if (patch.identificationDiagnostics !== undefined && patch.identificationDiagnostics !== null &&
+    Buffer.byteLength(JSON.stringify(patch.identificationDiagnostics), "utf8") > 128 * 1024) {
+    throw new Error("Identification diagnostics must be no larger than 128 KB");
   }
   if (patch.notes !== undefined && patch.notes !== null && patch.notes.length > 2000) {
     throw new Error("Notes must not exceed 2000 characters");
@@ -185,6 +214,10 @@ export class SqliteDiscRecoveryRepository implements DiscRecoveryRepository {
       ...(patch.providerId === undefined ? {} : { providerId: patch.providerId?.trim() || null }),
       ...(patch.seriesName === undefined ? {} : { seriesName: patch.seriesName?.trim() || null }),
       ...(patch.seasonNumber === undefined ? {} : { seasonNumber: patch.seasonNumber }),
+      ...(patch.discNumber === undefined ? {} : { discNumber: patch.discNumber }),
+      ...(patch.discName === undefined ? {} : { discName: patch.discName?.trim() || null }),
+      ...(patch.identifiedBy === undefined ? {} : { identifiedBy: patch.identifiedBy }),
+      ...(patch.identificationDiagnostics === undefined ? {} : { identificationDiagnostics: patch.identificationDiagnostics }),
       ...(patch.mappings === undefined ? {} : { mappings: patch.mappings }),
       ...(patch.importedMetadata === undefined ? {} : { importedMetadata: patch.importedMetadata }),
       ...(patch.artworkReferences === undefined ? {} : { artworkReferences: patch.artworkReferences }),
@@ -195,12 +228,16 @@ export class SqliteDiscRecoveryRepository implements DiscRecoveryRepository {
       UPDATE disc_recovery SET final_disc_type = ?, final_media_type = ?,
         disc_type_overridden = ?, media_type_overridden = ?, metadata_provider = ?, provider_id = ?,
         series_name = ?, season_number = ?, mappings_json = ?, imported_metadata_json = ?,
-        artwork_references_json = ?, notes = ?, updated_at = ?
+        artwork_references_json = ?, notes = ?, updated_at = ?,
+        disc_number = ?, disc_name = ?, identified_by = ?, identification_diagnostics_json = ?
       WHERE fingerprint = ?
     `).run(updated.finalDiscType, updated.finalMediaType, Number(updated.discTypeOverridden),
       Number(updated.mediaTypeOverridden), updated.metadataProvider, updated.providerId, updated.seriesName,
       updated.seasonNumber, JSON.stringify(updated.mappings), JSON.stringify(updated.importedMetadata ?? {}),
-      JSON.stringify(updated.artworkReferences), updated.notes, updatedAt, fingerprint);
+      JSON.stringify(updated.artworkReferences), updated.notes, updatedAt,
+      updated.discNumber, updated.discName, updated.identifiedBy,
+      updated.identificationDiagnostics === null ? null : JSON.stringify(updated.identificationDiagnostics),
+      fingerprint);
     return this.get(fingerprint);
   }
 

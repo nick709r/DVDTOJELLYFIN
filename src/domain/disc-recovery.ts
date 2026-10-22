@@ -36,6 +36,10 @@ export interface DiscRecovery {
   providerId: string | null;
   seriesName: string | null;
   seasonNumber: number | null;
+  discNumber: number | null;
+  discName: string | null;
+  identifiedBy: "user" | null;
+  identificationDiagnostics: Readonly<Record<string, unknown>> | null;
   mappings: readonly EpisodeMapping[];
   importedMetadata: Readonly<Record<string, unknown>> | null;
   artworkReferences: readonly RecoveryArtworkReference[];
@@ -50,6 +54,10 @@ export interface DiscRecoveryUpdate {
   providerId?: string | null;
   seriesName?: string | null;
   seasonNumber?: number | null;
+  discNumber?: number | null;
+  discName?: string | null;
+  identifiedBy?: "user" | null;
+  identificationDiagnostics?: Readonly<Record<string, unknown>> | null;
   mappings?: readonly EpisodeMapping[];
   importedMetadata?: Readonly<Record<string, unknown>> | null;
   artworkReferences?: readonly RecoveryArtworkReference[];

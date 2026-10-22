@@ -185,6 +185,7 @@ async function tmdbLookupById(id: string, apiKey: string, fetcher: typeof fetch)
   url.searchParams.set("append_to_response", "aggregate_credits,images");
   url.searchParams.set("include_image_language", "en,null");
   const response = await responseJson<{ id?: number; name?: string; first_air_date?: string; overview?: string;
+    number_of_seasons?: number;
     poster_path?: string | null; backdrop_path?: string | null; vote_average?: number;
     genres?: Array<{ name?: string }>; aggregate_credits?: { cast?: Array<{ name?: string }> };
     images?: { posters?: Array<{ file_path?: string }>; backdrops?: Array<{ file_path?: string }>;
@@ -195,8 +196,9 @@ async function tmdbLookupById(id: string, apiKey: string, fetcher: typeof fetch)
   return candidate(String(response.id), "series", response.name, 1, {
     seriesId: String(response.id), title: response.name, year: year ?? null, overview: response.overview ?? null,
     rating: response.vote_average ?? null,
+    numberOfSeasons: typeof response.number_of_seasons === "number" ? response.number_of_seasons : null,
     genres: (response.genres ?? []).flatMap((genre) => genre.name ? [genre.name] : []),
-    cast: (response.aggregate_credits?.cast ?? []).slice(0, 20).flatMap((person) => person.name ? [person.name] : []),
+    cast: (response.aggregate_credits?.cast ?? []).slice(0, 20).flatMap    ((person) => person.name ? [person.name] : []),
     artwork: [
       ...(response.poster_path ? [{ kind: "poster", url: `https://image.tmdb.org/t/p/original${response.poster_path}` }] : []),
       ...(response.images?.posters?.[0]?.file_path

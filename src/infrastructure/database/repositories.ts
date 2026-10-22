@@ -14,6 +14,7 @@ import { SqliteReviewJobRepository } from "./review-job-repository.js";
 import { SqliteClassificationAuditRepository } from "./classification-audit-repository.js";
 import { SqliteSetupRepository } from "./setup-repository.js";
 import { SqliteDiscRecoveryRepository } from "./disc-recovery-repository.js";
+import { SqliteTvMatchingTaskRepository } from "./tv-matching-task-repository.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
   const events = new SqliteEventRepository(db);
@@ -32,6 +33,7 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     reviewJobs: new SqliteReviewJobRepository(db),
     classificationAudit,
     discRecovery: new SqliteDiscRecoveryRepository(db),
+    tvMatchingTasks: new SqliteTvMatchingTaskRepository(db),
     close: () => db.close()
   };
 }

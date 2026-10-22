@@ -11,7 +11,7 @@ export class SqliteHistoryRepository implements HistoryRepository {
         encoder, output_bytes AS outputBytes, started_at AS startedAt,
         finished_at AS finishedAt, duration_seconds AS durationSeconds,
         conversion_seconds AS conversionSeconds, progress, error
-      FROM jobs ORDER BY started_at DESC LIMIT ?
+      FROM jobs WHERE status != 'deleted' ORDER BY started_at DESC LIMIT ?
     `).all(limit) as Job[];
   }
 
@@ -47,7 +47,7 @@ export class SqliteHistoryRepository implements HistoryRepository {
         encoder, output_bytes AS outputBytes, started_at AS startedAt,
         finished_at AS finishedAt, duration_seconds AS durationSeconds,
         conversion_seconds AS conversionSeconds, progress, error
-      FROM jobs WHERE id = ?
+      FROM jobs WHERE id = ? AND status != 'deleted'
     `).get(id) as Job | undefined;
   }
 

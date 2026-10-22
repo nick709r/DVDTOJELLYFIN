@@ -45,7 +45,7 @@ export class SqliteJobRepository implements JobRepository {
     this.db.prepare(`UPDATE jobs SET ${columns.join(", ")} WHERE id = ?`).run(...values);
   }
 
-  finish(id: string, status: "review" | "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void {
+  finish(id: string, status: "review" | "awaiting-identification" | "completed" | "failed" | "cancelled" | "interrupted" | "deleted", error: string | null, fingerprint?: string): void {
     const now = new Date().toISOString();
     const finish = this.db.transaction(() => {
       this.db.prepare(`

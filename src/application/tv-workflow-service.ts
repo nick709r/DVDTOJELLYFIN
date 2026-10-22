@@ -5,12 +5,24 @@ import { tvItemSignature } from "./tv-analysis-engine.js";
 import type { MetadataCandidate, MetadataResult } from "../domain/metadata.js";
 import type { MediaManifestItem } from "../domain/media.js";
 import type { TvValidationService } from "./tv-validation-service.js";
+import { normalizeDiscName, parseDiscStructureHints, searchVariants } from "./tv-name-normalization.js";
+import type {
+  TvIdentificationDiagnostics,
+  TvIdentificationNameSource,
+  TvIdentificationQuery,
+  TvIdentificationStep,
+  TvIdentificationStepId,
+  TvSavedIdentification,
+  TvSeasonEpisodeCountFunction,
+  TvSeriesSearchFunction
+} from "../domain/tv-identification.js";
 import type {
   TvAnalysisRecommendation,
   TvDiscAnalysisReport,
   TvEpisodeMatchReport,
   TvEpisodeMetadataCandidate,
   TvProcessingPlan,
+  HistoricalDiscAnalysis,
   TvProcessingPlanInput,
   TvReviewRequirement,
   TvConfidenceBand,
@@ -36,14 +48,6 @@ export const tvWorkflowPolicy = {
   excludedTrackTitleFlags: nonEpisodeTitlePattern.flags
 } as const;
 
-function cleanSeriesQuery(label: string): string {
-  return label.replace(/\b(?:season|series|disc|disk|volume|vol|episodes?|television|tv)\b/gi, " ")
-    .replace(/\bs\d{1,2}(?:[\s._-]*d\d{1,2})?\b/gi, " ")
-    .replace(/\bd\d{1,2}\b/gi, " ")
-    .replace(/\b\d+\b/g, " ")
-    .replace(/\s+/g, " ").trim();
-}
-
 export interface TvWorkflowSource {
   sourceId: string;
   providerId: string;
@@ -67,6 +71,7 @@ export interface TvWorkflowResult {
     candidates: readonly MetadataCandidate[];
     failures: readonly { providerId: string; message: string }[];
   }[];
+  identification: TvIdentificationDiagnostics;
 }
 
 interface TimedMetadataResult {
@@ -154,14 +159,30 @@ function episodeCandidate(candidate: MetadataCandidate): TvEpisodeMetadataCandid
 }
 
 function parseDiscStructure(label: string): { seasonNumber?: number; discNumber?: number; discCount?: number } {
-  const season = label.match(/\bseason[\s._-]*(\d+)\b/i) ?? label.match(/\bs(\d{1,2})(?:[\s._-]*d\d{1,2})?\b/i);
-  const disc = label.match(/\bdisc[\s._-]*(\d+)\b/i) ?? label.match(/\bd(\d{1,2})\b/i);
-  const count = label.match(/\b(?:of|\/)\s*(\d+)\s*discs?\b/i);
-  return {
-    ...(season?.[1] === undefined ? {} : { seasonNumber: Number(season[1]) }),
-    ...(disc?.[1] === undefined ? {} : { discNumber: Number(disc[1]) }),
-    ...(count?.[1] === undefined ? {} : { discCount: Number(count[1]) })
-  };
+  return parseDiscStructureHints(label);
+}
+
+function episodeLengthTitleCount(source: TvWorkflowSource): number {
+  return source.manifest.items.filter((item) =>
+    item.kind === "title" && item.durationSeconds !== undefined &&
+    item.durationSeconds >= tvWorkflowPolicy.episodeMinimumSeconds &&
+    item.durationSeconds <= tvWorkflowPolicy.episodeMaximumSeconds &&
+    !nonEpisodeTitlePattern.test(item.title ?? "")
+  ).length;
+}
+
+export interface TvWorkflowDependencies {
+  /** Searches every configured metadata provider independently for a series title. */
+  seriesSearch?: TvSeriesSearchFunction;
+  /** Returns episode counts per season for a known series. */
+  seasonEpisodeCounts?: TvSeasonEpisodeCountFunction;
+}
+
+interface ProviderSearchOutcome {
+  providerId: string;
+  candidates: MetadataCandidate[];
+  durationMs: number;
+  failure?: string;
 }
 
 export interface TvPrefilterCriterion {
@@ -355,17 +376,175 @@ export class TvWorkflowService {
     private readonly planRepository: TvProcessingPlanRepository,
     private readonly validationService?: TvValidationService,
     private readonly analysisEngine = new TvAnalysisEngine(),
-    private readonly matchingEngine = new TvEpisodeMatchingEngine()
+    private readonly matchingEngine = new TvEpisodeMatchingEngine(),
+    private readonly identification: TvWorkflowDependencies = {}
   ) {}
+
+  private async searchProviders(
+    query: string,
+    source: TvWorkflowSource,
+    signal?: AbortSignal
+  ): Promise<ProviderSearchOutcome[]> {
+    if (this.identification.seriesSearch) {
+      const results = await this.identification.seriesSearch(query, signal);
+      const outcomes = results.map((entry) => ({
+        providerId: entry.providerId,
+        durationMs: entry.durationMs,
+        ...(entry.failure ? { failure: entry.failure } : {}),
+        candidates: entry.candidates.map((item): MetadataCandidate => ({
+          id: item.seriesId,
+          providerId: item.provider,
+          entityType: "series",
+          title: item.title,
+          confidence: item.confidence,
+          metadata: {
+            seriesId: item.seriesId,
+            title: item.title,
+            year: item.year ?? null,
+            overview: item.overview ?? null,
+            numberOfSeasons: item.seasonCount ?? null,
+            artwork: item.posterUrl ? [{ kind: "poster", url: item.posterUrl }] : []
+          },
+          identifiers: item.identifiers
+        }))
+      }));
+      return outcomes.length ? outcomes : [{ providerId: "configured", durationMs: 0, candidates: [] }];
+    }
+    const startedAt = Date.now();
+    const resolved = await this.metadata.resolve({
+      entityType: "series",
+      query,
+      attributes: { mediaKind: source.mediaKind, sourceId: source.sourceId }
+    }, signal);
+    const durationMs = Date.now() - startedAt;
+    const outcomes = new Map<string, ProviderSearchOutcome>();
+    for (const candidate of resolved.candidates) {
+      const entry = outcomes.get(candidate.providerId) ?? { providerId: candidate.providerId, candidates: [], durationMs };
+      entry.candidates.push(candidate);
+      outcomes.set(candidate.providerId, entry);
+    }
+    for (const failure of resolved.providerFailures) {
+      const entry = outcomes.get(failure.providerId) ?? { providerId: failure.providerId, candidates: [], durationMs };
+      entry.failure = failure.message;
+      outcomes.set(failure.providerId, entry);
+    }
+    if (outcomes.size === 0) outcomes.set("configured", { providerId: "configured", candidates: [], durationMs });
+    return [...outcomes.values()];
+  }
 
   async prepare(
     source: TvWorkflowSource,
     fingerprint: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    saved?: TvSavedIdentification
   ): Promise<TvWorkflowResult | undefined> {
     if (assessTvDisc(source).classification === "movie") return undefined;
 
-    const seasonStructure = parseDiscStructure(source.label);
+    const attributes = source.manifest.attributes ?? {};
+    const attribute = (key: string): string | null => {
+      const value = attributes[key];
+      return typeof value === "string" && value.trim() ? value.trim() : null;
+    };
+    const filesystemVolumeName = attribute("filesystemVolumeName");
+    const makemkvDiscName = attribute("makemkvDiscName");
+    const dvdMetadataName = attribute("dvdVolumeName") ?? attribute("dvdTitle");
+    const rawNames: Array<{ stepId: TvIdentificationStepId; name: string; raw: string | null }> = [
+      { stepId: "volume-label", name: "Optical disc volume label", raw: source.label.trim() || null },
+      { stepId: "filesystem-volume-name", name: "Filesystem volume name", raw: filesystemVolumeName },
+      { stepId: "makemkv-disc-name", name: "MakeMKV disc name", raw: makemkvDiscName },
+      { stepId: "dvd-metadata", name: "DVD metadata", raw: dvdMetadataName }
+    ];
+    const nameSources: TvIdentificationNameSource[] = rawNames.map((entry) => ({
+      stepId: entry.stepId,
+      name: entry.name,
+      raw: entry.raw,
+      normalized: normalizeDiscName(entry.raw),
+      variants: searchVariants(entry.raw)
+    }));
+
+    // Season, disc and disc-count hints come from the saved identification first, then any disc name.
+    const hints = rawNames.map((entry) => parseDiscStructure(entry.raw ?? ""));
+    const firstHint = <K extends "seasonNumber" | "discNumber" | "discCount">(key: K): number | undefined =>
+      hints.map((hint) => hint[key]).find((value) => value !== undefined);
+    const seasonStructure: { seasonNumber?: number; discNumber?: number; discCount?: number } = {
+      ...(saved?.seasonNumber != null ? { seasonNumber: saved.seasonNumber }
+        : firstHint("seasonNumber") === undefined ? {} : { seasonNumber: firstHint("seasonNumber")! }),
+      ...(saved?.discNumber != null ? { discNumber: saved.discNumber }
+        : firstHint("discNumber") === undefined ? {} : { discNumber: firstHint("discNumber")! }),
+      ...(firstHint("discCount") === undefined ? {} : { discCount: firstHint("discCount")! })
+    };
+
+    const queries: TvIdentificationQuery[] = [];
+    const failures: Array<{ providerId: string; query: string; message: string }> = [];
+    const providerMatches: Record<string, number> = {};
+    const providersQueried = new Set<string>();
+    let seriesDurationMs = 0;
+    let seriesCandidatesRaw: MetadataCandidate[] = [];
+    const seriesFailures: Array<{ providerId: string; message: string }> = [];
+    let winningStep: TvIdentificationStepId | undefined;
+    const triedQueries = new Set<string>();
+
+    if (!saved) {
+      search: for (const nameSource of nameSources) {
+        for (const variant of nameSource.variants) {
+          const key = variant.toLocaleLowerCase();
+          if (triedQueries.has(key)) continue;
+          triedQueries.add(key);
+          signal?.throwIfAborted();
+          let outcomes: ProviderSearchOutcome[];
+          try {
+            outcomes = await this.searchProviders(variant, source, signal);
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            const message = error instanceof Error ? error.message : "Metadata search failed";
+            outcomes = [{ providerId: "configured", candidates: [], durationMs: 0, failure: message }];
+          }
+          const found: MetadataCandidate[] = [];
+          for (const outcome of outcomes) {
+            providersQueried.add(outcome.providerId);
+            seriesDurationMs += outcome.durationMs;
+            providerMatches[outcome.providerId] = (providerMatches[outcome.providerId] ?? 0) + outcome.candidates.length;
+            queries.push({
+              query: variant,
+              nameSource: nameSource.name,
+              providerId: outcome.providerId,
+              matches: outcome.candidates.length,
+              durationMs: outcome.durationMs,
+              ...(outcome.failure ? { failure: outcome.failure } : {})
+            });
+            if (outcome.failure) {
+              failures.push({ providerId: outcome.providerId, query: variant, message: outcome.failure });
+              seriesFailures.push({ providerId: outcome.providerId, message: outcome.failure });
+            }
+            found.push(...outcome.candidates);
+          }
+          if (found.length > 0) {
+            seriesCandidatesRaw = found;
+            winningStep = nameSource.stepId;
+            break search;
+          }
+        }
+      }
+    }
+
+    const savedCandidate: MetadataCandidate | undefined = saved ? {
+      id: saved.seriesId ?? `saved:${saved.seriesName.toLocaleLowerCase()}`,
+      providerId: saved.provider,
+      entityType: "series",
+      title: saved.seriesName,
+      confidence: 1,
+      metadata: {
+        seriesId: saved.seriesId ?? `saved:${saved.seriesName.toLocaleLowerCase()}`,
+        title: saved.seriesName,
+        year: saved.year ?? null
+      },
+      identifiers: { [saved.provider]: saved.seriesId ?? saved.seriesName }
+    } : undefined;
+    if (savedCandidate) seriesCandidatesRaw = [savedCandidate];
+
+    const bestRaw = [...seriesCandidatesRaw].sort((left, right) => right.confidence - left.confidence)[0];
+    const selectedName = saved?.seriesName ?? bestRaw?.title ??
+      nameSources.find((entry) => entry.normalized)?.normalized ?? source.label.trim();
     const timedResolve = async (
       entityType: string,
       input: Parameters<MetadataResolver["resolve"]>[0]
@@ -374,15 +553,10 @@ export class TvWorkflowService {
       const result = await this.metadata.resolve(input, signal);
       return { result, durationMs: Date.now() - startedAt };
     };
-    const [seriesLookup, seasonLookup, episodeLookup] = await Promise.all([
-      timedResolve("series", {
-        entityType: "series",
-        ...(cleanSeriesQuery(source.label) ? { query: cleanSeriesQuery(source.label) } : {}),
-        attributes: { mediaKind: source.mediaKind, sourceId: source.sourceId }
-      }),
+    const [seasonLookup, episodeLookup] = await Promise.all([
       seasonStructure.seasonNumber === undefined ? Promise.resolve(undefined) : timedResolve("season", {
         entityType: "season",
-        query: `${source.label} season ${seasonStructure.seasonNumber}`,
+        query: `${selectedName} season ${seasonStructure.seasonNumber}`,
         attributes: {
           mediaKind: source.mediaKind,
           seasonNumber: seasonStructure.seasonNumber,
@@ -391,16 +565,21 @@ export class TvWorkflowService {
       }),
       timedResolve("episode", {
         entityType: "episode",
-        ...(source.label ? { query: source.label } : {}),
+        ...(selectedName ? { query: selectedName } : {}),
         attributes: {
           mediaKind: source.mediaKind,
           sourceId: source.sourceId,
           fingerprint,
+          ...(seasonStructure.seasonNumber === undefined ? {} : { seasonNumber: seasonStructure.seasonNumber }),
           items: source.manifest.items
         }
       })
     ]);
-    const seriesResult = seriesLookup.result;
+    const seriesResult: MetadataResult = {
+      candidates: seriesCandidatesRaw,
+      providerFailures: seriesFailures
+    };
+    const seriesLookup: TimedMetadataResult = { result: seriesResult, durationMs: seriesDurationMs };
     const seasonResult = seasonLookup?.result;
     const episodeResult = episodeLookup.result;
     const seriesCandidates = seriesResult.candidates
@@ -410,13 +589,51 @@ export class TvWorkflowService {
     const episodeCandidates = episodeResult.candidates
       .map(episodeCandidate).filter((candidate): candidate is TvEpisodeMetadataCandidate => candidate !== undefined);
 
+    // Episode-count matching is weak evidence, so it only runs when no season was otherwise found.
+    const episodeTitleCount = episodeLengthTitleCount(source);
+    let episodeCountDetail = "Skipped: season already known or no series candidate";
+    const topSeries = seriesCandidates.slice().sort((left, right) => right.confidence - left.confidence)[0];
+    if (seasonStructure.seasonNumber === undefined && seasonCandidates.length === 0 && topSeries &&
+      this.identification.seasonEpisodeCounts && episodeTitleCount > 0) {
+      try {
+        const counts = await this.identification.seasonEpisodeCounts(
+          { providerId: topSeries.providerId, seriesId: topSeries.series.id ?? topSeries.series.title }, signal);
+        const matching = [...counts.entries()].filter(([, count]) => count === episodeTitleCount).map(([season]) => season);
+        episodeCountDetail = matching.length
+          ? `${episodeTitleCount} episode-length titles equals the episode count of season ${matching.join(", ")}`
+          : `No season of ${topSeries.series.title} has exactly ${episodeTitleCount} episodes`;
+        for (const season of matching) {
+          seasonCandidates.push({
+            seriesId: topSeries.series.id ?? topSeries.series.title,
+            season: { seriesId: topSeries.series.id ?? topSeries.series.title, number: season },
+            providerId: "episode-count-match",
+            confidence: matching.length === 1 ? 0.6 : 0.45,
+            evidence: [`Season ${season} has ${episodeTitleCount} episodes, matching the episode-length titles on this disc`]
+          });
+        }
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        episodeCountDetail = `Episode-count lookup failed: ${error instanceof Error ? error.message : "unknown error"}`;
+      }
+    }
+
+    const history: HistoricalDiscAnalysis[] = saved ? [{
+      fingerprint,
+      series: { id: saved.seriesId ?? `saved:${saved.seriesName.toLocaleLowerCase()}`, title: saved.seriesName,
+        ...(saved.year === undefined ? {} : { year: saved.year }) },
+      ...(seasonStructure.seasonNumber === undefined ? {} : { seasonNumber: seasonStructure.seasonNumber }),
+      ...(seasonStructure.discNumber === undefined ? {} : { discNumber: seasonStructure.discNumber }),
+      ...(seasonStructure.discCount === undefined ? {} : { discCount: seasonStructure.discCount }),
+      episodeMatches: []
+    }] : [];
     const analysis = this.analysisEngine.analyze({
       sourceId: source.sourceId,
       manifestId: source.manifest.identifiers?.manifestId ?? fingerprint,
       manifest: source.manifest,
-      discLabel: source.label,
+      discLabel: source.label || nameSources.find((entry) => entry.normalized)?.raw || "",
       fingerprint,
       disc: seasonStructure,
+      history,
       metadata: { seriesCandidates, seasonCandidates, episodeCandidates }
     });
     const feedback = analysis.items.flatMap((item) =>
@@ -448,7 +665,93 @@ export class TvWorkflowService {
         failures: episodeResult.providerFailures
       }
     ];
-    const result = { analysis, matches, plan, metadataLookups };
+    const topDetected = analysis.detectedSeries;
+    const detectedProvider = topDetected
+      ? seriesCandidates.find((candidate) => candidate.series.id === topDetected.series.id)?.providerId
+      : undefined;
+    const selectedOrigin = saved ? saved.origin === "user" ? "user-specified" : "fingerprint-mapping"
+      : winningStep ?? "none";
+    const stepStatus = (id: TvIdentificationStepId): TvIdentificationStep["status"] => {
+      const nameSource = nameSources.find((entry) => entry.stepId === id);
+      if (saved) return "skipped";
+      if (!nameSource || !nameSource.normalized) return "skipped";
+      if (winningStep === id) return "matched";
+      return queries.some((query) => query.nameSource === nameSource.name) ? "no-match" : "skipped";
+    };
+    const nameDetail = (id: TvIdentificationStepId): string => {
+      const nameSource = nameSources.find((entry) => entry.stepId === id);
+      if (!nameSource?.raw) return "Not available for this disc";
+      if (!nameSource.normalized) return `"${nameSource.raw}" is a generic name and was ignored`;
+      return `"${nameSource.raw}" normalized to "${nameSource.normalized}"`;
+    };
+    const providerStep = (providerPattern: RegExp): TvIdentificationStep["status"] => {
+      const relevant = queries.filter((query) => providerPattern.test(query.providerId));
+      if (relevant.length === 0) return "skipped";
+      if (relevant.some((query) => query.matches > 0)) return "matched";
+      return relevant.every((query) => query.failure) ? "failed" : "no-match";
+    };
+    const providerDetail = (providerPattern: RegExp): string => {
+      const relevant = queries.filter((query) => providerPattern.test(query.providerId));
+      if (relevant.length === 0) return "Not queried (no usable name, provider disabled, or identification was supplied)";
+      return `${relevant.length} quer${relevant.length === 1 ? "y" : "ies"}, ${relevant.reduce((sum, query) => sum + query.matches, 0)} matches`;
+    };
+    const assessment = assessTvDisc(source);
+    const steps: TvIdentificationStep[] = [
+      { order: 1, id: "user-specified", name: "User-specified identification",
+        status: saved?.origin === "user" ? "matched" : "skipped",
+        detail: saved?.origin === "user" ? `${saved.seriesName}${saved.seasonNumber == null ? "" : ` season ${saved.seasonNumber}`}` : "No identification was entered manually" },
+      { order: 2, id: "fingerprint-mapping", name: "Saved fingerprint mapping",
+        status: saved?.origin === "fingerprint" ? "matched" : "skipped",
+        detail: saved?.origin === "fingerprint" ? `Fingerprint maps to ${saved.seriesName}` : "No saved mapping exists for this fingerprint" },
+      { order: 3, id: "volume-label", name: "Optical disc volume label", status: stepStatus("volume-label"), detail: nameDetail("volume-label") },
+      { order: 4, id: "filesystem-volume-name", name: "Filesystem volume name", status: stepStatus("filesystem-volume-name"), detail: nameDetail("filesystem-volume-name") },
+      { order: 5, id: "makemkv-disc-name", name: "MakeMKV disc name", status: stepStatus("makemkv-disc-name"), detail: nameDetail("makemkv-disc-name") },
+      { order: 6, id: "dvd-metadata", name: "DVD metadata", status: stepStatus("dvd-metadata"), detail: nameDetail("dvd-metadata") },
+      { order: 7, id: "tvdb-search", name: "TVDB search", status: providerStep(/tvdb/i), detail: providerDetail(/tvdb/i) },
+      { order: 8, id: "tmdb-search", name: "TMDB search", status: providerStep(/tmdb/i), detail: providerDetail(/tmdb/i) },
+      { order: 9, id: "runtime-structure", name: "Runtime and disc structure analysis", status: "informational",
+        detail: `${assessment.classification} (${assessment.confidence.toFixed(2)}); ${episodeTitleCount} episode-length titles` },
+      { order: 10, id: "episode-count", name: "Episode-count matching",
+        status: seasonCandidates.some((candidate) => candidate.providerId === "episode-count-match") ? "matched" : "skipped",
+        detail: episodeCountDetail }
+    ];
+    const identification: TvIdentificationDiagnostics = {
+      fingerprint,
+      volumeLabel: source.label.trim() || null,
+      filesystemVolumeName,
+      makemkvDiscName,
+      dvdMetadataName,
+      steps,
+      nameSources,
+      queries,
+      providersQueried: [...providersQueried],
+      providerMatches,
+      failures,
+      seriesCandidates: seriesCandidates.map((candidate) => ({
+        title: candidate.series.title,
+        ...(candidate.series.year === undefined ? {} : { year: candidate.series.year }),
+        providerId: candidate.providerId,
+        seriesId: candidate.series.id ?? candidate.series.title,
+        confidence: candidate.confidence
+      })),
+      seasonCandidates: seasonCandidates.map((candidate) => ({
+        seasonNumber: candidate.season.number,
+        providerId: candidate.providerId,
+        confidence: candidate.confidence
+      })),
+      selected: topDetected ? {
+        title: topDetected.series.title,
+        ...(topDetected.series.year === undefined ? {} : { year: topDetected.series.year }),
+        seriesId: topDetected.series.id ?? topDetected.series.title,
+        providerId: detectedProvider ?? saved?.provider ?? "unknown",
+        origin: selectedOrigin,
+        ...(analysis.detectedSeason ? { seasonNumber: analysis.detectedSeason.season.number } : {}),
+        ...(analysis.discPositionCandidates[0] ? { discNumber: analysis.discPositionCandidates[0].discNumber } : {})
+      } : null,
+      episodeTitleCount,
+      recordedAt: new Date().toISOString()
+    };
+    const result = { analysis, matches, plan, metadataLookups, identification };
     this.validationService?.capture({
       sourceId: source.sourceId,
       providerId: source.providerId,

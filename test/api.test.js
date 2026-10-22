@@ -91,6 +91,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.musicMetadataEnabled, false);
     assert.equal(initial.json().settings.lidarrEnabled, false);
     assert.equal(initial.json().settings.tvDetectionEnabled, true);
+    assert.equal(initial.json().settings.tvStagingRetentionDays, null);
     assert.equal(initial.json().settings.tvRootDir, "/srv/jellyfin/TV");
     assert.equal(initial.json().settings.tvValidationLoggingEnabled, true);
     assert.equal(initial.json().settings.musicBrainzContactEmail, "");
@@ -286,6 +287,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         tvRootDir: path.posix.join(linuxRoot, "saved-tv-library"),
         lidarrApiKey: "lidarr-test-secret",
         tvDetectionEnabled: false,
+        tvStagingRetentionDays: 120,
         tvValidationLoggingEnabled: false
       }
     });
@@ -297,9 +299,16 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(setMusicSettings.json().settings.musicMetadataEnabled, true);
     assert.equal(setMusicSettings.json().settings.musicBrainzContactEmail, "music-admin@example.com");
     assert.equal(setMusicSettings.json().settings.tvDetectionEnabled, false);
+    assert.equal(setMusicSettings.json().settings.tvStagingRetentionDays, 120);
     assert.equal(setMusicSettings.json().settings.tvValidationLoggingEnabled, false);
     assert.equal(setMusicSettings.json().settings.lidarrApiKeyConfigured, true);
     assert.equal("lidarrApiKey" in setMusicSettings.json().settings, false);
+    const invalidTvRetention = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { tvStagingRetentionDays: 0 }
+    });
+    assert.equal(invalidTvRetention.statusCode, 400);
     const libraryMetadata = {
       ...setMusicSettings.json().settings.libraryMetadata,
       libraryStructure: "custom",
@@ -476,6 +485,90 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const tvSummary = await app.inject({ method: "GET", url: "/api/v1/tv/summary", headers: { cookie } });
     assert.equal(tvSummary.statusCode, 200);
     assert.equal(tvSummary.json().totalDiscsAnalyzed, 2);
+    const matchingJobId = "staged-tv-api-job";
+    const matchingFingerprint = "staged-tv-api-fingerprint";
+    jobs.repositories.jobs.add(matchingJobId, "fresh-off-the-boat", matchingFingerprint, "dvd");
+    jobs.repositories.jobs.finish(matchingJobId, "awaiting-identification", "Awaiting series identification");
+    jobs.repositories.discRecovery.recordDetection(matchingFingerprint, "dvd", "tv_series");
+    jobs.repositories.tvMatchingTasks.create({
+      jobId: matchingJobId,
+      fingerprint: matchingFingerprint,
+      status: "awaiting-identification",
+      stagingPath: path.join(root, "tv-staging", matchingJobId),
+      source: {
+        sourceId: "dvd-api",
+        providerId: "source.video-dvd.makemkv",
+        mediaKind: "dvd",
+        label: "fresh-off-the-boat",
+        manifest: { mediaKind: "dvd", attributes: {}, items: [] }
+      },
+      diagnostics: { status: "analysis-unavailable" },
+      files: { "1": "episode01.mkv" },
+      assignments: [{
+        trackId: "1",
+        title: "Title 1",
+        durationSeconds: 1300,
+        episodeCandidates: [],
+        selectedEpisodes: undefined
+      }]
+    });
+    const matchingQueue = await app.inject({ method: "GET", url: "/api/v1/tv/matching", headers: { cookie } });
+    assert.equal(matchingQueue.statusCode, 200);
+    assert.equal(matchingQueue.json().tasks.some(({ task }) => task.jobId === matchingJobId), true);
+    const saveMatchingIdentification = await app.inject({
+      method: "PUT",
+      url: `/api/v1/tv/matching/${matchingJobId}/identification`,
+      headers: { cookie },
+      payload: {
+        seriesName: "Fresh Off The Boat",
+        provider: "tvdb",
+        providerId: "292941",
+        seasonNumber: 3,
+        discNumber: 1
+      }
+    });
+    assert.equal(saveMatchingIdentification.statusCode, 200);
+    assert.equal(saveMatchingIdentification.json().recovery.seriesName, "Fresh Off The Boat");
+    const saveMatchingAssignments = await app.inject({
+      method: "PUT",
+      url: `/api/v1/tv/matching/${matchingJobId}/assignments`,
+      headers: { cookie },
+      payload: { assignments: [{ trackId: "1", episodeNumbers: [1, 2] }] }
+    });
+    assert.equal(saveMatchingAssignments.statusCode, 200);
+    assert.deepEqual(saveMatchingAssignments.json().task.assignments[0].selectedEpisodes.map((item) => item.episodeNumber), [1, 2]);
+    let continuedMatchingJobId;
+    server.setTvMatchingActions({
+      continue: async (jobId) => { continuedMatchingJobId = jobId; },
+      remove: async (jobId) => {
+        const task = jobs.repositories.tvMatchingTasks.get(jobId);
+        if (!task || !jobs.repositories.tvMatchingTasks.deleteTemporaryRecords(jobId, task.fingerprint)) {
+          throw new Error("TV task removal failed");
+        }
+      }
+    });
+    const continueMatching = await app.inject({
+      method: "POST",
+      url: `/api/v1/tv/matching/${matchingJobId}/continue`,
+      headers: { cookie }
+    });
+    assert.equal(continueMatching.statusCode, 202);
+    assert.equal(continuedMatchingJobId, matchingJobId);
+    const deleteWithoutConfirmation = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/history/${matchingJobId}`,
+      headers: { cookie }
+    });
+    assert.equal(deleteWithoutConfirmation.statusCode, 400);
+    const deleteMatching = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/history/${matchingJobId}`,
+      headers: { cookie },
+      payload: { confirmed: true }
+    });
+    assert.equal(deleteMatching.statusCode, 200);
+    assert.equal(jobs.repositories.tvMatchingTasks.get(matchingJobId), undefined);
+    assert.equal(db.prepare("SELECT status FROM jobs WHERE id = ?").get(matchingJobId).status, "deleted");
     const invalidTvFilter = await app.inject({
       method: "GET",
       url: "/api/v1/tv/analysis?confidence=impossible",

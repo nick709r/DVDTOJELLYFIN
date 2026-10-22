@@ -24,6 +24,7 @@ export const defaultSettings: AppSettings = {
   adminPasswordSalt: "",
   adminPasswordHash: "",
   tvDetectionEnabled: true,
+  tvStagingRetentionDays: null,
   tvValidationLoggingEnabled: true,
   tvMetadataLookupEnabled: false,
   tvMetadataPreferredProviderId: "tvdb",

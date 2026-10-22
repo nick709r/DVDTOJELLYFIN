@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null };
+const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null, tvDeleteJobId: null };
 const loginDialog = $("#login-dialog");
 const passwordChangeDialog = $("#password-change-dialog");
 const themeToggle = $("#theme-toggle");
@@ -392,6 +392,23 @@ function renderDiagnostics(payload) {
   }
 
   const analysisEvent = [...events].reverse().find((item) => item.stage === "tv-analysis");
+  const identificationEvent = [...events].reverse().find((item) => item.stage === "tv-identification");
+  const stagedTask = payload.tvMatchingTask;
+  $("#diagnostics-identification").innerHTML = (identificationEvent
+    ? renderIdentificationDiagnostics(identificationEvent.data)
+    : '<div class="empty-state">TV identification was not run for this disc.</div>') +
+    (stagedTask ? `<h3>TV Matching staging</h3>${diagnosticPairs([
+      ["Task status", stagedTask.status],
+      ["Disc volume label", stagedTask.sourceLabel],
+      ["Filesystem volume name", stagedTask.filesystemVolumeName],
+      ["Fingerprint", stagedTask.fingerprint],
+      ["Staged episode count", stagedTask.episodeCount],
+      ["Failure", stagedTask.failure]
+    ])}<details><summary>Staged assignment and lookup diagnostics</summary><pre>${escapeHtml(JSON.stringify({
+      assignments: stagedTask.assignments,
+      diagnostics: stagedTask.diagnostics
+    }, null, 2))}</pre></details>` : "");
+  $("#diagnostics-identify").classList.toggle("hidden", !state.diagnosticsFingerprint);
   const analysis = analysisEvent?.data.analysis;
   const matching = analysisEvent?.data.matching;
   if (analysis) {
@@ -643,6 +660,255 @@ async function loadTvMetadataSettings() {
     <p>${escapeHtml(data.matchingPolicy.reviewPolicy)}</p><p>${escapeHtml(data.matchingPolicy.matchingPolicy)}</p>`;
 }
 
+const identificationStatusLabels = {
+  matched: "✓ matched", "no-match": "– no match", skipped: "skipped", failed: "✗ failed", informational: "info"
+};
+
+function renderIdentificationDiagnostics(d) {
+  if (!d) return '<p class="hint">No identification diagnostics have been recorded for this disc yet.</p>';
+  const queries = d.queries || [];
+  const terms = [...new Set(queries.map((query) => query.query))];
+  const matchSummary = Object.entries(d.providerMatches || {}).map(([provider, count]) => `${provider}: ${count}`).join(", ");
+  const selected = d.selected
+    ? `${d.selected.title}${d.selected.year ? ` (${d.selected.year})` : ""} · ${d.selected.providerId} · via ${d.selected.origin}`
+    : "None - identify the disc manually";
+  return `<div class="tv-identification-diagnostics">${diagnosticPairs([
+    ["Disc volume label", d.volumeLabel || "(empty)"],
+    ["Filesystem volume name", d.filesystemVolumeName || "(unavailable)"],
+    ["MakeMKV disc name", d.makemkvDiscName || "(unavailable)"],
+    ["Fingerprint", d.fingerprint],
+    ["Metadata providers queried", (d.providersQueried || []).join(", ") || "None"],
+    ["Query terms used", terms.join(" | ") || "None (no usable disc name)"],
+    ["Matches per provider", matchSummary || "None"],
+    ["Selected", selected]
+  ])}
+    <h4>Identification pipeline</h4>
+    <div class="diagnostic-list">${(d.steps || []).map((step) =>
+      `<div><b>${escapeHtml(step.order)}. ${escapeHtml(step.name)}</b><span>${escapeHtml(identificationStatusLabels[step.status] || step.status)} · ${escapeHtml(step.detail)}</span></div>`).join("")}</div>
+    <h4>Name sources and normalized search variants</h4>
+    <div class="diagnostic-list">${(d.nameSources || []).map((source) =>
+      `<div><b>${escapeHtml(source.name)}</b><span>${source.raw ? `"${escapeHtml(source.raw)}" → ${source.variants?.length ? escapeHtml(source.variants.join(" | ")) : "no usable name"}` : "Not available"}</span></div>`).join("")}</div>
+    <h4>Queries sent</h4>
+    <div class="diagnostic-list">${queries.map((query) =>
+      `<div><b>${escapeHtml(query.query)}</b><span>${escapeHtml(query.providerId)} · ${escapeHtml(query.nameSource)} · ${escapeHtml(query.matches)} matches · ${escapeHtml(query.durationMs)} ms${query.failure ? ` · failed: ${escapeHtml(query.failure)}` : ""}</span></div>`).join("") || "<p class=\"empty-state\">No metadata query could be sent.</p>"}</div>
+    <h4>Series candidates</h4>
+    <div class="diagnostic-list">${(d.seriesCandidates || []).map((candidate) =>
+      `<div><b>${escapeHtml(candidate.title)}${candidate.year ? ` (${escapeHtml(candidate.year)})` : ""}</b><span>${escapeHtml(candidate.providerId)} · ${diagnosticConfidence(candidate.confidence)}</span></div>`).join("") || '<p class="empty-state">No series candidates.</p>'}</div>
+    <h4>Season candidates</h4>
+    <div class="diagnostic-list">${(d.seasonCandidates || []).map((candidate) =>
+      `<div><b>Season ${escapeHtml(candidate.seasonNumber)}</b><span>${escapeHtml(candidate.providerId)} · ${diagnosticConfidence(candidate.confidence)}</span></div>`).join("") || '<p class="empty-state">No season candidates.</p>'}</div>
+    ${(d.failures || []).map((failure) => `<div class="diagnostic-error">Lookup failure · ${escapeHtml(failure.providerId)} (${escapeHtml(failure.query)}): ${escapeHtml(failure.message)}</div>`).join("")}
+  </div>`;
+}
+
+const identifyDialog = $("#identify-disc-dialog");
+const identifyState = { planId: null, taskId: null, fingerprint: null, selected: null, existing: null };
+
+function fillNumberSelect(select, from, to, value, zeroLabel = "") {
+  const options = [];
+  for (let number = from; number <= to; number += 1) {
+    options.push(`<option value="${number}"${number === value ? " selected" : ""}>${number === 0 && zeroLabel ? zeroLabel : number}</option>`);
+  }
+  select.innerHTML = options.join("");
+}
+
+function showIdentifySelection(selected, season, disc, discName) {
+  identifyState.selected = selected;
+  $("#identify-assignment").classList.remove("hidden");
+  $("#identify-selected").innerHTML = `<b>${escapeHtml(selected.title)}${selected.year ? ` (${escapeHtml(selected.year)})` : ""}</b> · ${escapeHtml(selected.providerName || selected.provider)}`;
+  const maxSeason = Math.max(selected.seasonCount || 0, season || 0, 15);
+  fillNumberSelect($("#identify-season"), 0, maxSeason, season ?? 1, "0 - Specials");
+  fillNumberSelect($("#identify-disc"), 1, Math.max(disc || 0, 20), disc ?? 1);
+  $("#identify-disc-name").value = discName || "";
+  $("#identify-save").disabled = false;
+}
+
+function renderIdentifyResults(candidates) {
+  $("#identify-results").innerHTML = candidates.map((candidate, index) => `
+    <button type="button" class="identify-result" data-index="${index}">
+      ${candidate.posterUrl ? `<img src="${escapeHtml(candidate.posterUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="identify-poster-missing">No poster</span>'}
+      <span class="identify-result-body">
+        <b>${escapeHtml(candidate.title)}</b>
+        <small>${candidate.year ? escapeHtml(candidate.year) : "Year unknown"} · ${candidate.seasonCount ? `${escapeHtml(candidate.seasonCount)} season${candidate.seasonCount === 1 ? "" : "s"}` : "Seasons not reported"}</small>
+        <small>${escapeHtml(candidate.providerName)} · ${diagnosticConfidence(candidate.confidence)} match</small>
+        ${candidate.overview ? `<small class="identify-overview">${escapeHtml(candidate.overview.slice(0, 160))}</small>` : ""}
+      </span>
+    </button>`).join("");
+  identifyState.candidates = candidates;
+}
+
+async function runIdentifySearch() {
+  const query = $("#identify-search").value.trim();
+  if (!query) return;
+  const status = $("#identify-status");
+  status.textContent = "Searching metadata providers...";
+  $("#identify-results").innerHTML = "";
+  try {
+    const data = await api("/api/v1/tv/identify/search", { method: "POST", body: JSON.stringify({ query }) });
+    renderIdentifyResults(data.candidates);
+    const summary = data.queries.map((entry) => `${entry.providerId}: ${entry.failure ? `failed (${entry.failure})` : `${entry.matches} matches`} for "${entry.query}"`).join("; ");
+    status.textContent = data.candidates.length ? summary : `No series found. ${summary}`;
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function openIdentifyDialog({ planId = null, taskId = null, fingerprint = null, suggested = "", focus = "series" }) {
+  identifyState.planId = planId;
+  identifyState.taskId = taskId;
+  identifyState.selected = null;
+  identifyState.existing = null;
+  identifyState.candidates = [];
+  let existing = null;
+  if (taskId) {
+    const data = await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}`);
+    identifyState.fingerprint = data.task.fingerprint;
+    existing = data.recovery?.seriesName ? {
+      seriesName: data.recovery.seriesName, provider: data.recovery.metadataProvider,
+      providerId: data.recovery.providerId, seasonNumber: data.recovery.seasonNumber,
+      discNumber: data.recovery.discNumber, discName: data.recovery.discName
+    } : null;
+  } else if (planId) {
+    const data = await api(`/api/v1/tv/plans/${encodeURIComponent(planId)}/identification`);
+    identifyState.fingerprint = data.fingerprint;
+    existing = data.identification;
+  } else {
+    identifyState.fingerprint = fingerprint;
+    const { recovery } = await api(`/api/v1/discs/recovery/${encodeURIComponent(fingerprint)}`);
+    existing = recovery?.seriesName ? {
+      seriesName: recovery.seriesName, provider: recovery.metadataProvider, providerId: recovery.providerId,
+      seasonNumber: recovery.seasonNumber, discNumber: recovery.discNumber, discName: recovery.discName
+    } : null;
+  }
+  identifyState.existing = existing;
+  $("#identify-disc-context").textContent = taskId
+    ? `Disc fingerprint ${identifyState.fingerprint}. Identification will continue processing from the staged video without reinserting or re-ripping the disc.`
+    : `Disc fingerprint ${identifyState.fingerprint}. The identification is remembered and applied automatically whenever this disc is inserted again.`;
+  $("#identify-save").textContent = taskId ? "Identify And Continue" : "Save";
+  $("#identify-assignment").classList.add("hidden");
+  $("#identify-save").disabled = true;
+  $("#identify-results").innerHTML = "";
+  $("#identify-status").textContent = "Search by series title, TVDB ID (tvdb:12345), TMDB ID (tmdb:12345) or IMDb ID (tt1234567).";
+  $("#identify-search").value = existing?.seriesName || suggested || "";
+  if (existing) {
+    showIdentifySelection({
+      title: existing.seriesName, provider: existing.provider, providerName: existing.provider,
+      seriesId: existing.providerId, year: null, seasonCount: 0
+    }, existing.seasonNumber ?? 1, existing.discNumber ?? 1, existing.discName);
+  }
+  identifyDialog.showModal();
+  if (focus === "season" && existing) $("#identify-season").focus();
+  else if (focus === "disc" && existing) $("#identify-disc").focus();
+  else $("#identify-search").focus();
+  if (!existing && $("#identify-search").value) await runIdentifySearch();
+}
+
+$("#identify-search-button").addEventListener("click", () => runIdentifySearch());
+$("#identify-search").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runIdentifySearch();
+  }
+});
+$("#identify-results").addEventListener("click", (event) => {
+  const button = event.target.closest(".identify-result");
+  if (!button) return;
+  const candidate = identifyState.candidates[Number(button.dataset.index)];
+  const current = identifyState.existing;
+  showIdentifySelection(candidate, current?.seasonNumber ?? 1, current?.discNumber ?? 1, "");
+  $("#identify-results").querySelectorAll(".identify-result").forEach((item) => item.classList.toggle("selected", item === button));
+});
+$("#identify-cancel").addEventListener("click", () => identifyDialog.close());
+$("#identify-disc-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const selected = identifyState.selected;
+  if (!selected) return;
+  const save = $("#identify-save");
+  save.disabled = true;
+  try {
+    const body = {
+      seriesName: selected.title,
+      provider: selected.provider,
+      providerId: selected.seriesId || null,
+      seasonNumber: Number($("#identify-season").value),
+      discNumber: Number($("#identify-disc").value),
+      discName: $("#identify-disc-name").value.trim() || null,
+      ...(selected.year ? { year: selected.year } : {}),
+      ...(selected.posterUrl ? { posterUrl: selected.posterUrl } : {}),
+      ...(selected.overview ? { overview: selected.overview } : {})
+    };
+    const path = identifyState.planId
+      ? `/api/v1/tv/plans/${encodeURIComponent(identifyState.planId)}/identification`
+      : `/api/v1/discs/${encodeURIComponent(identifyState.fingerprint)}/identification`;
+    if (identifyState.taskId) {
+      await api(`/api/v1/tv/matching/${encodeURIComponent(identifyState.taskId)}/identification`, {
+        method: "PUT", body: JSON.stringify(body)
+      });
+      await api(`/api/v1/tv/matching/${encodeURIComponent(identifyState.taskId)}/continue`, { method: "POST" });
+    } else {
+      await api(path, { method: "PUT", body: JSON.stringify(body) });
+    }
+    identifyDialog.close();
+    notify(identifyState.taskId
+      ? `Identified ${selected.title}; processing is continuing from staged files.`
+      : `Saved: ${selected.title} season ${body.seasonNumber} disc ${body.discNumber}. This disc will be recognised automatically next time.`);
+    if (identifyState.taskId) await loadTvMatchingTasks();
+    if (state.page === "tv-reviews") await loadTvReviews();
+    if (state.page === "diagnostics") await loadDiagnostics($("#diagnostics-job").value);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    save.disabled = false;
+  }
+});
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".tv-identify");
+  if (!button) return;
+  openIdentifyDialog({
+    planId: button.dataset.planId || null,
+    taskId: button.dataset.taskId || null,
+    fingerprint: button.dataset.fingerprint || null,
+    suggested: button.dataset.suggested || "",
+    focus: button.dataset.focus || "series"
+  }).catch((error) => notify(error.message, true));
+});
+
+$("#diagnostics-identify").addEventListener("click", () => {
+  if (!state.diagnosticsFingerprint) return;
+  openIdentifyDialog({ fingerprint: state.diagnosticsFingerprint })
+    .catch((error) => notify(error.message, true));
+});
+
+$("#identify-disc-open").addEventListener("click", async () => {
+  try {
+    const { plans } = await api("/api/v1/tv/reviews?limit=1&state=awaiting-review");
+    if (!plans.length) {
+      notify("No TV disc is awaiting review. Open Disc Diagnostics for a disc and use Identify Disc there.", true);
+      return;
+    }
+    await openIdentifyDialog({ planId: plans[0].id, suggested: plans[0].series?.title || "" });
+  } catch (error) { notify(error.message, true); }
+});
+
+function renderTvIdentifyActions(plan, recovery) {
+  const identified = Boolean(recovery?.seriesName);
+  const suggested = escapeHtml(recovery?.seriesName || plan.series?.title || "");
+  const attrs = `data-plan-id="${escapeHtml(plan.id)}" data-suggested="${suggested}"`;
+  const saved = identified
+    ? `<p class="hint">Saved identification: <b>${escapeHtml(recovery.seriesName)}</b>${recovery.seasonNumber === null || recovery.seasonNumber === undefined ? "" : ` · Season ${escapeHtml(recovery.seasonNumber)}`}${recovery.discNumber ? ` · Disc ${escapeHtml(recovery.discNumber)}` : ""}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} (${recovery.identifiedBy === "user" ? "manual" : "saved mapping"}). It is applied automatically when this disc is inserted.</p>`
+    : "";
+  return `<div class="tv-identify-actions">
+    ${saved}
+    <div class="tv-actions">
+      <button type="button" class="button ${identified || plan.series ? "secondary" : "primary"} tv-identify" ${attrs} data-focus="series">${identified || plan.series ? "Change Series" : "Identify Series"}</button>
+      <button type="button" class="button secondary tv-identify" ${attrs} data-focus="season">Change Season</button>
+      <button type="button" class="button secondary tv-identify" ${attrs} data-focus="disc">Change Disc Number</button>
+    </div>
+    <details class="tv-identification-details"><summary>Why this series? Identification diagnostics</summary>${renderIdentificationDiagnostics(recovery?.identificationDiagnostics)}</details>
+  </div>`;
+}
+
 function renderTvRecoveryEditor(plan, recovery) {
   const trackOptions = plan.assignments.map((assignment) =>
     `<option value="${escapeHtml(assignment.itemId)}">${escapeHtml(assignment.itemTitle || `Track ${assignment.itemId}`)}</option>`).join("");
@@ -730,6 +996,7 @@ function renderTvPlanCard(plan, includeActions = false, recovery = null, include
     <div class="tv-plan-heading"><div><b>${escapeHtml(series)}</b><span class="list-sub">${escapeHtml(season)} · ${escapeHtml(disc)} · ${new Date(plan.createdAt).toLocaleString()}</span></div>
     <span class="confidence-pill ${escapeHtml(plan.confidenceBand)}">${confidence}% · ${escapeHtml(confidenceLabel(plan.confidenceBand))}</span></div>
     <p>${plan.reviewReasons.map(escapeHtml).join(" · ") || "No additional review reasons."}</p>
+    ${includeRecovery ? renderTvIdentifyActions(plan, recovery) : ""}
     ${assignments || '<div class="empty-state">No episode assignments were generated.</div>'}
     <div class="tv-plan-foot"><span>State: ${escapeHtml(plan.state)} · ${plan.duplicateTracks.length} duplicates · ${plan.bonusFeatures.length} bonus · ${plan.commentaryTracks.length} commentary</span>
       <button class="button secondary tv-action" data-action="view-plan" data-plan-id="${escapeHtml(plan.id)}">Analysis details</button>
@@ -779,6 +1046,118 @@ async function loadTvMatching() {
     }, true)).join("")
     : '<div class="empty-state">No TV episode suggestions are available yet.</div>';
 }
+
+function renderTvMatchingTask(entry) {
+  const { task, recovery } = entry;
+  const series = recovery?.seriesName;
+  const runtime = task.assignments.length
+    ? Math.round(task.assignments.reduce((sum, assignment) => sum + assignment.durationSeconds, 0) /
+      task.assignments.length / 60)
+    : 0;
+  const assignments = task.assignments.map((assignment) => {
+    const suggestion = assignment.selectedEpisodes?.length
+      ? assignment.selectedEpisodes
+      : assignment.episodeCandidates[0]?.episodes || [];
+    const episodeNumbers = suggestion.map((episode) => episode.episodeNumber).join(", ");
+    const suggestionText = assignment.episodeCandidates.slice(0, 3).map((candidate) =>
+      `${candidate.episodes.map((episode) => `S${episode.seasonNumber}E${String(episode.episodeNumber).padStart(2, "0")}`).join("+")} (${Math.round(candidate.confidence * 100)}%)`
+    ).join(" · ");
+    return `<div class="tv-assignment">
+      <div><b>Track ${escapeHtml(assignment.trackId)} · ${escapeHtml(assignment.title)}</b><span>${formatDuration(assignment.durationSeconds)}</span></div>
+      <label>Episode number(s), comma-separated<input type="text" inputmode="numeric" data-track-id="${escapeHtml(assignment.trackId)}" value="${escapeHtml(episodeNumbers)}" placeholder="e.g. 1 or 1, 2"></label>
+      <small class="muted">${suggestionText ? `Suggestions: ${escapeHtml(suggestionText)}` : "No automatic episode suggestion."}</small>
+    </div>`;
+  }).join("");
+  const canMap = Boolean(series && recovery?.seasonNumber !== null && recovery?.discNumber !== null);
+  return `<article class="tv-plan-card tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
+    <div class="tv-plan-heading"><div><b>${escapeHtml(series || `${task.source.label || "Unidentified TV disc"}?`)}</b>
+      <span class="list-sub">${escapeHtml(task.assignments.length)} episodes · about ${runtime} minutes each · Source label: ${escapeHtml(task.source.label || "Unavailable")}</span></div>
+      <span class="result ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></div>
+    ${series ? `<p>Season ${escapeHtml(recovery.seasonNumber ?? "unknown")} · Disc ${escapeHtml(recovery.discNumber ?? "unknown")}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} · ${escapeHtml(recovery.metadataProvider || "manual")}</p>` : ""}
+    ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
+    <div class="tv-actions">
+      <button type="button" class="button primary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Series / Season / Disc" : "Identify"}</button>
+      ${canMap ? `<button type="button" class="button secondary tv-task-continue" data-job-id="${escapeHtml(task.jobId)}">${task.assignments.length ? "Save Mappings & Continue" : "Continue"}</button>` : ""}
+      <button type="button" class="button danger tv-task-delete" data-job-id="${escapeHtml(task.jobId)}">Delete</button>
+    </div>
+    ${canMap && assignments ? `<div class="tv-task-assignments">${assignments}</div>` : ""}
+    <details><summary>Disc diagnostics</summary><pre>${escapeHtml(JSON.stringify(task.diagnostics, null, 2))}</pre></details>
+  </article>`;
+}
+
+async function loadTvMatchingTasks() {
+  const { tasks } = await api("/api/v1/tv/matching");
+  $("#tv-matching-queue").innerHTML = tasks.length
+    ? tasks.map(renderTvMatchingTask).join("")
+    : '<div class="empty-state">No staged TV discs are awaiting identification.</div>';
+}
+
+const tvDeleteDialog = $("#tv-delete-dialog");
+function requestTvTaskDeletion(jobId) {
+  state.tvDeleteJobId = jobId;
+  if (!tvDeleteDialog.open) tvDeleteDialog.showModal();
+}
+
+$("#tv-delete-cancel").addEventListener("click", () => {
+  state.tvDeleteJobId = null;
+  tvDeleteDialog.close();
+});
+$("#tv-delete-confirm").addEventListener("click", async () => {
+  const jobId = state.tvDeleteJobId;
+  if (!jobId) return;
+  const button = $("#tv-delete-confirm");
+  button.disabled = true;
+  try {
+    await api(`/api/v1/history/${encodeURIComponent(jobId)}`, {
+      method: "DELETE", body: JSON.stringify({ confirmed: true })
+    });
+    tvDeleteDialog.close();
+    state.tvDeleteJobId = null;
+    await loadTvMatchingTasks();
+    await refreshHistory();
+    notify("Unmatched TV staging and temporary records were deleted. Published media was not affected.");
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#tv-matching-queue").addEventListener("click", async (event) => {
+  const deleteButton = event.target.closest(".tv-task-delete");
+  if (deleteButton) {
+    requestTvTaskDeletion(deleteButton.dataset.jobId);
+    return;
+  }
+  const continueButton = event.target.closest(".tv-task-continue");
+  if (!continueButton) return;
+  continueButton.disabled = true;
+  try {
+    const taskId = continueButton.dataset.jobId;
+    const card = continueButton.closest(".tv-matching-task");
+    const assignments = [...card.querySelectorAll("[data-track-id]")].map((input) => {
+      const episodeNumbers = input.value.split(",").map((value) => value.trim()).filter(Boolean)
+        .map(Number);
+      return { trackId: input.dataset.trackId, episodeNumbers };
+    });
+    if (assignments.some((assignment) => assignment.episodeNumbers.length === 0 ||
+      assignment.episodeNumbers.some((number) => !Number.isInteger(number) || number < 0 || number > 1000))) {
+      throw new Error("Enter valid episode numbers for each staged track; use commas for multi-episode tracks.");
+    }
+    if (assignments.length) {
+      await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
+        method: "PUT", body: JSON.stringify({ assignments })
+      });
+    }
+    await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/continue`, { method: "POST" });
+    notify("TV processing resumed from staged files.");
+    await loadTvMatchingTasks();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    continueButton.disabled = false;
+  }
+});
 
 async function loadTvReviews() {
   const selected = $("#tv-review-filter").value;
@@ -1020,6 +1399,14 @@ async function loadSettings() {
   renderOutputProfiles();
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
+  const retentionDays = data.settings.tvStagingRetentionDays;
+  const retentionChoice = form.elements.namedItem("tvStagingRetentionChoice");
+  const standardRetentions = [7, 30, 90];
+  retentionChoice.value = retentionDays === null ? "never" :
+    standardRetentions.includes(retentionDays) ? String(retentionDays) : "custom";
+  form.elements.namedItem("tvStagingRetentionCustomDays").value =
+    retentionDays !== null && !standardRetentions.includes(retentionDays) ? retentionDays : "";
+  updateTvStagingRetentionFields();
   const libraryMetadata = data.settings.libraryMetadata;
   for (const key of [
     "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
@@ -1049,6 +1436,14 @@ async function loadSettings() {
   $("#encoder-capability").textContent = encoders.encoders.error
     ? encoders.encoders.error
     : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
+}
+
+function updateTvStagingRetentionFields() {
+  const form = $("#settings-form");
+  const choice = form.elements.namedItem("tvStagingRetentionChoice").value;
+  const custom = choice === "custom";
+  $("#tv-staging-custom-label").classList.toggle("hidden", !custom);
+  form.elements.namedItem("tvStagingRetentionCustomDays").required = custom;
 }
 
 function activeOutputProfile() {
@@ -1345,6 +1740,7 @@ function updateStreams() {
     if (previous && !active) {
       if (state.page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
       if (state.page === "history") refreshHistory().catch((error) => notify(error.message, true));
+      if (state.page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
       if (state.page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
       if (state.page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
       if (state.page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
@@ -1373,6 +1769,7 @@ function showPage(page) {
     dashboard: "Dashboard",
     diagnostics: "Disc Diagnostics",
     history: "History",
+    "tv-matching": "TV Matching",
     "tv-analysis": "TV Analysis",
     "episode-matching": "Episode Matching",
     "tv-reviews": "Review Centre",
@@ -1385,6 +1782,7 @@ function showPage(page) {
   if (page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
   if (page === "diagnostics") loadDiagnostics().catch((error) => notify(error.message, true));
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
+  if (page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
   if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
   if (page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
   if (page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
@@ -1400,6 +1798,7 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
   refreshChart(button.dataset.range).catch((error) => notify(error.message, true));
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
+$("#refresh-tv-matching").addEventListener("click", () => loadTvMatchingTasks().catch((error) => notify(error.message, true)));
 $("#refresh-diagnostics").addEventListener("click", () => loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true)));
 $("#diagnostics-job").addEventListener("change", () => {
   const jobId = $("#diagnostics-job").value;
@@ -1907,7 +2306,18 @@ $("#music-metadata-form").addEventListener("submit", async (event) => {
 });
 $("#history-list").addEventListener("click", async (event) => {
   const button = event.target.closest(".remove-job");
-  if (!button || !confirm("Remove this entry from history? The finished media file will not be deleted.")) return;
+  if (!button) return;
+  try {
+    const { tasks } = await api("/api/v1/tv/matching");
+    if (tasks.some(({ task }) => task.jobId === button.dataset.jobId)) {
+      requestTvTaskDeletion(button.dataset.jobId);
+      return;
+    }
+  } catch (error) {
+    notify(error.message, true);
+    return;
+  }
+  if (!confirm("Remove this entry from history? The finished media file will not be deleted.")) return;
   button.disabled = true;
   try {
     await api(`/api/v1/history/${encodeURIComponent(button.dataset.jobId)}`, { method: "DELETE" });
@@ -2076,6 +2486,11 @@ $("#settings-form").addEventListener("submit", async (event) => {
     },
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
+    tvStagingRetentionDays: values.get("tvStagingRetentionChoice") === "never"
+      ? null
+      : values.get("tvStagingRetentionChoice") === "custom"
+        ? Number(values.get("tvStagingRetentionCustomDays"))
+        : Number(values.get("tvStagingRetentionChoice")),
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
     tvMetadataLookupEnabled: form.elements.namedItem("tvMetadataLookupEnabled").checked,
     tvMetadataPreferredProviderId: values.get("tvMetadataPreferredProviderId"),
@@ -2134,6 +2549,9 @@ $("#settings-form").addEventListener("submit", async (event) => {
     $("#settings-message").textContent = error.message;
   }
 });
+
+$("#settings-form").elements.namedItem("tvStagingRetentionChoice")
+  .addEventListener("change", updateTvStagingRetentionFields);
 
 $("#check-paths").addEventListener("click", async () => {
   const button = $("#check-paths");
