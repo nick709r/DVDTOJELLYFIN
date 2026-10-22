@@ -130,7 +130,7 @@ function renderJobList(target, jobs, allowDelete = false) {
     const type = job.mediaType === "audio_cd" ? "Music CD" : "DVD";
     const isActive = ["inspecting", "ripping", "converting", "publishing"].includes(job.status);
     const action = allowDelete && !isActive
-      ? `<button class="button danger remove-job" type="button" data-job-id="${escapeHtml(job.id)}" aria-label="Remove ${title} from history">Remove</button>`
+      ? `<button class="button danger remove-job" type="button" data-job-id="${escapeHtml(job.id)}" aria-label="Remove ${title} from history">Remove</button><button class="button danger forget-disc" type="button" data-job-id="${escapeHtml(job.id)}">Forget Disc</button>`
       : "";
     return `<div class="list-row${action ? " with-actions" : ""}"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${action}</div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
   }).join("");
@@ -1092,6 +1092,38 @@ async function loadTvMatchingTasks() {
     : '<div class="empty-state">No staged TV discs are awaiting identification.</div>';
 }
 
+const forgetDiscDialog = $("#forget-disc-dialog");
+let forgetDiscJobId = null;
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".forget-disc, #forget-diagnostics-disc");
+  if (!button) return;
+  const jobId = button.dataset.jobId || $("#diagnostics-job").value;
+  if (!jobId) { notify("Select a disc to forget.", true); return; }
+  forgetDiscJobId = jobId;
+  forgetDiscDialog.showModal();
+});
+$("#forget-disc-cancel").addEventListener("click", () => {
+  forgetDiscJobId = null;
+  forgetDiscDialog.close();
+});
+$("#forget-disc-confirm").addEventListener("click", async () => {
+  if (!forgetDiscJobId) return;
+  const button = $("#forget-disc-confirm");
+  button.disabled = true;
+  try {
+    await api(`/api/v1/history/${encodeURIComponent(forgetDiscJobId)}/forget`, { method: "POST" });
+    forgetDiscDialog.close();
+    forgetDiscJobId = null;
+    state.diagnosticsJobId = "";
+    notify("Disc forgotten.");
+    await Promise.all([refreshDashboard(), refreshHistory(), loadReviewCentre(), loadDiagnostics("")]);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 const tvDeleteDialog = $("#tv-delete-dialog");
 function requestTvTaskDeletion(jobId) {
   state.tvDeleteJobId = jobId;
@@ -1229,7 +1261,7 @@ function renderReviewItem(item) {
     ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
     ${item.resolutionDetails ? `<p class="list-sub">Resolution: ${escapeHtml(item.resolutionDetails)}${item.resolvedAt ? ` · ${escapeHtml(new Date(item.resolvedAt).toLocaleString())}` : ""}</p>` : ""}
     ${item.retryCount ? `<p class="list-sub">Retry attempts: ${item.retryCount}</p>` : ""}
-    <div class="tv-actions">${actions}</div>
+    <div class="tv-actions">${actions}${item.relatedJobId ? `<button class="button danger forget-disc" type="button" data-job-id="${escapeHtml(item.relatedJobId)}">Forget Disc</button>` : ""}</div>
     <div class="review-job-details" data-review-details="${escapeHtml(item.id)}"></div>
   </article>`;
 }

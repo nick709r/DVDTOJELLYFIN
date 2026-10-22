@@ -15,6 +15,7 @@ import { SqliteClassificationAuditRepository } from "./classification-audit-repo
 import { SqliteSetupRepository } from "./setup-repository.js";
 import { SqliteDiscRecoveryRepository } from "./disc-recovery-repository.js";
 import { SqliteTvMatchingTaskRepository } from "./tv-matching-task-repository.js";
+import { SqliteForgetDiscService } from "./forget-disc-service.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
   const events = new SqliteEventRepository(db);
@@ -34,6 +35,7 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     classificationAudit,
     discRecovery: new SqliteDiscRecoveryRepository(db),
     tvMatchingTasks: new SqliteTvMatchingTaskRepository(db),
+    forgetDisc: new SqliteForgetDiscService(db),
     close: () => db.close()
   };
 }
