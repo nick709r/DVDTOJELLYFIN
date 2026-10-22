@@ -1,26 +1,286 @@
 # AutoDisc
 
-AutoDisc is an easy-to-use DVD and music CD ingestion appliance for Linux and Jellyfin. It works two ways:
+**An intelligent optical media ingestion platform that automates the identification, organisation, processing and publishing of physical media collections.**
 
-- As a friendly web dashboard you can open from your browser to watch progress, tweak settings, and manage jobs.
-- Headless as a lightweight systemd service for fully automated ripping and conversion.
+AutoDisc watches your optical drive, works out what you have inserted, explains how it reached that conclusion, and publishes the result to the library structure you choose: for Jellyfin, Sonarr, Radarr, Lidarr, or any custom layout. When it is unsure, it does not guess. It asks you through the Review Centre.
 
-AutoDisc watches a configured optical drive, uses MakeMKV and FFmpeg for DVDs and cdparanoia for audio CDs, then publishes finished movies to Movies, explicitly mapped TV episodes to TV, and lossless FLAC albums to Music.
+Run it as a web dashboard for hands-on control, or as a headless Linux service for unattended operation.
 
-## Dashboard preview
+---
 
-![AutoDisc dashboard](./docs/screenshots/dashboard.png)
+## Contents
 
-![TV metadata settings](./docs/screenshots/tv-metadata-settings.png)
+- [What Is AutoDisc?](#what-is-autodisc)
+- [Key Features](#key-features)
+- [How It Works](#how-it-works)
+- [Media Support](#media-support)
+- [Automation Modes](#automation-modes)
+- [Review Centre](#review-centre)
+- [Destination Profiles](#destination-profiles)
+- [Explainable Classification](#explainable-classification)
+- [Disc Fingerprinting](#disc-fingerprinting)
+- [Disc Diagnostics](#disc-diagnostics)
+- [Architecture Overview](#architecture-overview)
+- [Getting Started](#getting-started)
+- [Screenshots](#screenshots)
+- [Roadmap](#roadmap)
+- [Why AutoDisc?](#why-autodisc)
+- [Contributing](#contributing)
+- [Disclaimer](#disclaimer)
 
-Screenshots are from the Windows development preview; the dashboard warning
-reflects Linux runtime tools that are unavailable in that preview environment.
+---
 
-## Quick start
+## What Is AutoDisc?
 
-Get AutoDisc up and running in a few minutes:
+AutoDisc is a platform for the **automatic ingestion and organisation of optical media**. Insert a disc and AutoDisc detects it, analyses its structure, classifies it, looks up metadata, routes it through the correct workflow and publishes the finished files to your library.
 
-1. Install on a fresh Lubuntu/Ubuntu or Debian host (this installs Node, FFmpeg, cdparanoia, and helper tools):
+**Supported media today**
+
+| Media | Workflow |
+| --- | --- |
+| DVD Movies | Detect, classify, identify, rip, encode, publish |
+| DVD TV Series | Episodic analysis, series and episode mapping, review, publish |
+| Audio CDs | Rip to tagged FLAC, MusicBrainz lookup, publish |
+
+**Designed for extension**
+
+- Blu-ray workflows
+- Archival and preservation workflows
+- Additional metadata and media providers
+
+AutoDisc is built on a provider and workflow model, so new media types and metadata sources plug into the same detection, review and publishing pipeline.
+
+> AutoDisc is **not tied to any media server**. Jellyfin, Sonarr-compatible, Radarr-compatible and custom folder layouts are all supported output targets.
+
+---
+
+## Key Features
+
+- **Automatic disc detection**: udev-driven insertion events with a periodic presence check and retry/backoff for drives that are slow to become readable.
+- **Movie classification**: separates feature films from other DVD content.
+- **TV classification**: episodic structure and runtime analysis, held for review rather than published as movies when uncertain.
+- **Audio CD processing**: lossless FLAC ripping with tagging and MusicBrainz lookup.
+- **Disc diagnostics**: a live view of detection, classification, metadata and processing.
+- **Explainable decisions**: confidence scores with per-criterion evidence.
+- **Review Centre**: a single place to resolve failed jobs, unknown media and metadata conflicts.
+- **Destination profiles**: named output profiles with per-media routing.
+- **Automated workflows**: Regular Auto, Full Auto and Review-Based modes.
+- **Fingerprint tracking**: recognises discs it has seen and reuses prior decisions.
+- **Metadata lookup**: TMDB, TVDB, IMDb (via TMDB) and MusicBrainz, with caching and provider fallback.
+- **Manual recovery tools**: override media types, set series and episode mappings, and enter metadata by hand.
+- **Multi-platform output**: Jellyfin, Sonarr-compatible, Radarr-compatible, Lidarr and generic folder structures.
+
+---
+
+## How It Works
+
+```text
+ Disc inserted
+      │
+      ▼
+ ┌───────────┐   ┌──────────┐   ┌────────────────┐   ┌──────────┐
+ │ Detection │──▶│ Analysis │──▶│ Classification │──▶│ Metadata │
+ └───────────┘   └──────────┘   └────────────────┘   └────┬─────┘
+                                                          │
+                                       confident?         ▼
+                                   ┌─────── yes ───┐  ┌────────┐
+                                   │               │  │ Review │◀── no / failure
+                                   ▼               │  │ Centre │
+                             ┌────────────┐        │  └───┬────┘
+                             │ Processing │◀───────┴──────┘  (approved / corrected)
+                             └─────┬──────┘
+                                   ▼
+                             ┌────────────┐
+                             │ Publishing │──▶ Movies / TV / Music destinations
+                             └────────────┘
+```
+
+1. **Detection**: the drive reports media and AutoDisc inspects it.
+2. **Analysis**: titles, runtimes, track structure and disc labels are gathered.
+3. **Classification**: the disc is identified as a movie, a TV series or music, with a confidence score.
+4. **Metadata**: providers supply titles, years, series, episodes, albums and artwork.
+5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Centre.
+6. **Processing**: ripping, encoding or extraction, depending on the media type.
+7. **Publishing**: finished media is placed in the destination profile's folder structure.
+
+---
+
+## Media Support
+
+### Movies
+
+- Automatic detection of video DVDs and identification of the main feature.
+- DVD ripping via MakeMKV and conversion via FFmpeg, with hardware encoder detection and software fallback.
+- Metadata and artwork lookup, NFO generation and safe naming templates.
+- Output such as `Movies/Title (Year)/Title (Year).mkv`, adjustable per destination profile.
+
+### TV Series
+
+TV discs are treated as a first-class workflow, not an afterthought.
+
+- **Episodic detection**: multi-title discs with episode-shaped content are recognised as likely TV.
+- **Runtime analysis**: title durations are compared to find consistent episode lengths and to separate extras from episodes.
+- **Season workflows**: confirmed episodes are published into series and season folders (for example `Series/Season 01/…`).
+- **Review workflows**: uncertain discs, including two-episode discs and unknown series, are held for review and not published as movies.
+- **Fingerprint mapping**: a confirmed disc-to-series and track-to-episode mapping is stored against the disc fingerprint for reuse.
+
+Metadata comes from TVDB and TMDB, with configurable provider preference, fallback, health-aware failover and caching. Series can also be recovered by direct TVDB, TMDB or IMDb ID.
+
+> Automatic episode suggestions never publish by themselves. Publication requires an explicitly confirmed mapping, and TV matching is still being validated against a broad range of real discs.
+
+### Music
+
+- Audio CDs are ripped with cdparanoia into **numbered, tagged FLAC** tracks.
+- MusicBrainz lookup (optional) supplies artist, album, year and track titles.
+- If no match is found, the job pauses with the disc in the drive and asks for a release ID or manual metadata. It resumes as soon as you submit.
+- Output as `Music/Artist/Album`, with collision-safe handling of existing albums.
+- Optional Lidarr hand-off for library import and organisation.
+
+---
+
+## Automation Modes
+
+Choose how much autonomy AutoDisc has. Each output profile has its own mode.
+
+| Mode | Behaviour | Good for |
+| --- | --- | --- |
+| **Regular Auto** (default) | Processes confident results automatically and sends uncertain ones to the Review Centre. | Everyday use |
+| **Full Auto** | Keeps going. Failures are recorded in Review and AutoDisc tries to eject the disc so the drive can continue. | Working through a stack of discs unattended |
+| **Review-Based** | Every detected disc is queued for your approval before any processing starts. | Careful curation, or testing new setups |
+
+**Examples**
+
+- *Regular Auto*: a clearly identified movie DVD is ripped and published. A disc that looks like TV but cannot be mapped is held for you.
+- *Full Auto*: you load a box set overnight. Discs that fail to read are logged to Review and ejected, and the rest keep going. You fix the exceptions in the morning.
+- *Review-Based*: each inserted disc appears as a pending item. You check the classification, correct it if needed, then approve processing.
+
+---
+
+## Review Centre
+
+The Review Centre is where AutoDisc's automation hands control back to you, and where nothing is silently lost.
+
+It collects:
+
+- **Failed jobs**: disc read errors, processing failures, destination folder or permission problems
+- **Unknown media**: discs that could not be confidently identified
+- **Unknown TV series**: TV-shaped discs without a confirmed series or episode mapping
+- **Metadata conflicts**: providers disagree, or no usable result was found
+- **Classification overrides**: change the media type with a structured reason and notes
+- **Recovery actions**: retry where safe, set provider IDs, map tracks to episodes, enter metadata manually, fix folders and retry
+
+Every manual correction is recorded with the administrator and time. The original detection is never overwritten, and an append-only audit trail with text and JSON export supports later analysis.
+
+---
+
+## Destination Profiles
+
+Destination profiles control **where and how** finished media is published. AutoDisc is not tied to a particular media server.
+
+- **Multiple profiles**: create named profiles and choose which one is active.
+- **Media-specific destinations**: separate routes for movies, TV and music.
+- **Jellyfin-compatible structures**: movie, season and music folder layouts that Jellyfin scans natively.
+- **Sonarr-compatible structures**: TV layouts for Sonarr-managed libraries.
+- **Radarr-compatible structures**: movie layouts for Radarr-managed libraries.
+- **Lidarr**: staging and import hand-off for music.
+- **Custom folder structures**: generic folder output for any other tool or workflow.
+- **Category overrides**: route a specific category to a different destination than the profile default.
+- **Output previews**: see the resulting path before anything is written.
+
+Profiles also carry their automation mode and only need the destinations their selected routes use. See [Output Destination Profiles](./docs/OUTPUT-DESTINATION-PROFILES.md) for routes, migrations and details.
+
+---
+
+## Explainable Classification
+
+AutoDisc shows its working. Each classification includes a confidence score and per-criterion evidence, stored in job history and logs.
+
+**Why was this identified as TV?**
+
+```text
+Classification: TV Series          Confidence: 87%
+  ✔ 4–6 titles of similar runtime (41–44 min)
+  ✔ Runtime variance within episode tolerance
+  ✔ Disc label matches a series pattern ("SHOW_S02_D1")
+  ✔ No single dominant feature-length title
+  ✖ Series not yet confirmed by metadata   → sent to Review
+```
+
+**Why was this identified as a movie?**
+
+```text
+Classification: Movie              Confidence: 94%
+  ✔ One dominant title (1h 52m)
+  ✔ Remaining titles are short, extras-shaped content
+  ✔ Disc label resolves to a single film via metadata
+  ✖ No episodic runtime pattern found
+```
+
+*Illustrative output; exact criteria and wording vary by release.*
+
+Low confidence never turns into a silent guess. Uncertain, TV-shaped discs are held for analysis and review instead of being published as movies.
+
+---
+
+## Disc Fingerprinting
+
+Each disc gets a **signature** derived from its structure. AutoDisc uses it to:
+
+- **Identify** a disc it has seen before and avoid processing the same disc twice
+- **Reuse prior mappings**: media-type overrides, series choices and track-to-episode mappings persist against the fingerprint
+- **Support multi-disc sets**, where earlier decisions inform later discs
+- **Enable future archival use cases**: a stable identity for each physical disc, such as provenance records and verification
+
+---
+
+## Disc Diagnostics
+
+The Disc Diagnostics page is a live view of what AutoDisc is doing and why:
+
+- **Detection information**: drive state, source providers tried, disc structure
+- **Classification reasoning**: scorecards and per-criterion results
+- **Metadata attempts**: providers queried, fallbacks, cache use and outcomes
+- **Processing stages**: a streamed event timeline and job logs
+- **Failure analysis**: why a disc went back to waiting, returned no titles, or failed
+
+It turns "nothing happened" into an answer.
+
+---
+
+## Architecture Overview
+
+```text
+┌──────────────────────────────────────────────────────────┐
+│                  Frontend (web dashboard)                │
+│  Dashboard · Review Centre · Diagnostics · Settings      │
+└───────────────────────────┬──────────────────────────────┘
+                            │ API + live events
+┌───────────────────────────▼──────────────────────────────┐
+│                  Backend (job coordinator)               │
+│       SQLite storage · auth · settings · history         │
+├───────────┬────────────────┬───────────┬────────┬────────┤
+│ Detection │ Classification │ Metadata  │ Review │Publishing│
+│ drives &  │ movie / TV /   │ TMDB TVDB │ queue, │ destination│
+│ fingerprint│ music + scores│ MusicBrainz│ audit │ profiles │
+└───────────┴────────────────┴───────────┴────────┴────────┘
+        MakeMKV · FFmpeg · cdparanoia · udev (external tools)
+```
+
+- **Frontend**: a browser dashboard with live job progress.
+- **Backend**: a Node.js service (TypeScript) that runs one job at a time, backed by SQLite.
+- **Detection**: udev events, presence checks and fingerprinting.
+- **Classification**: explainable scoring for movie, TV and music.
+- **Metadata**: pluggable providers with caching and fallback.
+- **Review**: queue, recovery actions and audit trail.
+- **Publishing**: destination profiles, naming templates, NFO and artwork.
+
+More detail: [Version 2 architecture](./docs/V2-ARCHITECTURE.md).
+
+---
+
+## Getting Started
+
+AutoDisc targets Linux (Ubuntu, Debian and Lubuntu are tested) and runs as a systemd service.
 
 ```sh
 sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
@@ -28,575 +288,103 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
   tar xzf autodisc.tar.gz && cd DVDTOJELLYFIN-main && sudo ./scripts/install.sh
 ```
 
-2. (Optional) Install MakeMKV separately to enable DVD ripping — AutoDisc does not bundle MakeMKV. When MakeMKV is installed and `makemkvcon` is on the service PATH, DVD ripping is enabled.
+The installer sets up Node.js 22+, FFmpeg, cdparanoia, cd-discid and helper tools, builds AutoDisc, and enables the `autodisc.service` unit. It is safe to rerun for updates.
 
-3. Open AutoDisc for first-run setup. Until the administrator account is created, only the setup page and setup API are available; disc processing is disabled. Setup requires a username and a password of at least 4 characters (no special characters or numbers required). For a headless server, use an SSH tunnel:
+1. **Optional: install MakeMKV** to enable DVD ripping. It is separately licensed and is not bundled. Audio CD ripping works without it.
+2. **Open the dashboard** at `http://<server-ip>:8787`. If it is bound only locally, use an SSH tunnel: `ssh -L 8787:127.0.0.1:8787 user@server`.
+3. **Complete first-run setup** by creating the administrator account. Disc processing stays disabled until then.
+4. **Create a destination profile** in Settings and choose the routes and automation mode.
+5. **Insert a disc.**
 
-```sh
-ssh -L 8787:127.0.0.1:8787 user@server
-```
+Do not expose the dashboard port to the internet.
 
-   Then open `http://127.0.0.1:8787` on the client. Setup Mode exposes only the setup endpoints; after setup, sign in with the account created in the wizard. Normal dashboard/API access requires authentication.
-
-4. The installer creates the configured Movies, TV, and Music folders when they are missing. In Settings, select a named output profile and configure only the destinations used by its selected routes. A Jellyfin root can supply inherited category paths. The work directory and optical drive remain required. TV publishing is limited to DVD tracks with explicitly saved manual episode mappings; automatic matches never publish. Test with known movie and TV DVDs and an audio CD to confirm encoder, tags, paths, cleanup, and eject behavior.
-
-Disc classifications retain the original detection alongside an operator-reviewed final type and audit notes. Blu-ray and other media labels do not imply that an ingestion workflow is available.
-See [Library Metadata & Organization](./docs/METADATA-LIBRARY-ORGANIZATION.md)
-for provider coverage, settings, file naming, NFO behavior, and API details.
-See [Output Destination Profiles](./docs/OUTPUT-DESTINATION-PROFILES.md) for
-named profiles, supported routes, compatibility migrations, and automation
-modes.
-
-Quick commands:
-
-- Check service status and logs:
+**Useful commands**
 
 ```sh
 sudo systemctl status autodisc.service
 sudo journalctl -u autodisc.service -f
 ```
 
-- Stop the service and make a backup of the database:
+**Further documentation**
 
-```sh
-sudo systemctl stop autodisc.service
-sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
-```
+- [Output Destination Profiles](./docs/OUTPUT-DESTINATION-PROFILES.md)
+- [Library Metadata & Organization](./docs/METADATA-LIBRARY-ORGANIZATION.md)
+- [TV workflow integration](./docs/TV-WORKFLOW-INTEGRATION.md)
+- [TV manual recovery guide](./docs/TV-MANUAL-RECOVERY.md)
+- [Version 2 architecture](./docs/V2-ARCHITECTURE.md)
+- [Roadmap](./docs/ROADMAP.md)
 
-That's it — the dashboard gives you live job progress and simple controls, or run entirely headless as a systemd service for fully automated operation.
+---
 
-## Release history
+## Screenshots
 
-### Version 1.17.0
+> Screenshots will be added as the interface stabilises.
 
-- Simplify administrator passwords to a 4-character minimum with no complexity
-  requirements.
-- Migration 23 requires existing administrators to set a new password the first
-  time they sign in after upgrading. Other API access is blocked until they do
-  (`POST /api/v1/account/password`); fresh installs are not affected.
+| Area | Preview |
+| --- | --- |
+| Dashboard | ![AutoDisc dashboard](./docs/screenshots/dashboard.png) |
+| Review Centre | _Coming soon_ |
+| Destination Profiles | _Coming soon_ |
+| Explainable Classification | _Coming soon_ |
+| Disc Diagnostics | _Coming soon_ |
+| TV Series Mapping | _Coming soon_ |
+| Music / Audio CD | _Coming soon_ |
 
-### Version 1.16.0
+---
 
-- Add configurable metadata/NFO import, artwork and safe naming templates for
-  supported movie, manually mapped TV DVD, and audio-CD publishing workflows.
-  Available provider data is imported without enabling online lookups by
-  default; failed optional metadata imports do not block media publishing.
-- Migration 20 adds imported movie, TV, and audio-CD metadata plus validated artwork references to
-  disc recovery without altering existing recovery decisions.
-- Add named output profiles with per-media Jellyfin, Sonarr-compatible,
-  Radarr-compatible, Lidarr, and generic-folder destinations. Migrations 21–22
-  preserve existing library paths and default automation to Regular Auto.
-- Add Full Auto, Regular Auto, and Review-Based modes. Review-Based queues
-  detected discs for approval before processing; Full Auto records failures in
-  Review and attempts to eject so the drive can continue.
+## Roadmap
 
-### Version 1.15.2
+**Near-term**
 
-- Consolidate the first-run setup, library/classification improvements, and
-  SQLite installation hardening with the TV recovery workflow in this release.
-- Require a one-time first-run administrator setup flow, persist credentials
-  using scrypt hashes, and gate dashboard APIs and disc processing until setup
-  is complete.
-- Add Movies, TV, and Music library health reporting and folder creation, and
-  create configured library roots during installation.
-- Record the authenticated administrator and review time on manual disc
-  classification corrections and include those fields in audit exports.
-- Add fingerprint-persisted physical-disc and media-type overrides, direct
-  TVDB/TMDB ID lookup, IMDb lookup through TMDB, and manual series/episode
-  metadata and track-to-episode mapping. Explicitly mapped DVD TV tracks can be
-  published into Jellyfin-style season folders; automatic suggestions remain
-  review-only.
-- Add migration 19 for recovery metadata; existing history and classification
-  detections remain intact. No migration is needed solely for the SQLite
-  dependency update.
-- Upgrade `better-sqlite3` to 13.0.3, removing the deprecated
-  `prebuild-install` dependency. Installation and update skip dependency
-  lifecycle hooks and rebuild the SQLite native module only when no matching
-  prebuilt binary is available.
+- [ ] Improved TV identification, validated against a broad set of real discs
+- [ ] Disc-to-series mapping
+- [ ] Enhanced metadata
+- [ ] Blu-ray support
+- [ ] Expanded review workflows
 
-### Version 1.14.0
+**Long-term**
 
-- Add a disk classification review and audit system for every media type
-  (DVD, Blu-ray, CD Audio, CD-ROM, Mixed Mode, Unknown and future types).
-  Disk Monitor shows the original detection, nullable confidence and review
-  status, and lets operators override the type with a structured reason and
-  notes. The original detection is never overwritten.
-- Add an append-only audit table (migration 16, never auto-deleted), a
-  plain-text operator log export (`/api/v1/classification/export/text`), a JSON
-  export for classifier/LLM analysis (`/api/v1/classification/export/json`) and
-  metrics (`/api/v1/classification/metrics`) derived from audit records.
+- [ ] **Archivist Mode**
+- [ ] Collection management
+- [ ] Large-scale ingestion, including multi-drive scheduling
+- [ ] Preservation workflows
+- [ ] Advanced media identification
 
-### Version 1.13.0
+Roadmap items are goals and not commitments. See [docs/ROADMAP.md](./docs/ROADMAP.md) for implementation status.
 
-- Fix optical-drive monitoring so a media-change event after an earlier
-  inspection failure starts a fresh disc scan instead of remaining latched in
-  the waiting state.
-- Reset inspection retry backoff when media changes, while retaining
-  fingerprint-based protection against processing the same disc twice.
+---
 
-### Version 1.12.0
+## Why AutoDisc?
 
-- Add a live Disc Diagnostics dashboard page for drive detection, source
-  provider attempts, disc structure, classification scorecards, TV analysis,
-  episode matching, metadata results, pipeline events, and job logs.
-- Persist structured source manifests and TV analysis/metadata outcomes in job
-  history; stream event updates to the diagnostics page while it is open.
-- Report metadata provider fallback and per-result cache use where available.
-  Explicitly identify chapter counts, audio track lengths, and empty-result
-  cache state when current providers do not expose them.
-- Keep resource metrics scoped to the Dashboard; Disc Diagnostics does not
-  start a separate system resource sampler.
+Ripping tools extract data from a disc. They do not decide what the disc is, where it belongs, what it should be called or what to do when something goes wrong.
 
-### Version 1.11.0
+AutoDisc is more than a ripper. It is **an intelligent optical media ingestion platform designed to automate the organisation, identification, processing and publishing of physical media collections.**
 
-- Add explainable DVD TV classification with a confidence scorecard and
-  per-criterion pass/fail details in job history and service logs.
-- Hold uncertain two-episode and other TV-shaped discs for TV analysis and
-  Review Centre review instead of publishing them as movies.
-- Add a configurable TV output root with recursive directory creation,
-  read/write permission checks, available-space reporting, and Review Centre
-  configuration items on validation failures. TV publishing and automatic
-  Series/Season directory creation remain disabled.
+- It **explains** its decisions instead of hiding them.
+- It **asks** when unsure instead of guessing.
+- It **remembers** the discs it has seen.
+- It **adapts** to your library instead of requiring a specific media server.
 
-### Version 1.10.0
+---
 
-- Diagnose disc detections that return to waiting without starting a job:
-  report attempted source providers, no-title DVD inspections, workflow
-  declines, and the reasons TV analysis prefiltering did not match.
-- Preserve Disc Read Error review items for inspection failures and document
-  where to find actionable disc-detection diagnostics.
+## Contributing
 
-### Version 1.9.2
+Contributions are welcome, whether code, documentation, testing against real discs, or ideas.
 
-- Integrate TVDB and TMDB TV metadata lookup with TV analysis, configurable
-  provider preference/fallback, and provider health-aware failover.
-- Add provider-specific SQLite result caching with expiry, cache refresh/clear,
-  and durable lookup audit metrics.
-- Replace unavailable metadata dashboard placeholders with real lookup,
-  cache, latency, provider usage, and health statistics.
-- Remove TV metadata settings that did not affect runtime behavior. TV metadata
-  remains review-only; automatic episode assignment and TV publishing remain
-  disabled.
+1. **Open an issue** to discuss bugs, features or larger changes first.
+2. **Fork and branch** from `main` with a descriptive branch name.
+3. **Make focused changes** with tests where practical, and keep documentation up to date.
+4. **Open a pull request** describing what changed and why.
 
-### Version 1.9.1
+Particularly valuable: reports of misclassified discs (a disc label, title runtimes and the diagnostics output are very helpful), new metadata providers and destination layouts, and documentation improvements. Never include licence keys or personal API keys in issues or pull requests.
 
-- Add TV metadata provider settings for registered providers, lookup preferences,
-  cache preferences, provider enablement, and locally persisted API keys.
-- Add TVDB and TMDB TV series/season/episode lookup to analysis, with provider
-  fallback, health-aware failover, provider-specific caching, refresh/clear
-  actions, lookup auditing, and live usage metrics.
-- Remove metadata controls that did not affect behavior; lookup suggestions
-  remain review-only and do not enable automatic episode assignment or output.
-- Add the supplied AutoDisc logo to the dashboard and document the current UI
-  with screenshots.
+---
 
-### Version 1.9.0
+## Disclaimer
 
-- Add the Version 2 provider/workflow foundation, including registered DVD and
-  audio-CD workflows, metadata providers, repository adapters, and shared job
-  coordination.
-- Add TV intelligence: explainable disc analysis, conservative episode-match
-  suggestions, confidence-gated processing plans, correction history, and
-  validation evidence tools. TV output automation is not enabled.
-- Add the universal Review Centre for TV, CD, metadata, processing, and
-  destination-folder issues, with authenticated filters, job details, and
-  recovery actions.
-- Automatically create Music and artist directories before publishing audio
-  albums, publish albums under `Music/Artist/Album`, and preserve existing
-  albums with collision-safe destinations.
+AutoDisc is an independent project. It is not affiliated with or endorsed by Jellyfin, Sonarr, Radarr, Lidarr, MakeMKV, TMDB, TVDB, MusicBrainz or any other third party named here. All trademarks belong to their owners.
 
-### Version 1.6.5
-
-- Fix the remaining disc-detection latch for DVDs and audio CDs: a MakeMKV
-  response with no video titles is retried even when it contains a disc label.
-  This prevents an early probe while media is still becoming readable from
-  suppressing later recognition until Settings are saved or the service restarts.
-
-### Version 1.6.4
-
-- Fix missed DVD detection when the initial MakeMKV probe returns no video
-  titles and no disc label. AutoDisc now retries that unrecognized response
-  instead of marking the inserted disc as handled; labeled non-video media
-  continues to be ignored.
-
-### Version 1.6.3
-
-- Fix missed automatic DVD and audio-CD detection by probing the drive at
-  service startup and retrying failed recognition with capped backoff, without
-  requiring sysfs to report media before probing.
-- Keep the two-second media-presence check as an insertion/removal hint without
-  letting it override retry timing or repeatedly clear processed-disc state.
-
-### Version 1.6.2
-
-- Retry recognition when a disc is detected but is not yet readable, using an
-  exponential backoff capped at 30 seconds. Retries stop after successful
-  recognition or media removal, fixing delayed drive readiness without
-  requiring a Settings save to trigger another scan.
-
-### Version 1.6.1
-
-- Fix automatic disc detection by checking media presence at startup and
-  periodically, recovering from missed udev insertion events, and queueing
-  scans that arrive during another check.
-- Fix false MakeMKV-unavailable warnings by checking whether `makemkvcon` is
-  executable on the AutoDisc service `PATH` instead of invoking its unsupported
-  `--version` option.
-
-### Version 1.6.0
-
-- Add an automatic-failure fallback for MusicBrainz-enabled audio CD jobs:
-  when a usable release cannot be identified, the job pauses with the disc in
-  the drive and requests metadata in the dashboard.
-- Allow entering a MusicBrainz release ID to populate album and track details,
-  or manually entering the artist, album, year, and title of each track.
-- Wait without a timeout for metadata submission, with an option to cancel the
-  paused job. Successful automatic matches and disabled-lookup generic naming
-  continue without intervention.
-
-### Version 1.5.2
-
-- Ignore `track00.cdda.wav` pregap output from cdparanoia so it cannot cause an
-  audio-track count mismatch or be imported as a numbered album track.
-- Check `cd-discid` using its supported `--version` option so the dashboard
-  readiness check does not report the installed tool as missing.
-- Add an optional MusicBrainz contact email setting. Read-only MusicBrainz
-  lookups do not require an API key; AutoDisc includes the email in its
-  identifying User-Agent when supplied.
-
-### Version 1.5.1
-
-- Add a Settings check that tests the configured Movies, Music, work, optional
-  Lidarr import folders, and optical-drive access using the AutoDisc service
-  account. Folder checks create and remove a uniquely named temporary probe
-  file; no media is changed.
-- Show release notes for the latest tagged version in the Settings updater.
-- Fix audio CD detection by recognizing the numbered track rows emitted by
-  `cdparanoia -Q`, as well as the previously supported track format.
-- Shorten the optical-drive event debounce so inserted media begins inspection
-  sooner, and log CD inspection errors to help diagnose unreadable or
-  unsupported discs.
-- Clarify the Lidarr downloads/import folder setting: AutoDisc stages properly
-  named albums there and hands them to Lidarr for matching and library import.
-
-### Version 1.5.0
-
-- Listen on all IPv4 interfaces by default, making the web interface reachable
-  from devices on the trusted home network without hard-coding a server IP.
-- Cancel an active DVD or audio-CD job while it is ripping or converting.
-- Remove completed jobs from history without deleting their media files.
-- Check for and apply stable, versioned GitHub updates manually from Settings.
-- Retain the 1.0 DVD and music-CD workflows, Jellyfin organization, optional
-  Lidarr integration, and Linux service installer.
-
-Passwordless first-run access is available so you can get started quickly; we
-recommend restricting access to your trusted LAN and configuring an administrator
-password in Settings when you first log in.
-
-### Version 1.0.0
-
-- Automatically detect and process video DVDs with MakeMKV and FFmpeg, with
-  hardware-encoder detection and software fallback.
-- Rip audio CDs to named and tagged FLAC tracks, with optional Lidarr import.
-- Organize movies into title-named folders for Jellyfin.
-- Provide a web dashboard, settings, conversion history, and systemd service
-  installation for Linux.
-
-## Version 2 development status
-
-AutoDisc 1.9.0 includes the first integrated Version 2 platform and TV
-intelligence capabilities. The platform uses provider contracts for media
-sources, workflows, and metadata, with SQLite repositories and a shared job
-coordinator. The dashboard exposes TV analysis, episode-match explanations,
-validation evidence, corrections, and the universal Review Centre.
-
-TV analysis and episode matching produce explainable suggestions and
-confidence-gated plans. Manual disc/media overrides, provider-ID series
-recovery, persisted episode mappings, and explicitly confirmed DVD TV episode
-publishing are available; automatic suggestions never trigger publishing.
-Review the [Version 2 architecture](./docs/V2-ARCHITECTURE.md),
-[migration report](./docs/V2-MIGRATION-REPORT-2026-10-19.md),
-[TV workflow integration](./docs/TV-WORKFLOW-INTEGRATION.md), and
-[TV manual recovery guide](./docs/TV-MANUAL-RECOVERY.md) for current behavior,
-supported providers, APIs, and deployment limitations, and
-[Version 2 roadmap](./docs/ROADMAP.md) for current implementation details and
-remaining blockers.
-
-### Remaining Version 2 roadmap
-
-- Validate TV detection, metadata results, and matching against a broad,
-  manually reviewed collection of real discs; calibrate confidence behavior.
-- Validate manual TV publication, rollback behavior, output naming, and
-  provider-ID lookups against real DVD titles and Jellyfin libraries.
-- Add multi-drive scheduling only after per-drive identity, job state,
-  cancellation, recovery, and resource ownership are designed.
-- Consider additional media-library providers, platform support, notifications,
-  and setup automation as separate future capabilities; these are not promises
-  of the 1.9.0 release.
-
-## Design and behavior
-
-- Architecture review, risks, proposed structure, and delivery gates:
-  [`AUTODISC-ARCHITECTURE.md`](./AUTODISC-ARCHITECTURE.md).
-- One job at a time; repeated disc events are coalesced.
-- The dashboard supports a persistent light/dark appearance toggle.
-- Disc insertion is monitored through udev, with a lightweight two-second
-  media-presence check to recover from missed insertion events. If the drive
-  reports media before the disc is ready to read—or its media state is not
-  reported reliably—recognition probes retry with a capped backoff. An
-  insertion scan requested during another check is queued rather than dropped.
-  A udev media-change event starts a fresh inspection even after a prior disc
-  was completed or failed; the processed-disc fingerprint is retained to
-  prevent reprocessing the same disc.
-  Any MakeMKV response with no video titles remains eligible for retry,
-  including responses that contain a disc label, so an early probe cannot
-  suppress detection of a disc that is still becoming readable.
-- Audio CDs are extracted and named/tagged as lossless FLAC tracks. They can be
-  published directly to Jellyfin Music, or (when enabled) sent to Lidarr for
-  library import and organization after naming. Direct output uses an
-  `Artist/Album` folder hierarchy under the configured Music directory;
-  missing destination directories are created automatically. MusicBrainz lookup
-  is disabled by default; enable it to supply metadata for Lidarr matching.
-- The Review Centre records actionable TV, CD, metadata, processing, and
-  destination-folder issues; folder and disc retries are available where safe.
-- When MusicBrainz lookup is enabled and an automatic CD match fails, the job
-  pauses with the disc in the drive and opens a manual metadata form in the
-  dashboard. Enter a MusicBrainz release ID to load its matching album/tracks,
-  or provide the artist, album, year, and each track title yourself. The job
-  waits without a timeout, resumes when the metadata is submitted, and can be
-  cancelled from the form.
-  Successful automatic matches are never interrupted; with lookup disabled,
-  CDs retain the unattended generic-name workflow.
-- Movies are organized in a folder named after the selected title, with the
-  movie file using the same name (for example, `Movies/Karate Kid/Karate Kid.mkv`).
-- Settings can manually check for a newer stable GitHub version tag and apply
-  it automatically without polling for updates in the background.
-- FFmpeg probes NVENC and tests initialization before selecting it. `auto`
-  falls back to software encoding when hardware encoding is absent or unusable.
-  A GTX 710 commonly has no NVENC block; GPU use is not guaranteed.
-- Title lookup uses disc labels by default. External metadata lookup is disabled
-  until explicitly configured in Settings.
-- The web dashboard is designed to be simple and clear: live job progress,
-  easy-to-change settings, and helpful diagnostics make day-to-day use pleasant.
-  If you prefer automation you can run AutoDisc entirely headless as a
-  systemd service — the same features are available without the web UI.
-- The dashboard can cancel a DVD or audio-CD job while it is ripping or
-  converting. Cancellation stops the current job without stopping the disc
-  monitor, removes temporary files, and does not automatically eject the disc.
-  History entries can be removed without deleting completed media files.
-- AutoDisc does not bypass copy protection. Use MakeMKV and the appliance only
-  for discs and purposes permitted by applicable law.
-
-## Linux / Lubuntu system service deployment
-
-On a fresh Lubuntu/Ubuntu or Debian install, download the current `main` source
-and run the installer with this one-line command:
-
-```sh
-sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --outp[...]
-```
-
-The installer configures the signed NodeSource apt repository and installs
-Node.js 22+, npm, FFmpeg/ffprobe, cdparanoia, cd-discid, build tools, udev, eject,
-and ACL utilities, then builds AutoDisc and enables its systemd service. It is
-safe to rerun for updates.
-
-MakeMKV is not bundled or installed by this script: it is separately licensed
-and distributed by its vendor. Install the official Linux MakeMKV package and
-ensure `makemkvcon` is executable on the AutoDisc service's `PATH` to enable DVD
-ripping. AutoDisc checks the command's availability directly because
-`makemkvcon` does not provide a portable `--version` option. Music CD ripping
-works without it.
-
-1. Install MakeMKV from its official Linux distribution to enable DVD ripping.
-   Music CD ripping works without MakeMKV.
-2. Choose Jellyfin Movies and Music directories and a dedicated temporary work directory with
-   adequate free space (AutoDisc requires at least 8 GiB free before ripping,
-   plus space in the destination for finished media; music jobs require 2 GiB
-   free work space and 256 MiB free Music/import space). The installer creates
-   `/var/lib/autodisc`, `/var/cache/autodisc`, and `/var/cache/autodisc/lidarr-import`.
-3. Open AutoDisc locally, go to **Settings**, and set the Movies and Music
-   folders, temporary work folder, drive, and encoding preferences. Initial defaults are
-   `/srv/jellyfin/Movies`, `/srv/jellyfin/Music`, `/var/cache/autodisc`, and `/dev/sr0`.
-   The service listens on `0.0.0.0:8787` by default, so find the server's
-   current LAN address with `hostname -I` and open
-   `http://<server-lan-ip>:8787` from another device. No server IP is hard-coded;
-   the address may change if your router assigns a new one. To use a different
-   bind address or port, configure `/etc/default/autodisc`:
-
-   ```ini
-   HOST=0.0.0.0
-   PORT=8787
-   ```
-
-   The `HOST` setting defaults to `0.0.0.0` and `PORT` defaults to `8787`.
-   After editing the file, run `sudo systemctl daemon-reload` and
-   `sudo systemctl restart autodisc.service`. If a firewall is enabled, allow
-   TCP port 8787 only from your home subnet. Because the initial interface has
-   no password, restrict network access and configure a password promptly. Do
-   not forward this port to the internet.
-
-   The service must have read/write access to the Movies and work directories
-   and access to the configured optical drive. In direct-to-Jellyfin music mode,
-   it also needs write access to Music. In Lidarr mode, AutoDisc writes to its
-   incoming folder and Lidarr manages the Music library. The database retains
-   configured values across service restarts. Configure ownership or ACLs
-   explicitly; do not make media directories world-writable. For Jellyfin
-   library directories, install `acl` if needed, create them if
-   necessary, and grant access only to the service and Jellyfin accounts
-   (replace `jellyfin` if your service uses another account):
-
-   ```sh
-   sudo mkdir -p /srv/jellyfin/Movies /srv/jellyfin/Music /var/cache/autodisc/lidarr-import
-   sudo setfacl -m u:autodisc:rwx,u:jellyfin:rx /srv/jellyfin/Movies
-   sudo setfacl -d -m u:autodisc:rwx,u:jellyfin:r-x /srv/jellyfin/Movies
-   sudo setfacl -m u:autodisc:rwx,u:jellyfin:rx /srv/jellyfin/Music
-   sudo setfacl -d -m u:autodisc:rwx,u:jellyfin:r-x /srv/jellyfin/Music
-   ```
-
-   To use Lidarr, grant its service account read/write access to the incoming
-   folder too. Lidarr and AutoDisc must see the folder using the same absolute
-   path (including when Lidarr runs in a container). In AutoDisc **Settings**,
-   enable MusicBrainz lookup, enter the Lidarr URL and API key, set **Lidarr
-   downloads/import folder** to the shared folder Lidarr can read, then enable
-   Lidarr import and use **Test Lidarr connection**. This is the location
-   AutoDisc writes the album into before requesting Lidarr's manual import; it
-   is not automatically discovered from Lidarr's download-client settings.
-   Add the artist and album in Lidarr first, and configure Lidarr's root folder
-   and Jellyfin's Music library to the same Music directory. AutoDisc creates
-   an `Artist - Album (Year)` folder containing numbered, tagged FLAC tracks
-   before asking Lidarr to match and move them into its managed library. If
-   Lidarr runs in Docker, configure the same shared folder path as Lidarr sees
-   it inside the container, and ensure both services have access. If matching
-   or import fails, AutoDisc preserves any remaining named files there for
-   manual import rather than deleting the ripped music. Use **Check paths and
-   permissions** in Settings to verify AutoDisc's access to its configured
-   folders and optical drive.
-
-   For a local Lidarr service account named `lidarr`, one example is:
-
-   ```sh
-   sudo setfacl -m u:lidarr:rwx /var/cache/autodisc/lidarr-import
-   sudo setfacl -d -m u:lidarr:rwx /var/cache/autodisc/lidarr-import
-   sudo setfacl -m u:lidarr:--x /var/cache/autodisc
-   sudo setfacl -m u:lidarr:rwx /srv/jellyfin/Music
-   sudo setfacl -d -m u:lidarr:rwx /srv/jellyfin/Music
-   ```
-
-   These ACLs let the media services access their required folders without
-   making them writable to other users. After changing environment settings,
-   run `sudo systemctl restart autodisc`.
-4. Ensure the Movies and work directories exist and are writable by the service
-   account (and the direct Music destination or Lidarr incoming directory as
-   configured), and confirm that the Jellyfin service account can read produced
-   files. Check status and logs with `systemctl status autodisc` and
-   `journalctl -u autodisc -f`. Open `http://localhost:8787` locally. The
-   default bind is `0.0.0.0`, so it is available at the server's current LAN IP
-   on port 8787. Use `HOST=127.0.0.1` in `/etc/default/autodisc` to limit access
-   to the server itself. The service unit reads overrides from that file.
-5. Test with a known video DVD and an audio CD; verify the selected encoder,
-   album tags, output paths, cleanup, and eject before leaving the appliance
-   unattended.
-
-MakeMKV remains a separately licensed dependency and is not redistributed by
-this project. DVD ripping is unavailable until it is installed; music CD
-ripping does not require it. Do not put a private/beta key into the repository.
-Startup should report a missing CLI as a readiness issue instead of attempting a DVD rip.
-The service's MakeMKV configuration directory is `/var/lib/autodisc/.MakeMKV`;
-place any required operator-supplied license/configuration there with ownership
-`autodisc:autodisc` and restrictive permissions. Never add keys to Git.
-
-## Service management
-
-AutoDisc runs as the `autodisc.service` systemd service. The installer enables
-it at boot and starts it immediately. Use these commands on the Lubuntu server:
-
-```sh
-sudo systemctl start autodisc.service
-sudo systemctl stop autodisc.service
-sudo systemctl restart autodisc.service
-sudo systemctl status autodisc.service
-sudo journalctl -u autodisc.service -f
-sudo systemctl status autodisc-update.path
-sudo journalctl -u autodisc-update.service
-```
-
-`start` starts a stopped service, `stop` shuts it down, and `restart` stops and
-starts it again (for example, after changing `/etc/default/autodisc`). Follow
-the logs with `journalctl` when diagnosing startup or disc-processing issues.
-If the dashboard returns from "Checking Disc" to "Waiting For Disc", inspect
-these logs for the source providers tried and the reason no job started (for
-example, no recognized source or no usable DVD titles). Source-inspection
-errors are also added to the Review Centre as Disc Read Errors. TV-prefilter
-rejections are logged with their reasons and continue through the movie
-workflow; they do not discard the disc.
-
-To update AutoDisc, open **Settings** and click **Check for updates**. AutoDisc
-checks the repository's versioned tags and automatically installs the newest
-stable version when it is newer than the installed version. Checks happen only
-when requested; the appliance does not poll GitHub in the background. Updates
-are refused while a disc job is active, and the service restarts during
-installation. Settings and history remain in `/var/lib/autodisc`. The updater
-keeps the previous application until the new service starts successfully and
-rolls back the application and a stopped-service SQLite snapshot if startup
-fails.
-
-In-app updates are installed by a narrowly scoped, root-owned systemd updater;
-the web service itself is not granted root access. This updater is installed by
-the current installer. Upgrade an existing installation once with the
-one-line install/update command below to enable the Settings updater. Updates
-download source archives for versioned tags over HTTPS; untagged commits on
-`main` are not applied automatically. To follow an untagged development commit,
-use the manual installer procedure instead. In-app updates replace the
-application and its systemd units but do not install new operating-system
-packages; use the installer manually if a release adds system dependencies.
-The npm “no longer maintained” notice previously came from the transitive
-`prebuild-install` dependency of `better-sqlite3`; v1.15.2 upgrades the SQLite
-binding and removes that dependency. npm warnings alone do not establish why an
-update failed. For an update error, the updater journal contains the failing
-command and rollback details:
-
-```sh
-sudo journalctl -u autodisc-update.service -b --no-pager -n 150
-sudo systemctl status autodisc-update.service --no-pager
-sudo cat /var/lib/autodisc/updater/status
-```
-
-For a manual update or a recovery copy, first wait for the dashboard to show
-**Idle**. Stopping the service during a disc job interrupts that job. Back up
-the database while the service is stopped if you want an extra recovery copy:
-
-```sh
-sudo systemctl stop autodisc.service
-sudo cp /var/lib/autodisc/autodisc.sqlite /var/lib/autodisc/autodisc.sqlite.bak
-```
-
-Then run the same one-line install/update command from the deployment section:
-
-```sh
-sudo apt-get update && sudo apt-get install -y curl ca-certificates && curl --fail --silent --show-error --location https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/heads/main.tar.gz --outp[...]
-```
-
-The installer starts the service and updater watcher when it finishes. Confirm
-the update with `sudo systemctl status autodisc.service`. For updater
-diagnostics, inspect `sudo journalctl -u autodisc-update.service`.
-
-## Settings and operations
-
-The dashboard shows service status and conversion progress with live updates and
-simple controls. Settings include Movies/Music output and work paths, optional
-Lidarr import, format/quality, encoder policy, eject behavior, password,
-optional TMDB/MusicBrainz metadata lookup, and manually triggered application
-updates. Resource samples are generated only while the dashboard metrics stream
-is connected. Conversion history and statistics are stored in SQLite at
-`/var/lib/autodisc/autodisc.sqlite`.
-
-Version 1.5 adds active-job cancellation and history-entry removal. Version
-1.5.1 adds path-permission checks and improves audio-CD TOC detection. Version
-1.5.2 skips cdparanoia's pregap track 00 and uses the correct `cd-discid`
-version-check option. Removing a history entry deletes its database record and
-event timeline only; it never deletes the associated media file. Test disc
-insertion/removal, cancellation, interrupted jobs, disk-full handling,
-permissions, cleanup, and eject on the target Lubuntu host before unattended
-operation. Retry, pre-publish title editing, configurable failed-artifact
-retention, and a configurable disk reserve are not included.
+- **Content ownership**: use AutoDisc only with media you own or are otherwise legally entitled to copy and process. You are responsible for complying with the copyright and licensing laws that apply where you live.
+- **No copy-protection circumvention**: AutoDisc does not bypass copy protection, and it does not provide or distribute copyrighted content.
+- **Third-party software**: MakeMKV is separately licensed and is not bundled or redistributed. Metadata and artwork are subject to each provider's terms.
+- **No warranty**: the software is provided "as is". Back up your data and test on your own hardware before running unattended.
