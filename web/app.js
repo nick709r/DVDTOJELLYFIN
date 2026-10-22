@@ -1097,9 +1097,15 @@ let forgetDiscJobId = null;
 document.addEventListener("click", (event) => {
   const button = event.target.closest(".forget-disc, #forget-diagnostics-disc");
   if (!button) return;
-  const jobId = button.dataset.jobId || $("#diagnostics-job").value;
-  if (!jobId) { notify("Select a disc to forget.", true); return; }
-  forgetDiscJobId = jobId;
+  const target = button.dataset.jobId
+    ? { jobId: button.dataset.jobId }
+    : button.dataset.fingerprint
+      ? { fingerprint: button.dataset.fingerprint }
+      : { jobId: $("#diagnostics-job").value };
+  if (!target.jobId && !target.fingerprint) { notify("Select a disc to forget.", true); return; }
+  forgetDiscJobId = target.jobId
+    ? `/api/v1/history/${encodeURIComponent(target.jobId)}/forget`
+    : `/api/v1/discs/${encodeURIComponent(target.fingerprint)}/forget`;
   forgetDiscDialog.showModal();
 });
 $("#forget-disc-cancel").addEventListener("click", () => {
@@ -1111,7 +1117,7 @@ $("#forget-disc-confirm").addEventListener("click", async () => {
   const button = $("#forget-disc-confirm");
   button.disabled = true;
   try {
-    await api(`/api/v1/history/${encodeURIComponent(forgetDiscJobId)}/forget`, { method: "POST" });
+    await api(forgetDiscJobId, { method: "POST" });
     forgetDiscDialog.close();
     forgetDiscJobId = null;
     state.diagnosticsJobId = "";
@@ -1261,7 +1267,11 @@ function renderReviewItem(item) {
     ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
     ${item.resolutionDetails ? `<p class="list-sub">Resolution: ${escapeHtml(item.resolutionDetails)}${item.resolvedAt ? ` · ${escapeHtml(new Date(item.resolvedAt).toLocaleString())}` : ""}</p>` : ""}
     ${item.retryCount ? `<p class="list-sub">Retry attempts: ${item.retryCount}</p>` : ""}
-    <div class="tv-actions">${actions}${item.relatedJobId ? `<button class="button danger forget-disc" type="button" data-job-id="${escapeHtml(item.relatedJobId)}">Forget Disc</button>` : ""}</div>
+    <div class="tv-actions">${actions}${item.relatedJobId || item.discFingerprint
+      ? `<button class="button danger forget-disc" type="button"${item.relatedJobId
+        ? ` data-job-id="${escapeHtml(item.relatedJobId)}"`
+        : ` data-fingerprint="${escapeHtml(item.discFingerprint)}"`}>Forget Disc</button>`
+      : ""}</div>
     <div class="review-job-details" data-review-details="${escapeHtml(item.id)}"></div>
   </article>`;
 }

@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeJob, dailyJobStats, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
-import { getLiveDiscDiagnostics } from "./diagnostics.js";
+import { clearDiscDiagnostics, getLiveDiscDiagnostics } from "./diagnostics.js";
 import { cancelActiveJob } from "./job-control.js";
 import { availableEncoders } from "./encoding.js";
 import { executableAvailable } from "./executable.js";
@@ -328,13 +328,36 @@ app.get<{ Querystring: { limit?: string } }>("/api/v1/history", async (request) 
   return { jobs: listJobs(limit) };
 });
 
+function forgetDisc(discId: string): ReturnType<typeof repositories.forgetDisc.forgetDisc> {
+  const result = repositories.forgetDisc.forgetDisc(discId);
+  if (result.fingerprint && getLiveDiscDiagnostics()?.fingerprint === result.fingerprint) {
+    clearDiscDiagnostics();
+  }
+  return result;
+}
+
+function forgetDiscError(error: unknown, discId: string, request: FastifyRequest, reply: FastifyReply) {
+  const message = error instanceof Error ? error.message : "Disc could not be forgotten";
+  request.log.error({ err: error, discId }, "Forget disc failed");
+  return reply.code(message === "Disc not found" ? 404 : 409).send({ error: message });
+}
+
 app.post<{ Params: { id: string } }>("/api/v1/history/:id/forget", async (request, reply) => {
   try {
-    return { ok: true, ...repositories.forgetDisc.forgetDisc(request.params.id) };
+    return { ok: true, ...forgetDisc(request.params.id) };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Disc could not be forgotten";
-    request.log.error({ err: error, discId: request.params.id }, "Forget disc failed");
-    return reply.code(message === "Disc not found" ? 404 : 409).send({ error: message });
+    return forgetDiscError(error, request.params.id, request, reply);
+  }
+});
+
+app.post<{ Params: { fingerprint: string } }>("/api/v1/discs/:fingerprint/forget", async (request, reply) => {
+  if (!/^[0-9a-f]{16,128}$/i.test(request.params.fingerprint)) {
+    return reply.code(400).send({ error: "Disc fingerprint is invalid" });
+  }
+  try {
+    return { ok: true, ...forgetDisc(request.params.fingerprint) };
+  } catch (error) {
+    return forgetDiscError(error, request.params.fingerprint, request, reply);
   }
 });
 
