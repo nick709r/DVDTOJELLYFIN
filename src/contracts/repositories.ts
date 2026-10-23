@@ -55,7 +55,10 @@ export interface EventRepository {
 
 export interface RecoveryRepository {
   interruptedOutputs(): Array<{ id: string; outputPath: string; mediaType: string }>;
-  recoverPublished(id: string, outputBytes: number): void;
+  interruptedJobs(): Array<{ id: string; outputPath: string | null; mediaType: string; discFingerprint: string | null }>;
+  jobStates(): Array<{ id: string; status: JobStatus }>;
+  recoverPublished(id: string, outputBytes: number): boolean;
+  failInterrupted(id: string, reason: string): boolean;
   lastDiscFingerprint(): string | null;
   clearInsertedDisc(): void;
 }

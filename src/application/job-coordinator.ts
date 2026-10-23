@@ -145,9 +145,7 @@ export class JobCoordinator {
     drivePath?: string
   ): JobContext {
     this.repositories.jobs.add(id, label, fingerprint, mediaKind);
-    this.cancellation.register(id);
-    this.publisher.publish(id, "inspecting");
-    return {
+    const context: JobContext = {
       id,
       mediaKind,
       fingerprint,
@@ -158,6 +156,22 @@ export class JobCoordinator {
         if (signal?.aborted) throw signal.reason ?? new Error("Job cancelled");
       }
     };
+    try {
+      this.cancellation.register(id);
+      this.publisher.publish(id, "inspecting");
+      return context;
+    } catch (error) {
+      try {
+        this.fail(context, "failed", {
+          code: "job_initialization_failed",
+          message: error instanceof Error ? error.message : "Job initialization failed",
+          recoverable: true
+        });
+      } catch {
+        // The startup recovery path will interrupt the job if persistence is unavailable here.
+      }
+      throw error;
+    }
   }
 
   resume(
@@ -225,6 +239,7 @@ export class JobCoordinator {
   complete(context: JobContext, fingerprint?: string): JobResult {
     const completedFingerprint = fingerprint ?? context.fingerprint;
     this.repositories.jobs.finish(context.id, "completed", null, completedFingerprint ?? undefined);
+    this.resolveJobReviews(context.id, "Related disc processing completed successfully");
     if (completedFingerprint) {
       this.repositories.reviewItems.resolveForDisc(completedFingerprint, "Related disc processing completed successfully");
     }
@@ -347,11 +362,29 @@ export class JobCoordinator {
     return { jobId: context.id, status, error: failure };
   }
 
+  failUnexpected(error: unknown, status: "failed" | "interrupted" = "failed"): JobResult | undefined {
+    const job = this.activeJob();
+    if (!job) return undefined;
+    const message = error instanceof Error ? error.message : "Unexpected processing error";
+    return this.fail({
+      id: job.id,
+      mediaKind: job.mediaType,
+      fingerprint: job.discFingerprint,
+      discLabel: job.discLabel,
+      throwIfCancelled() {}
+    }, status, {
+      code: "unexpected_processing_exception",
+      message,
+      recoverable: true
+    });
+  }
+
   createReview(input: ReviewItemInput): ReviewItem {
     return this.repositories.reviewItems.create(input);
   }
 
   resolveJobReviews(jobId: string, resolutionDetails: string): void {
+    if (!this.repositories.reviewItems?.list || !this.repositories.reviewItems?.updateStatus) return;
     for (const review of this.repositories.reviewItems.list({ status: "active", limit: 1000 })) {
       if (review.relatedJobId === jobId) {
         this.repositories.reviewItems.updateStatus(review.id, "resolved", resolutionDetails);

@@ -733,7 +733,21 @@ async function processMappedTvEpisodes(
           ? "awaiting-mapping" : "awaiting-identification",
         failure: message
       });
-      if (job && job.status !== "interrupted") jobs.interruptTvMatching(task.jobId, message);
+      if (job && ["inspecting", "ripping", "converting", "publishing"].includes(job.status)) {
+        jobs.interruptTvMatching(task.jobId, message);
+      }
+      if (job) {
+        jobs.createReview({
+          category: "tv_review",
+          severity: "medium",
+          title: "TV disc matching needs to continue",
+          description: message,
+          relatedJobId: job.id,
+          ...(job.discLabel ? { relatedDisc: job.discLabel } : {}),
+          discFingerprint: task.fingerprint,
+          suggestedActions: [{ type: "view-job", label: "Open TV Matching" }]
+        });
+      }
     }
   }
 
