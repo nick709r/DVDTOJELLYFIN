@@ -95,6 +95,28 @@ automatic TV heuristic. Saved episode mappings are used directly and do not
 pass through automatic matching. If there is no manual mapping, automatic
 suggestions still require review and are never silently used for output.
 
+## TV staging storage configuration
+
+In **Settings → Storage & Output**, the TV Staging Directory can be set
+explicitly. Leaving it blank keeps the backwards-compatible location derived
+from Work Directory: `<work>/tv-staging/unidentified`. First-start
+installations may also set `TV_STAGING_DIR`. The Review Directory is derived as
+`<work>/reviews`; metadata cache entries are stored in the SQLite database,
+and the Cache Directory display shows that database's parent directory.
+
+The validation panel compares the resolved staging path with the active
+Jellyfin, Sonarr, Radarr or Custom publishing directories and checks whether
+the directory or its nearest existing parent is writable. The Disc Diagnostics
+page displays all resolved storage and output paths. When a collision is
+reported, the error names both paths and points to Storage & Output.
+
+**Move TV staging to recommended location** chooses a path outside the active
+publishing directories, creates it if necessary and saves it as the explicit
+TV staging directory. For safety, the location cannot be changed while a job
+is active or staged TV tasks remain. Existing installations with no
+`TV_STAGING_DIR` setting continue using the historical work-directory-derived
+path. Staged files and their matching-task records remain restart-safe.
+
 ## API
 
 These authenticated routes expose the recovery workflow:

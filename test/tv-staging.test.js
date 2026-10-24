@@ -18,12 +18,14 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
   const repositories = createSqliteRepositories(database, {
     ...defaultSettings,
     workDir: path.join(root, "work"),
+    tvStagingDir: path.join(root, "dedicated-tv-staging"),
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
     musicDir: path.join(root, "published-music")
   });
   repositories.settings.save({
     workDir: path.join(root, "work"),
+    tvStagingDir: path.join(root, "dedicated-tv-staging"),
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
     musicDir: path.join(root, "published-music")
@@ -106,6 +108,7 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
     let task = jobs.listTvMatchingTasks()[0];
     assert.ok(task);
     assert.equal(task.status, "awaiting-identification");
+    assert.equal(task.stagingPath, path.join(root, "dedicated-tv-staging", task.jobId));
     assert.equal(Object.keys(task.files).length, 4);
     assert.equal(jobs.getJob(task.jobId).status, "awaiting-identification");
     const stagedFile = path.join(task.stagingPath, task.files["1"]);

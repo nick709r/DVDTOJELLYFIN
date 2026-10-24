@@ -202,6 +202,24 @@ rescans and recovery. Publishing continues to use the effective manual
 classification; unsupported media are held rather than routed through the
 wrong encoder. History and diagnostics show both automatic and manual values.
 
+### TV staging and storage paths
+
+**Settings → Storage & Output** shows the Work Directory, TV Staging Directory,
+Review Directory, Cache Directory and active publishing directories. Leave the
+TV Staging Directory blank to preserve the existing default derived from the
+Work Directory (`<work>/tv-staging/unidentified`), or set a separate absolute
+path. The same setting can be supplied on first start with `TV_STAGING_DIR`.
+The Review Directory is `<work>/reviews`; metadata cache entries are stored in
+SQLite, so the displayed Cache Directory is the parent of `DATABASE_PATH`.
+
+The path validation panel reports access problems and overlaps with active
+publishing directories. Diagnostics shows the resolved Jellyfin, Sonarr,
+Radarr and Custom paths. If TV staging overlaps a library, the error includes
+both paths and directs you back to Storage & Output. Use **Move TV staging to
+recommended location** to select and prepare a non-overlapping directory.
+Changing the staging location is blocked while jobs or staged TV tasks are
+active, protecting files and recovery state.
+
 ---
 
 ## Destination Profiles

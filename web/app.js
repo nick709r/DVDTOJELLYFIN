@@ -1518,7 +1518,7 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
+  for (const key of ["workDir", "tvStagingDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
@@ -1562,12 +1562,56 @@ async function loadSettings() {
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
   await refreshLibraryHealth();
+  await refreshStoragePathDiagnostics();
   updateOutputPreview();
   await refreshUpdateStatus();
   const encoders = await api("/api/v1/encoders");
   $("#encoder-capability").textContent = encoders.encoders.error
     ? encoders.encoders.error
     : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
+}
+
+async function refreshStoragePathDiagnostics() {
+  const data = await api("/api/v1/paths/diagnostics");
+  const paths = data.resolvedPaths;
+  const validation = data.tvStaging;
+  const pathEntries = [
+    ["Work", paths.work],
+    ["Review", paths.review],
+    ["TV Staging", paths.tvStaging],
+    ["Cache", paths.cache],
+    ["Jellyfin Output", paths.jellyfinOutput],
+    ["Sonarr Output", paths.sonarrOutput],
+    ["Radarr Output", paths.radarrOutput],
+    ["Custom Output", paths.customOutput]
+  ];
+  const active = data.activePublishingDirectories.map((directory) =>
+    `<li><strong>${escapeHtml(directory.media)} (${escapeHtml(directory.target)})</strong>: ${escapeHtml(directory.path)}</li>`
+  ).join("");
+  const validationMarkup = `<div class="library-health ${validation.valid ? "ready" : "warning"}">
+    <strong>${validation.valid ? "✅ Valid" : "❌ Invalid"}</strong>
+    <p>${escapeHtml(validation.message)}</p>
+  </div>`;
+  $("#tv-staging-validation").innerHTML = validationMarkup;
+  $("#diagnostics-tv-staging-validation").innerHTML = validationMarkup;
+  $("#tv-staging-path-source").textContent = validation.source === "work-directory"
+    ? `TV staging path is currently derived from Work Directory: ${validation.path}`
+    : `TV staging path is explicitly configured: ${validation.path}`;
+  $("#storage-active-publishing-directories").innerHTML =
+    `<h4>Active Publishing Directories</h4>${active ? `<ul>${active}</ul>` : "<p>None configured.</p>"}`;
+  $("#tv-staging-autofix-details").innerHTML = validation.recommendedPath
+    ? `<p>Current: <code>${escapeHtml(validation.path)}</code><br>Recommended: <code>${escapeHtml(validation.recommendedPath)}</code></p>${validation.changeBlockedReason ? `<p>${escapeHtml(validation.changeBlockedReason)}</p>` : ""}`
+    : "<p>No non-overlapping recommended location could be found. Choose a path outside all active publishing directories.</p>";
+  const autoFix = $("#tv-staging-autofix");
+  autoFix.classList.toggle("hidden", !validation.canAutoFix);
+  autoFix.disabled = !validation.canAutoFix;
+  $("#storage-resolved-paths").innerHTML = diagnosticPairs([
+    ["Work Directory", paths.work],
+    ["TV Staging Directory", paths.tvStaging],
+    ["Review Directory", paths.review],
+    ["Cache Directory", paths.cache]
+  ]);
+  $("#diagnostics-storage-paths").innerHTML = diagnosticPairs(pathEntries);
 }
 
 function updateTvStagingRetentionFields() {
@@ -1912,7 +1956,10 @@ function showPage(page) {
   $("#page-title").textContent = pageTitles[page] || page;
   updateStreams();
   if (page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
-  if (page === "diagnostics") loadDiagnostics().catch((error) => notify(error.message, true));
+  if (page === "diagnostics") {
+    loadDiagnostics().catch((error) => notify(error.message, true));
+    refreshStoragePathDiagnostics().catch((error) => notify(error.message, true));
+  }
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
   if (page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
   if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
@@ -1932,6 +1979,22 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
 $("#refresh-tv-matching").addEventListener("click", () => loadTvMatchingTasks().catch((error) => notify(error.message, true)));
 $("#refresh-diagnostics").addEventListener("click", () => loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true)));
+$("#refresh-storage-diagnostics").addEventListener("click", () =>
+  refreshStoragePathDiagnostics().catch((error) => notify(error.message, true)));
+$("#tv-staging-autofix").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/paths/tv-staging/auto-fix", { method: "POST" });
+    $("#settings-form").elements.namedItem("tvStagingDir").value = result.settings.tvStagingDir;
+    await refreshStoragePathDiagnostics();
+    notify(`TV staging moved to ${result.settings.tvStagingDir}.`);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#diagnostics-job").addEventListener("change", () => {
   const jobId = $("#diagnostics-job").value;
   loadDiagnostics(jobId, !jobId).catch((error) => notify(error.message, true));
@@ -2603,6 +2666,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
   const patch = {
     outputDestinations: state.outputDestinations,
     workDir: values.get("workDir"),
+    tvStagingDir: values.get("tvStagingDir"),
     opticalDevice: values.get("opticalDevice"),
     format: values.get("format"),
     quality: Number(values.get("quality")),
@@ -2685,6 +2749,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     };
       renderOutputProfiles();
     await refreshLibraryHealth();
+    await refreshStoragePathDiagnostics();
     form.elements.namedItem("adminPassword").value = "";
     form.elements.namedItem("metadataApiKey").value = "";
     form.elements.namedItem("clearMetadataKey").checked = false;

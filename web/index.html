@@ -97,6 +97,12 @@
           <div id="diagnostics-live" class="diagnostics-grid"></div>
           <p id="diagnostics-live-status" class="hint" role="status">Waiting for disc detection data.</p>
         </article>
+        <article class="card">
+          <div class="card-heading"><div><p class="eyebrow">STORAGE</p><h2>Resolved storage paths</h2></div>
+            <button id="refresh-storage-diagnostics" class="button secondary" type="button">Refresh paths</button></div>
+          <div id="diagnostics-storage-paths" class="diagnostics-grid"></div>
+          <div id="diagnostics-tv-staging-validation" class="path-check-list" role="status" aria-live="polite"></div>
+        </article>
         <article class="card" id="classification-review">
           <div class="card-heading"><div><p class="eyebrow">DISK MONITOR</p><h2>Classification review</h2></div>
             <div class="diagnostics-controls"><a class="button secondary" href="/api/v1/classification/export/text" download>Export log (text)</a><a class="button secondary" href="/api/v1/classification/export/json" download>Export JSON (LLM)</a></div></div>
@@ -256,6 +262,17 @@
             <p class="hint">Sonarr/Radarr destinations use compatible folder layouts; AutoDisc does not call those applications' APIs. For Lidarr, configure its integration below. Browse folders as they appear inside the AutoDisc host/container.</p>
             <p class="hint">TV DVDs publish only after you save explicit series metadata and track-to-episode mappings in Review Centre.</p>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
+            <label>TV Staging Directory<input name="tvStagingDir" placeholder="Leave blank to derive from Work Directory"></label>
+            <p id="tv-staging-path-source" class="hint">Leave blank to use a folder under the Work Directory.</p>
+            <section class="path-check-list" aria-live="polite">
+              <h3>TV staging path validation</h3>
+              <div id="tv-staging-validation"></div>
+              <div id="storage-active-publishing-directories"></div>
+              <div id="tv-staging-autofix-details"></div>
+              <button id="tv-staging-autofix" class="button secondary hidden" type="button">Move TV staging to recommended location</button>
+            </section>
+            <div class="diagnostics-grid" id="storage-resolved-paths"></div>
+            <p class="hint">Metadata cache entries are stored in AutoDisc's SQLite database; the cache directory shown here is the database's parent directory.</p>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
             <button id="check-paths" class="button secondary" type="button">Check paths and permissions</button>
             <div id="paths-status" class="path-check-list hidden" role="status" aria-live="polite"></div>

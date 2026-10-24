@@ -3,6 +3,7 @@ import { lstatSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep, join } from "node:path";
 import type { ForgetDiscResult, ForgetDiscService, SettingsRepository } from "../../contracts/repositories.js";
 import { outputPath } from "../../output-destinations.js";
+import { tvStagingDirectory } from "../../storage-paths.js";
 import { log } from "../../logger.js";
 
 const ACTIVE = ["inspecting", "ripping", "converting", "publishing"];
@@ -39,7 +40,7 @@ export class SqliteForgetDiscService implements ForgetDiscService {
         cleanupCandidates.push({ path: join(this.settings.get().workDir, id), kind: "work", id });
         cleanupCandidates.push({ path: join(this.settings.get().workDir, "reviews", id), kind: "review", id });
         cleanupCandidates.push({
-          path: join(this.settings.get().workDir, "tv-staging", "unidentified", id),
+          path: join(tvStagingDirectory(this.settings.get()), id),
           kind: "tv",
           id
         });
@@ -105,7 +106,7 @@ export class SqliteForgetDiscService implements ForgetDiscService {
       if (!/^[a-f0-9-]{36}$/i.test(candidate.id) || basename(path) !== candidate.id) continue;
       const expectedParent = candidate.kind === "review"
         ? dirname(path)
-        : candidate.kind === "tv" ? resolve(workRoot, "tv-staging", "unidentified") : workRoot;
+        : candidate.kind === "tv" ? tvStagingDirectory(settings) : workRoot;
       if (candidate.kind === "review" && basename(expectedParent) !== "reviews") continue;
       if (candidate.kind !== "review" && resolve(dirname(path)) !== expectedParent) continue;
       if (outputRoots.some((output) => this.pathsOverlap(path, output))) {

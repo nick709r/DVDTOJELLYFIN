@@ -30,6 +30,7 @@ import type { DiscRecovery, EpisodeMapping } from "../../domain/disc-recovery.js
 import type { TvSavedIdentification } from "../../domain/tv-identification.js";
 import type { TvMatchingAssignment, TvMatchingTask } from "../../domain/tv-matching.js";
 import { outputPath } from "../../output-destinations.js";
+import { pathsOverlap, tvStagingConflictMessage, tvStagingConflicts, tvStagingDirectory } from "../../storage-paths.js";
 import { normalizeDiscName } from "../../application/tv-name-normalization.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
@@ -38,10 +39,6 @@ const minimumOutputBytes = 1024 ** 3;
 function pathIsWithin(parent: string, child: string): boolean {
   const path = relative(resolve(parent), resolve(child));
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-
-function pathsOverlap(left: string, right: string): boolean {
-  return pathIsWithin(left, right) || pathIsWithin(right, left);
 }
 
 function evidenceNames(value: unknown): string[] {
@@ -399,23 +396,17 @@ async function processMappedTvEpisodes(
     const settings = jobs.getSettings();
     const filesystemVolumeName = source.candidate.manifest.attributes?.filesystemVolumeName;
     const volumeName = typeof filesystemVolumeName === "string" ? filesystemVolumeName : "";
-    const root = resolve(settings.workDir, "tv-staging");
-    const stagingRoot = resolve(root, "unidentified");
-    const outputRoots = [outputPath(settings, "tv"), outputPath(settings, "movies"), outputPath(settings, "music")];
-    if (outputRoots.some((output) => pathsOverlap(output, root))) {
-      throw new Error("TV staging overlaps a configured published-media directory");
-    }
+    const stagingRoot = tvStagingDirectory(settings);
+    const conflict = tvStagingConflicts(settings)[0];
+    if (conflict) throw new Error(tvStagingConflictMessage(stagingRoot, conflict));
     await this.ensureWritable(stagingRoot, 0);
-    for (const directory of [root, stagingRoot]) {
-      const info = await lstat(directory);
-      if (!info.isDirectory() || info.isSymbolicLink()) {
-        throw new Error("TV staging directories must not be symbolic links");
-      }
+    const info = await lstat(stagingRoot);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error("TV staging directory must not be a symbolic link");
     }
-    const realWorkDir = await realpath(settings.workDir);
     const realStagingRoot = await realpath(stagingRoot);
-    if (!pathIsWithin(realWorkDir, realStagingRoot)) {
-      throw new Error("TV staging directory resolves outside the configured work directory");
+    if (!pathIsWithin(stagingRoot, realStagingRoot)) {
+      throw new Error("TV staging directory resolves outside its configured location");
     }
     const stagingPath = resolve(stagingRoot, job.id);
     if (!pathIsWithin(stagingRoot, stagingPath) || basename(stagingPath) !== job.id) {
@@ -432,7 +423,7 @@ async function processMappedTvEpisodes(
     );
     if (!episodeTitles.length) throw new Error("TV staging found no episode-length titles to rip");
 
-    const tempPath = resolve(settings.workDir, job.id);
+    const tempPath = resolve(stagingPath, ".working");
     const files: Record<string, string> = {};
     let task: TvMatchingTask | undefined;
     await mkdir(stagingPath, { recursive: false, mode: 0o750 });
@@ -597,7 +588,7 @@ async function processMappedTvEpisodes(
   }
 
   private async removeStagingDirectory(task: TvMatchingTask, settings: ReturnType<JobCoordinator["getSettings"]>): Promise<void> {
-    const stagingRoot = resolve(settings.workDir, "tv-staging", "unidentified");
+    const stagingRoot = tvStagingDirectory(settings);
     const expectedPath = resolve(stagingRoot, task.jobId);
     const samePath = (left: string, right: string): boolean =>
       process.platform === "win32"
@@ -607,10 +598,10 @@ async function processMappedTvEpisodes(
       throw new Error("TV staging path failed validation");
     }
     const outputRoots = [outputPath(settings, "tv"), outputPath(settings, "movies"), outputPath(settings, "music")];
-    if (outputRoots.some((output) => pathsOverlap(output, stagingRoot))) {
-      throw new Error("TV staging overlaps a configured published-media directory; refusing deletion");
+    const conflict = tvStagingConflicts(settings)[0];
+    if (conflict) {
+      throw new Error(`${tvStagingConflictMessage(stagingRoot, conflict)} Staged data was left untouched.`);
     }
-    const realWorkDir = await realpath(settings.workDir);
     let rootInfo: Awaited<ReturnType<typeof lstat>>;
     try {
       rootInfo = await lstat(stagingRoot);
@@ -622,8 +613,8 @@ async function processMappedTvEpisodes(
       throw new Error("TV staging root is not a regular directory");
     }
     const realStagingRoot = await realpath(stagingRoot);
-    if (!pathIsWithin(realWorkDir, realStagingRoot) || !samePath(realStagingRoot, stagingRoot)) {
-      throw new Error("TV staging root is not a safe child of the configured work directory");
+    if (!pathIsWithin(stagingRoot, realStagingRoot) || !samePath(realStagingRoot, stagingRoot)) {
+      throw new Error("TV staging root does not resolve to its configured location");
     }
     let info: Awaited<ReturnType<typeof lstat>>;
     try {
@@ -678,10 +669,10 @@ async function processMappedTvEpisodes(
     const jobs = this.matchingJobs;
     if (!jobs) return;
     const settings = jobs.getSettings();
-    const stagingRoot = resolve(settings.workDir, "tv-staging", "unidentified");
-    const outputRoots = [outputPath(settings, "tv"), outputPath(settings, "movies"), outputPath(settings, "music")];
-    if (outputRoots.some((output) => pathsOverlap(output, stagingRoot))) {
-      throw new Error("TV staging overlaps a configured published-media directory; refusing orphan cleanup");
+    const stagingRoot = tvStagingDirectory(settings);
+    const conflict = tvStagingConflicts(settings)[0];
+    if (conflict) {
+      throw new Error(`${tvStagingConflictMessage(stagingRoot, conflict)} Orphaned data was left untouched.`);
     }
     let rootInfo;
     try {
@@ -693,10 +684,9 @@ async function processMappedTvEpisodes(
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
       throw new Error("TV staging root is not a regular directory");
     }
-    const realWorkDir = await realpath(settings.workDir);
     const realStagingRoot = await realpath(stagingRoot);
-    if (!pathIsWithin(realWorkDir, realStagingRoot)) {
-      throw new Error("TV staging root resolves outside the configured work directory");
+    if (!pathIsWithin(stagingRoot, realStagingRoot)) {
+      throw new Error("TV staging root resolves outside its configured location");
     }
     for (const entry of await readdir(stagingRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink() ||

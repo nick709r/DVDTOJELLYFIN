@@ -81,6 +81,7 @@ export interface AppSettings {
   musicDir: string;
   tvRootDir: string;
   workDir: string;
+  tvStagingDir: string;
   opticalDevice: string;
   format: OutputFormat;
   quality: number;

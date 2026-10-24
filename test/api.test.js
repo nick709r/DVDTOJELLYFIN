@@ -92,6 +92,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(initial.json().settings.lidarrEnabled, false);
     assert.equal(initial.json().settings.tvDetectionEnabled, true);
     assert.equal(initial.json().settings.tvStagingRetentionDays, null);
+    assert.equal(initial.json().settings.tvStagingDir, "");
     assert.equal(initial.json().settings.tvRootDir, "/srv/jellyfin/TV");
     assert.equal(initial.json().settings.tvValidationLoggingEnabled, true);
     assert.equal(initial.json().settings.musicBrainzContactEmail, "");
@@ -106,6 +107,56 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(emptyDiagnostics.statusCode, 200);
     assert.equal(emptyDiagnostics.json().job, null);
     assert.deepEqual(emptyDiagnostics.json().timeline, []);
+
+    const originalStorageSettings = jobs.getSettings();
+    const storageWorkDir = path.posix.join(linuxRoot, "storage-work");
+    const publishedTvDirectory = path.posix.join(storageWorkDir, "tv-staging");
+    const derivedStagingPath = path.posix.join(publishedTvDirectory, "unidentified");
+    const overlappingProfile = structuredClone(originalStorageSettings.outputDestinations);
+    const storageProfile = overlappingProfile.profiles.find(({ id }) => id === overlappingProfile.activeProfileId);
+    storageProfile.jellyfin.paths = {
+      tv: publishedTvDirectory,
+      movies: path.posix.join(linuxRoot, "published", "Movies"),
+      music: path.posix.join(linuxRoot, "published", "Music")
+    };
+    jobs.saveSettings({
+      workDir: storageWorkDir,
+      tvStagingDir: "",
+      outputDestinations: overlappingProfile
+    });
+    const stagingDiagnostics = await app.inject({ method: "GET", url: "/api/v1/paths/diagnostics" });
+    assert.equal(stagingDiagnostics.statusCode, 200);
+    assert.equal(stagingDiagnostics.json().tvStaging.source, "work-directory");
+    assert.equal(stagingDiagnostics.json().tvStaging.valid, false);
+    assert.equal(stagingDiagnostics.json().tvStaging.conflict.target, "jellyfin");
+    assert.match(stagingDiagnostics.json().tvStaging.message, /contained within/i);
+    assert.equal(stagingDiagnostics.json().resolvedPaths.review, path.resolve(storageWorkDir, "reviews"));
+    assert.equal(stagingDiagnostics.json().activePublishingDirectories.length, 3);
+    const tvStagingAutoFix = await app.inject({ method: "POST", url: "/api/v1/paths/tv-staging/auto-fix" });
+    assert.equal(tvStagingAutoFix.statusCode, 200);
+    assert.equal(tvStagingAutoFix.json().tvStaging.valid, true, JSON.stringify(tvStagingAutoFix.json().tvStaging));
+    assert.equal(tvStagingAutoFix.json().tvStaging.source, "configured");
+    assert.equal(tvStagingAutoFix.json().settings.tvStagingDir, tvStagingAutoFix.json().tvStaging.path);
+    jobs.saveSettings({
+      workDir: originalStorageSettings.workDir,
+      tvStagingDir: originalStorageSettings.tvStagingDir,
+      outputDestinations: originalStorageSettings.outputDestinations
+    });
+    const invalidStagingSetting = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { tvStagingDir: "relative/staging" }
+    });
+    assert.equal(invalidStagingSetting.statusCode, 400);
+    const explicitStagingPath = path.posix.join(linuxRoot, "custom-tv-staging");
+    const savedStagingSetting = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { tvStagingDir: explicitStagingPath }
+    });
+    assert.equal(savedStagingSetting.statusCode, 200);
+    assert.equal(savedStagingSetting.json().settings.tvStagingDir, explicitStagingPath);
+    jobs.saveSettings({ tvStagingDir: originalStorageSettings.tvStagingDir });
 
     const pathCheck = await app.inject({
       method: "POST",

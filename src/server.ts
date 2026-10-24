@@ -2,12 +2,12 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyRateLimit from "@fastify/rate-limit";
 import { randomBytes, scryptSync } from "node:crypto";
-import { access, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { activeJob, dailyJobStats, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
+import { activeJob, dailyJobStats, dbPath, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
 import { clearDiscDiagnostics, getLiveDiscDiagnostics } from "./diagnostics.js";
 import { cancelActiveJob } from "./job-control.js";
@@ -48,6 +48,16 @@ import {
 import type { ReviewCategory, ReviewItem, ReviewSeverity, ReviewStatus } from "./domain/reviews.js";
 import type { ReviewJob } from "./domain/review-jobs.js";
 import { outputDestinationsPayloadIsValid, outputPath, outputTarget, type OutputMedia } from "./output-destinations.js";
+import {
+  activePublishingDirectories,
+  pathsOverlap,
+  recommendedTvStagingDirectory,
+  resolvedStoragePaths,
+  tvStagingConflictExplanation,
+  tvStagingConflicts,
+  tvStagingDirectory,
+  tvStagingPathSource
+} from "./storage-paths.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
 interface ReviewJobActions {
@@ -1747,6 +1757,67 @@ async function ensureWritableDirectory(path: string): Promise<void> {
   if (!check.ok) throw new Error(check.message);
 }
 
+async function checkTvStagingDirectory(path: string): Promise<{ ok: boolean; message: string }> {
+  if (!validAbsolutePath(path) || posix.resolve(path) === posix.sep) {
+    return { ok: false, message: "TV staging path must be an absolute Linux path other than the filesystem root" };
+  }
+  let candidate = posix.resolve(path);
+  let missing = false;
+  while (true) {
+    try {
+      const info = await lstat(candidate);
+      if (info.isSymbolicLink()) return { ok: false, message: `TV staging path resolves through a symbolic link: ${candidate}` };
+      if (!info.isDirectory()) return { ok: false, message: `TV staging path is not a directory: ${candidate}` };
+      const accessCheck = await checkDirectoryPermissions("TV staging directory", candidate, true);
+      return accessCheck.ok
+        ? {
+          ok: true,
+          message: missing
+            ? `The folder does not exist yet; its nearest existing parent is writable: ${candidate}`
+            : "The folder exists and is readable and writable"
+        }
+        : { ok: false, message: accessCheck.message };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return { ok: false, message: error instanceof Error ? error.message : "TV staging path could not be checked" };
+      }
+      missing = true;
+      const parent = posix.dirname(candidate);
+      if (parent === candidate) return { ok: false, message: "No existing parent directory was found for TV staging" };
+      candidate = parent;
+    }
+  }
+}
+
+async function storagePathDiagnostics(settings = getSettings()) {
+  const path = tvStagingDirectory(settings);
+  const conflict = tvStagingConflicts(settings)[0];
+  const accessCheck = conflict ? null : await checkTvStagingDirectory(path);
+  const pendingTasks = repositories.tvMatchingTasks.list().filter((task) => task.status !== "completed");
+  const pathInUse = Boolean(activeJob()) || pendingTasks.length > 0;
+  const recommendedPath = recommendedTvStagingDirectory(settings);
+  const valid = !conflict && Boolean(accessCheck?.ok);
+  const message = conflict
+    ? tvStagingConflictExplanation(path, conflict)
+    : accessCheck?.message ?? "TV staging path validation could not be completed";
+  return {
+    resolvedPaths: resolvedStoragePaths(settings, dbPath),
+    activePublishingDirectories: activePublishingDirectories(settings),
+    tvStaging: {
+      path,
+      source: tvStagingPathSource(settings),
+      valid,
+      message,
+      conflict: conflict ? { target: conflict.target, media: conflict.media, path: conflict.path } : null,
+      recommendedPath,
+      canAutoFix: Boolean(conflict && recommendedPath && !pathInUse),
+      changeBlockedReason: pathInUse
+        ? "Complete or remove active jobs and staged TV tasks before changing the TV staging location."
+        : null
+    }
+  };
+}
+
 function createTvPathReview(path: string, failure: string): void {
   repositories.reviewItems.create({
     category: "configuration_issue",
@@ -1873,6 +1944,36 @@ app.post<{ Body: unknown }>("/api/v1/paths/check", async (request, reply) => {
   return { ok: checks.every((check) => check.ok), checks };
 });
 
+app.get("/api/v1/paths/diagnostics", async () => storagePathDiagnostics());
+
+app.post("/api/v1/paths/tv-staging/auto-fix", async (_request, reply) => {
+  const settings = getSettings();
+  const conflict = tvStagingConflicts(settings)[0];
+  if (!conflict) return reply.code(409).send({ error: "No TV staging overlap needs to be fixed" });
+  const recommendedPath = recommendedTvStagingDirectory(settings);
+  if (!recommendedPath) {
+    return reply.code(409).send({ error: "No safe TV staging location could be found outside active publishing directories" });
+  }
+  const pendingTasks = repositories.tvMatchingTasks.list().filter((task) => task.status !== "completed");
+  if (activeJob() || pendingTasks.length) {
+    return reply.code(409).send({
+      error: "Complete or remove active jobs and staged TV tasks before changing the TV staging location"
+    });
+  }
+  try {
+    await ensureWritableDirectory(recommendedPath);
+  } catch (error) {
+    return reply.code(400).send({
+      error: `Recommended TV staging directory could not be prepared: ${error instanceof Error ? error.message : "path validation failed"}`
+    });
+  }
+  const saved = saveSettings({ tvStagingDir: recommendedPath });
+  app.log.info({ path: recommendedPath }, "TV staging directory moved to a recommended location");
+  events.emit("settings", { opticalDevice: saved.opticalDevice });
+  events.emit("status");
+  return { ok: true, settings: publicSettings(saved), ...await storagePathDiagnostics(saved) };
+});
+
 app.get<{ Querystring: { path?: string } }>("/api/v1/directories", async (request, reply) => {
   const path = request.query.path ?? "/";
   if (!validAbsolutePath(path) || path.length > 4096) {
@@ -1890,14 +1991,6 @@ app.get<{ Querystring: { path?: string } }>("/api/v1/directories", async (reques
     return reply.code(400).send({ error: `Cannot browse ${path}: ${error instanceof Error ? error.message : "directory access failed"}` });
   }
 });
-
-function pathsOverlap(first: string, second: string): boolean {
-  const firstToSecond = relative(resolve(first), resolve(second));
-  const secondToFirst = relative(resolve(second), resolve(first));
-  const isWithin = (path: string): boolean =>
-    path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-  return isWithin(firstToSecond) || isWithin(secondToFirst);
-}
 
 app.get("/api/v1/settings", async () => ({ settings: publicSettings(getSettings()) }));
 
@@ -2059,6 +2152,7 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   }
   const body = request.body as Record<string, unknown>;
   const patch: Partial<AppSettings> = {};
+  const currentSettings = getSettings();
   if ("moviesDir" in body) {
     if (!validAbsolutePath(body.moviesDir)) return reply.code(400).send({ error: "Movies path must be an absolute Linux path" });
     try {
@@ -2113,6 +2207,16 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "Work path must exist and be readable and writable by AutoDisc" });
     }
     patch.workDir = body.workDir;
+  }
+  if ("tvStagingDir" in body) {
+    if (typeof body.tvStagingDir !== "string") {
+      return reply.code(400).send({ error: "TV staging path must be a string" });
+    }
+    const stagingPath = body.tvStagingDir.trim();
+    if (stagingPath && (!validAbsolutePath(stagingPath) || stagingPath.length > 4096 || resolve(stagingPath) === sep)) {
+      return reply.code(400).send({ error: "TV staging path must be an absolute Linux path other than the filesystem root" });
+    }
+    patch.tvStagingDir = stagingPath;
   }
   if ("opticalDevice" in body) {
     if (typeof body.opticalDevice !== "string" ||
@@ -2169,7 +2273,6 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     if (typeof body.tvValidationLoggingEnabled !== "boolean") return reply.code(400).send({ error: "tvValidationLoggingEnabled must be a boolean" });
     patch.tvValidationLoggingEnabled = body.tvValidationLoggingEnabled;
   }
-  const currentSettings = getSettings();
   if ("tvMetadataLookupEnabled" in body) {
     if (typeof body.tvMetadataLookupEnabled !== "boolean") return reply.code(400).send({ error: "tvMetadataLookupEnabled must be a boolean" });
     patch.tvMetadataLookupEnabled = body.tvMetadataLookupEnabled;
@@ -2349,6 +2452,14 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     }
   }
   effectiveSettings = { ...getSettings(), ...patch };
+  if (tvStagingDirectory(effectiveSettings) !== tvStagingDirectory(currentSettings)) {
+    const pendingTasks = repositories.tvMatchingTasks.list().filter((task) => task.status !== "completed");
+    if (activeJob() || pendingTasks.length) {
+      return reply.code(409).send({
+        error: "Complete or remove active jobs and staged TV tasks before changing the TV staging location"
+      });
+    }
+  }
   if (effectiveSettings.lidarrEnabled) {
     if (!effectiveSettings.lidarrApiKey) return reply.code(400).send({ error: "A Lidarr API key is required when Lidarr integration is enabled" });
     if (!effectiveSettings.musicMetadataEnabled) return reply.code(400).send({ error: "Enable MusicBrainz lookup so Lidarr can match the named album and tracks" });
