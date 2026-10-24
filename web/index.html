@@ -14,7 +14,7 @@
         <button class="nav-link active" data-page="dashboard">Dashboard</button>
         <button class="nav-link" data-page="diagnostics">Disc Diagnostics</button>
         <button class="nav-link" data-page="history">History</button>
-        <button class="nav-link" data-page="tv-matching">TV Matching</button>
+        <button class="nav-link" data-page="tv-matching">TV Disc Review</button>
         <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
         <button class="nav-link" data-page="episode-matching">Episode Matching</button>
         <button class="nav-link" data-page="tv-reviews">Review Centre</button>
@@ -84,8 +84,8 @@
       </section>
       <section id="page-tv-matching" class="page hidden">
         <article class="card table-card">
-          <div class="card-heading"><div><p class="eyebrow">STAGED TV DISCS</p><h2>TV Matching Queue</h2></div><button id="refresh-tv-matching" class="button secondary" type="button">Refresh</button></div>
-          <p class="hint">Unidentified discs stay in protected staging until episode assignments are complete and the staged files can be published.</p>
+          <div class="card-heading"><div><p class="eyebrow">STAGED TV DISCS</p><h2>TV Disc Review</h2></div><button id="refresh-tv-matching" class="button secondary" type="button">Refresh</button></div>
+          <p class="hint">Every TV disc is staged in full and kept unpublished until you review and save its episode matches. Unmatched tracks stay here until you choose what to do with them.</p>
           <div id="tv-matching-queue"></div>
         </article>
       </section>
@@ -347,11 +347,7 @@
           <article class="card settings-card"><p class="eyebrow">VERSION 2 · TELEVISION</p><h2>TV Processing</h2>
             <label class="check"><input name="tvDetectionEnabled" type="checkbox"> Enable TV detection and analysis</label>
             <label class="check"><input name="tvValidationLoggingEnabled" type="checkbox"> Capture complete analysis and matching evidence</label>
-            <label>Unidentified TV staging retention<select name="tvStagingRetentionChoice">
-              <option value="never">Never Delete</option><option value="7">7 Days</option><option value="30">30 Days</option><option value="90">90 Days</option><option value="custom">Custom</option>
-            </select></label>
-            <label id="tv-staging-custom-label" class="hidden">Custom retention (days)<input name="tvStagingRetentionCustomDays" type="number" min="1" max="3650" step="1"></label>
-            <p class="hint">Unidentified TV discs are ripped to staging and remain unpublished until identified. The default is Never Delete; custom retention is measured in days.</p>
+            <p class="hint">Every TV disc is staged before review and is never automatically deleted. Choose Delete unmatched tracks or Remove disc from review when you want to clear staged content.</p>
             <p class="hint">Disabling TV detection prevents TV analysis. Disabling evidence capture does not disable TV analysis or review plans.</p>
             <div class="policy-panel">
               <b>Current matching policy (read-only)</b>
@@ -466,6 +462,15 @@
         </div>
       </form>
     </dialog>
+    <dialog id="tv-track-preview-dialog" class="tv-track-preview-dialog">
+      <div class="tv-track-preview-heading">
+        <div><p class="eyebrow">STAGED TRACK PREVIEW</p><h2 id="tv-track-preview-title">Track preview</h2></div>
+        <button id="tv-track-preview-close" class="button secondary" type="button">Close</button>
+      </div>
+      <p id="tv-track-preview-status" class="hint" role="status">Preparing preview…</p>
+      <video id="tv-track-preview-video" controls playsinline preload="metadata"></video>
+      <div id="tv-track-preview-thumbnails" class="tv-track-preview-thumbnails" aria-label="Preview thumbnails"></div>
+    </dialog>
     <dialog id="forget-disc-dialog">
       <div class="delete-confirmation">
         <h2>Forget Disc?</h2>
@@ -488,6 +493,17 @@
         <div class="metadata-actions">
           <button id="tv-delete-confirm" class="button danger" type="button">Delete</button>
           <button id="tv-delete-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="tv-unmatched-delete-dialog">
+      <div class="delete-confirmation">
+        <p class="eyebrow">TV DISC REVIEW</p><h2>Delete unmatched tracks?</h2>
+        <p>Only tracks without confirmed episode matches will be deleted. Matched tracks and their mappings will remain staged.</p>
+        <p><strong>This cannot be undone.</strong></p>
+        <div class="metadata-actions">
+          <button id="tv-unmatched-delete-cancel" class="button secondary" type="button">Keep tracks</button>
+          <button id="tv-unmatched-delete-confirm" class="button danger" type="button">Delete unmatched tracks</button>
         </div>
       </div>
     </dialog>

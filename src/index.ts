@@ -31,10 +31,43 @@ async function main(): Promise<void> {
     updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch),
     remove: (id) => providerRuntime!.reviewWorkspaces.remove(id)
   });
+  const continueTvTask = async (jobId: string): Promise<void> => {
+    try {
+      await providerRuntime!.dvdWorkflow.continueTvMatching(jobId);
+    } catch (error) {
+      const task = jobs.getTvMatchingTask(jobId);
+      if (task?.status === "ready-to-publish") {
+        jobs.updateTvMatchingTask(jobId, {
+          status: "awaiting-mapping",
+          failure: error instanceof Error ? error.message : "TV publishing could not resume"
+        });
+      }
+      events.emit("status");
+      throw error;
+    }
+  };
   setTvMatchingActions({
-    continue: (jobId) => providerRuntime!.dvdWorkflow.continueTvMatching(jobId),
+    continue: continueTvTask,
     remove: (jobId) => providerRuntime!.dvdWorkflow.removeTvMatchingTask(jobId)
   });
+  let resumingReadyTvTask = false;
+  const resumeReadyTvTask = (): void => {
+    if (resumingReadyTvTask || !providerRuntime || providerRuntime.jobs.activeJob()) return;
+    const task = providerRuntime.jobs.listTvMatchingTasks().find((candidate) =>
+      candidate.status === "ready-to-publish");
+    if (!task) return;
+    resumingReadyTvTask = true;
+    void continueTvTask(task.jobId).catch((error: unknown) => {
+      log("error", "tv-matching", "Automatic continuation of a fully matched TV disc failed", {
+        jobId: task.jobId,
+        error: error instanceof Error ? error.message : "unknown TV continuation failure"
+      });
+    }).finally(() => {
+      resumingReadyTvTask = false;
+      resumeReadyTvTask();
+    });
+  };
+  events.on("status", resumeReadyTvTask);
   setDiscApprovalAction(async (item) => {
     if (providerRuntime!.jobs.activeJob()) throw new Error("Wait for the active disc job to finish before approving another disc");
     const signature = item.errorDetails?.detectionSignature;
@@ -68,14 +101,15 @@ async function main(): Promise<void> {
       error: error instanceof Error ? error.message : "unknown TV staging recovery failure"
     });
   }
-  const retentionTimer = setInterval(() => {
+  resumeReadyTvTask();
+  const stagingMaintenanceTimer = setInterval(() => {
     void providerRuntime?.dvdWorkflow.pruneExpiredTvMatchingTasks().catch((error: unknown) => {
-      log("error", "tv-staging", "TV staging retention cleanup failed", {
-        error: error instanceof Error ? error.message : "unknown retention cleanup failure"
+      log("error", "tv-staging", "TV staging maintenance failed", {
+        error: error instanceof Error ? error.message : "unknown staging maintenance failure"
       });
     });
   }, 6 * 60 * 60 * 1000);
-  retentionTimer.unref();
+  stagingMaintenanceTimer.unref();
   await startServer();
   const shutdownController = new AbortController();
   const stopMonitor = startDiscMonitor(
@@ -93,8 +127,9 @@ async function main(): Promise<void> {
     shutdownController.abort();
     shuttingDown = (async () => {
       await stopMonitor();
-      clearInterval(retentionTimer);
+      clearInterval(stagingMaintenanceTimer);
       await stopServer();
+      events.removeListener("status", resumeReadyTvTask);
       await providerRuntime?.registry.disposeAll();
       repositories.close();
     })();

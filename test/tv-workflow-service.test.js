@@ -349,6 +349,7 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
     }),
     lastDiscFingerprint: () => null,
     listDiscRecoveries: () => [],
+    listTvMatchingTasks: () => [],
     recordDiscDetection: () => recovery,
     begin: () => jobContext,
     record: (...args) => jobCalls.push(["record", ...args]),

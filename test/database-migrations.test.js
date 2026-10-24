@@ -50,7 +50,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 26);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 27);
   assert.deepEqual(
     db.pragma("table_info(media_type_override_audit)").map((column) => column.name),
     ["id", "fingerprint", "job_id", "original_type", "new_type", "username", "reason", "created_at"]
@@ -131,6 +131,35 @@ test("database migrations preserve legacy job history and add current columns", 
   });
   assert.equal(task.jobId, "staged-tv-job");
   assert.equal(repositories.tvMatchingTasks.list().length, 1);
+  repositories.jobs.finish(task.jobId, "review", null);
+  repositories.jobs.add("ready-tv-job", "Matched TV disc", "ready-tv-fingerprint", "dvd");
+  const readyTask = repositories.tvMatchingTasks.create({
+    jobId: "ready-tv-job",
+    fingerprint: "ready-tv-fingerprint",
+    status: "ready-to-publish",
+    stagingPath: "/work/tv-staging/unidentified/ready-tv-job",
+    source: {
+      sourceId: "dvd0",
+      providerId: "source.video-dvd.makemkv",
+      mediaKind: "dvd",
+      label: "Example series",
+      manifest: { mediaKind: "dvd", items: [], attributes: {} }
+    },
+    diagnostics: {},
+    files: { "1": "episode01.mkv" },
+    assignments: [{
+      trackId: "1",
+      title: "Pilot",
+      durationSeconds: 1200,
+      episodeCandidates: [],
+      selectedEpisodes: [{ seriesId: "series-1", seasonNumber: 1, episodeNumber: 1, title: "Pilot" }],
+      confirmed: true
+    }]
+  });
+  assert.equal(readyTask.status, "ready-to-publish");
+  assert.equal(repositories.tvMatchingTasks.get(readyTask.jobId).assignments[0].confirmed, true);
+  repositories.jobs.finish(readyTask.jobId, "review", null);
+  repositories.tvMatchingTasks.deleteTemporaryRecords(readyTask.jobId, readyTask.fingerprint);
   repositories.tvMatchingTasks.update(task.jobId, { failure: "temporary issue" });
   assert.equal(repositories.tvMatchingTasks.get(task.jobId).failure, "temporary issue");
   repositories.tvMatchingTasks.update(task.jobId, { failure: null });
@@ -145,6 +174,79 @@ test("database migrations preserve legacy job history and add current columns", 
   migrateDatabase(db, defaultSettings);
   assert.equal(db.prepare("SELECT 1 FROM settings WHERE key = ?").get("tvStoreAnalysisEvidence"), undefined);
   db.close();
+});
+
+test("migration 27 preserves existing TV matching records and accepts review states", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  repositories.jobs.add("existing-tv-job", "Existing TV disc", "existing-tv-fingerprint", "dvd");
+  const task = repositories.tvMatchingTasks.create({
+    jobId: "existing-tv-job",
+    fingerprint: "existing-tv-fingerprint",
+    status: "awaiting-mapping",
+    stagingPath: "/work/tv-staging/existing-tv-job",
+    source: {
+      sourceId: "dvd0",
+      providerId: "source.video-dvd.makemkv",
+      mediaKind: "dvd",
+      label: "Example series",
+      manifest: { mediaKind: "dvd", items: [], attributes: {} }
+    },
+    diagnostics: { confidence: 0.62 },
+    files: { "1": "episode01.mkv" },
+    assignments: [{
+      trackId: "1",
+      title: "Pilot",
+      durationSeconds: 1200,
+      episodeCandidates: [],
+      selectedEpisodes: [],
+      confirmed: false
+    }]
+  });
+  repositories.jobs.finish(task.jobId, "review", null);
+
+  db.exec(`
+    ALTER TABLE tv_matching_tasks RENAME TO tv_matching_tasks_v27;
+    DROP INDEX tv_matching_tasks_status_updated;
+    DROP INDEX tv_matching_tasks_fingerprint;
+    CREATE TABLE tv_matching_tasks (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (
+        'awaiting-identification', 'awaiting-mapping', 'processing', 'completed'
+      )),
+      staging_path TEXT NOT NULL,
+      source_json TEXT NOT NULL,
+      diagnostics_json TEXT NOT NULL,
+      files_json TEXT NOT NULL,
+      assignments_json TEXT NOT NULL,
+      failure TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO tv_matching_tasks SELECT * FROM tv_matching_tasks_v27;
+    DROP TABLE tv_matching_tasks_v27;
+    CREATE INDEX tv_matching_tasks_status_updated
+      ON tv_matching_tasks(status, updated_at DESC);
+    CREATE INDEX tv_matching_tasks_fingerprint ON tv_matching_tasks(fingerprint);
+    DELETE FROM schema_migrations WHERE version = 27;
+  `);
+  assert.throws(() => db.prepare("UPDATE tv_matching_tasks SET status = 'partially-matched' WHERE job_id = ?")
+    .run(task.jobId), /CHECK constraint failed/);
+
+  migrateDatabase(db, defaultSettings);
+
+  const restoredTask = repositories.tvMatchingTasks.get(task.jobId);
+  assert.equal(restoredTask.status, "awaiting-mapping");
+  assert.equal(restoredTask.fingerprint, task.fingerprint);
+  assert.deepEqual(restoredTask.files, { "1": "episode01.mkv" });
+  assert.equal(restoredTask.assignments[0].title, "Pilot");
+  assert.equal(restoredTask.diagnostics.confidence, 0.62);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tv_matching_tasks").get().count, 1);
+  repositories.tvMatchingTasks.update(task.jobId, { status: "partially-matched" });
+  assert.equal(repositories.tvMatchingTasks.get(task.jobId).status, "partially-matched");
+  repositories.close();
 });
 
 test("setup state repository completes once and migrates legacy administrator credentials", () => {
@@ -192,7 +294,7 @@ test("destination migration preserves saved legacy library paths and routes exis
   });
   assert.equal(profile.routes.music, "lidarr");
   assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
-  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 26);
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 27);
   db.close();
 });
 
@@ -204,7 +306,7 @@ test("Migration 26 is repeatable and media overrides survive restart and rescan"
   try {
     migrateDatabase(db, defaultSettings);
     migrateDatabase(db, defaultSettings);
-    assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 26);
+    assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 27);
     repositories.discRecovery.recordDetection("persistent-override", "dvd", "movie", 0.81);
     repositories.discRecovery.update("persistent-override", {
       finalMediaType: "tv_series",

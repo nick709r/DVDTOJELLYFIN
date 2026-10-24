@@ -444,4 +444,43 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (26, ?)")
       .run(new Date().toISOString());
   }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 27").get()) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE tv_matching_tasks RENAME TO tv_matching_tasks_v26;
+        DROP INDEX IF EXISTS tv_matching_tasks_status_updated;
+        DROP INDEX IF EXISTS tv_matching_tasks_fingerprint;
+        CREATE TABLE tv_matching_tasks (
+          job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+          fingerprint TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN (
+            'awaiting-identification', 'awaiting-mapping', 'partially-matched',
+            'ready-to-publish', 'processing', 'completed'
+          )),
+          staging_path TEXT NOT NULL,
+          source_json TEXT NOT NULL,
+          diagnostics_json TEXT NOT NULL,
+          files_json TEXT NOT NULL,
+          assignments_json TEXT NOT NULL,
+          failure TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO tv_matching_tasks (
+          job_id, fingerprint, status, staging_path, source_json, diagnostics_json,
+          files_json, assignments_json, failure, created_at, updated_at
+        )
+        SELECT job_id, fingerprint, status, staging_path, source_json, diagnostics_json,
+          files_json, assignments_json, failure, created_at, updated_at
+        FROM tv_matching_tasks_v26;
+        DROP TABLE tv_matching_tasks_v26;
+        CREATE INDEX tv_matching_tasks_status_updated
+          ON tv_matching_tasks(status, updated_at DESC);
+        CREATE INDEX tv_matching_tasks_fingerprint
+          ON tv_matching_tasks(fingerprint);
+      `);
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (27, ?)")
+        .run(new Date().toISOString());
+    })();
+  }
 }

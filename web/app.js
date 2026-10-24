@@ -1106,66 +1106,200 @@ async function loadTvMatching() {
     : '<div class="empty-state">No TV episode suggestions are available yet.</div>';
 }
 
+const tvEpisodeGuides = new Map();
+
+function tvEpisodeGuideKey(recovery) {
+  return `${recovery.metadataProvider}:${recovery.providerId}:${recovery.seasonNumber}`;
+}
+
+async function loadTvEpisodeGuides(entries) {
+  await Promise.all(entries.map(async ({ task, recovery }) => {
+    if (!recovery?.seriesName || recovery.seasonNumber === null || recovery.seasonNumber === undefined ||
+      !recovery.providerId || !["tvdb", "tmdb", "imdb"].includes(recovery.metadataProvider)) return;
+    const key = tvEpisodeGuideKey(recovery);
+    if (tvEpisodeGuides.has(key)) return;
+    try {
+      const { episodes } = await api("/api/v1/tv/metadata/episodes/lookup", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: recovery.metadataProvider,
+          providerId: recovery.providerId,
+          seasonNumber: recovery.seasonNumber
+        })
+      });
+      tvEpisodeGuides.set(key, { episodes, error: "" });
+    } catch (error) {
+      tvEpisodeGuides.set(key, { episodes: [], error: error.message });
+    }
+  }));
+}
+
+function tvEpisodeOptions(task, recovery, assignment) {
+  const episodes = new Map();
+  const guide = recovery ? tvEpisodeGuides.get(tvEpisodeGuideKey(recovery)) : null;
+  for (const episode of guide?.episodes || []) {
+    if (episode.seasonNumber === recovery.seasonNumber) episodes.set(episode.episodeNumber, episode);
+  }
+  for (const candidate of assignment.episodeCandidates || []) {
+    for (const episode of candidate.episodes || []) {
+      if (episode.seasonNumber === recovery?.seasonNumber) episodes.set(episode.episodeNumber, episode);
+    }
+  }
+  for (let episodeNumber = 0; episodeNumber <= 100; episodeNumber += 1) {
+    if (!episodes.has(episodeNumber)) episodes.set(episodeNumber, {
+      seriesId: recovery?.providerId || recovery?.seriesName || task.fingerprint,
+      seasonNumber: recovery?.seasonNumber ?? 0,
+      episodeNumber,
+      title: ""
+    });
+  }
+  return [...episodes.values()].sort((left, right) => left.episodeNumber - right.episodeNumber);
+}
+
+function tvEpisodeOptionLabel(episode) {
+  const code = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(episode.episodeNumber).padStart(2, "0")}`;
+  return `${code}${episode.title ? ` - ${episode.title}` : ""}`;
+}
+
+function tvMatchingStatus(progress, task) {
+  if (progress.fullyMatched || task.status === "processing") return { label: task.status === "processing" ? "Publishing" : "Fully matched", className: "fully-matched" };
+  if (progress.matchedCount) return { label: "Partially matched", className: "partially-matched" };
+  return task.status === "awaiting-identification"
+    ? { label: "Identification required", className: "unidentified" }
+    : { label: "Needs review", className: "unidentified" };
+}
+
 function renderTvMatchingTask(entry) {
   const { task, recovery, mediaTypeAudit = [] } = entry;
-  const series = recovery?.seriesName;
-  const runtime = task.assignments.length
-    ? Math.round(task.assignments.reduce((sum, assignment) => sum + assignment.durationSeconds, 0) /
-      task.assignments.length / 60)
-    : 0;
-  const assignments = task.assignments.map((assignment) => {
-    const suggestion = assignment.selectedEpisodes?.length
-      ? assignment.selectedEpisodes
-      : assignment.episodeCandidates[0]?.episodes || [];
-    const episodeNumbers = suggestion.map((episode) => episode.episodeNumber).join(", ");
-    const suggestionText = assignment.episodeCandidates.slice(0, 3).map((candidate) =>
-      `${candidate.episodes.map((episode) => `S${episode.seasonNumber}E${String(episode.episodeNumber).padStart(2, "0")}`).join("+")} (${Math.round(candidate.confidence * 100)}%)`
-    ).join(" · ");
-    return `<div class="tv-assignment">
-      <div><b>Track ${escapeHtml(assignment.trackId)} · ${escapeHtml(assignment.title)}</b><span>${formatDuration(assignment.durationSeconds)}</span></div>
-      <label>Episode number(s), comma-separated<input type="text" inputmode="numeric" data-track-id="${escapeHtml(assignment.trackId)}" value="${escapeHtml(episodeNumbers)}" placeholder="e.g. 1 or 1, 2"></label>
-      <small class="muted">${suggestionText ? `Suggestions: ${escapeHtml(suggestionText)}` : "No automatic episode suggestion."}</small>
-    </div>`;
-  }).join("");
-  const canMap = Boolean(series && recovery?.seasonNumber !== null);
+  const series = recovery?.seriesName || "";
+  const season = recovery?.seasonNumber;
+  const discNumber = recovery?.discNumber;
+  const metadata = recovery?.importedMetadata || {};
+  const yearValue = metadata.year ?? metadata.yearFirstAired ?? metadata.firstAired;
+  const year = typeof yearValue === "string" && /^\d{4}/.test(yearValue)
+    ? yearValue.slice(0, 4) : Number.isInteger(yearValue) ? String(yearValue) : "";
+  const overview = typeof metadata.overview === "string" ? metadata.overview : "";
+  const poster = recovery?.artworkReferences?.find((asset) => asset.kind === "poster" || asset.kind === "season-poster")?.url;
+  const progress = entry.progress || {
+    matchedCount: task.assignments.filter((assignment) => assignment.confirmed && assignment.selectedEpisodes?.length).length,
+    totalCount: task.assignments.length,
+    unmatchedCount: task.assignments.length,
+    fullyMatched: false
+  };
+  const status = tvMatchingStatus(progress, task);
   const confidence = recovery?.detectedConfidence ?? task.diagnostics?.confidence;
+  const confidenceLabel = confidence === undefined || confidence === null
+    ? "Unavailable"
+    : `${confidence >= 0.9 ? "High" : confidence >= 0.72 ? "Medium" : "Low"} · ${Math.round(confidence * 100)}%`;
+  const totalRuntime = Math.round(task.assignments.reduce((sum, assignment) =>
+    sum + assignment.durationSeconds, 0) / 60);
+  const canMap = Boolean(series && season !== null && season !== undefined);
+  const guide = recovery ? tvEpisodeGuides.get(tvEpisodeGuideKey(recovery)) : null;
+  const trackRows = task.assignments.map((assignment) => {
+    const options = tvEpisodeOptions(task, recovery, assignment);
+    const selectedEpisodes = assignment.confirmed
+      ? assignment.selectedEpisodes || []
+      : assignment.selectedEpisodes?.length
+        ? assignment.selectedEpisodes
+        : assignment.episodeCandidates?.[0]?.episodes || [];
+    const selectedNumbers = new Set(selectedEpisodes.map((episode) => episode.episodeNumber));
+    const selectRows = [...selectedNumbers].length ? [...selectedNumbers] : [null];
+    const selectMarkup = selectRows.map((selectedNumber) => `
+      <select data-episode-select data-track-id="${escapeHtml(assignment.trackId)}">
+        <option value="">Not matched</option>
+        ${options.map((episode) => `<option value="${episode.episodeNumber}" data-title="${escapeHtml(episode.title || "")}"${selectedNumber === episode.episodeNumber ? " selected" : ""}>${escapeHtml(tvEpisodeOptionLabel(episode))}</option>`).join("")}
+      </select>`).join("");
+    const suggestion = assignment.confirmed ? "" : selectedEpisodes.length
+      ? `<small class="tv-track-suggestion">Suggested match · save to confirm</small>`
+      : "";
+    return `<article class="tv-track-row" data-track-id="${escapeHtml(assignment.trackId)}">
+      <div class="tv-track-heading">
+        <div><span class="tv-track-number">TRACK ${escapeHtml(assignment.trackId)}</span><h4>${escapeHtml(assignment.title)}</h4></div>
+        <div class="tv-track-tech"><span>${formatDuration(assignment.durationSeconds)}</span><span data-track-resolution>${escapeHtml(assignment.resolution || "Resolution unavailable")}</span></div>
+      </div>
+      <div class="tv-track-preview">
+        <div class="tv-track-thumbnail-strip" data-thumbnail-strip><span class="tv-thumbnail-placeholder">Preview frames appear here</span></div>
+        <button class="button secondary tv-track-preview-button" type="button" data-track-id="${escapeHtml(assignment.trackId)}">Preview</button>
+      </div>
+      ${canMap ? `<div class="tv-track-mapping">
+        <label>Match to episode<input type="search" data-episode-search placeholder="Search episode title or number" autocomplete="off"></label>
+        <div class="tv-episode-select-list" data-episode-select-list>${selectMarkup}</div>
+        <div class="tv-track-map-actions"><button class="text-button tv-add-episode" type="button" data-track-id="${escapeHtml(assignment.trackId)}">+ Add another episode</button><span data-episode-preview class="tv-episode-preview">Not matched</span></div>
+        ${suggestion}
+      </div>` : ""}
+    </article>`;
+  }).join("");
   const mediaTypeOptions = [
     ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"]
   ];
   if (recovery && !mediaTypeOptions.some(([value]) => value === recovery.finalMediaType)) {
     mediaTypeOptions.unshift([recovery.finalMediaType, `Current: ${recovery.finalMediaType}`]);
   }
-  return `<article class="tv-plan-card tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
-    <div class="tv-plan-heading"><div><b>${escapeHtml(series || `${task.source.label || "Unidentified TV disc"}?`)}</b>
-      <span class="list-sub">${escapeHtml(task.assignments.length)} episodes · about ${runtime} minutes each · Source label: ${escapeHtml(task.source.label || "Unavailable")}</span></div>
-      <span class="result ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></div>
-    <p>${series ? "Identification status" : "Identification required"} · Confidence: ${confidence === undefined || confidence === null ? "Unavailable" : `${Math.round(confidence * 100)}%`} · Workflow: ${escapeHtml(task.status)}</p>
-    ${series ? `<p>Season ${escapeHtml(recovery.seasonNumber ?? "unknown")} · Disc ${escapeHtml(recovery.discNumber ?? "unknown")}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} · ${escapeHtml(recovery.metadataProvider || "manual")}</p>` : ""}
-    ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
-    ${recovery ? `<form class="tv-task-media-override" data-fingerprint="${escapeHtml(task.fingerprint)}">
-      <p class="hint">Automatic Classification: ${escapeHtml(recovery.detectedMediaType)} · Manual Override: ${escapeHtml(recovery.mediaTypeOverridden ? recovery.finalMediaType : "None")}${recovery.mediaTypeOverridden ? " (active)" : ""}</p>
-      <label>Media type<select name="mediaType">${mediaTypeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${recovery.finalMediaType === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
-      <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
-      <button type="submit" class="button secondary">Save classification</button>
-    </form>` : ""}
-    <div class="tv-actions">
-      <button type="button" class="button primary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Series / Season / Disc" : "Identify"}</button>
-      ${canMap ? `<button type="button" class="button secondary tv-task-continue" data-job-id="${escapeHtml(task.jobId)}">${task.assignments.length ? "Save Mappings & Continue" : "Continue"}</button>` : ""}
-      <button type="button" class="button danger tv-task-delete" data-job-id="${escapeHtml(task.jobId)}">Delete</button>
+  const seasonText = season === null || season === undefined ? "Season not identified" : `Season ${season}`;
+  const discText = discNumber === null || discNumber === undefined ? "Disc number not specified" : `Disc ${discNumber}`;
+  return `<article class="tv-disc-review tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
+    <div class="tv-disc-summary">
+      ${poster
+        ? `<img class="tv-disc-poster" src="${escapeHtml(poster)}" alt="${escapeHtml(series ? `${series} poster` : "TV series poster")}" loading="lazy" referrerpolicy="no-referrer">`
+        : '<div class="tv-disc-poster tv-disc-poster-placeholder" aria-hidden="true">TV</div>'}
+      <div class="tv-disc-info">
+        <p class="eyebrow">STAGED TV DISC</p>
+        <h3>${escapeHtml(series || task.source.label || "Unidentified TV disc")}</h3>
+        <p class="tv-disc-season">${escapeHtml(seasonText)}${discNumber === null || discNumber === undefined ? "" : ` · ${escapeHtml(discText)}`}</p>
+        <div class="tv-disc-facts">
+          ${year ? `<span>${escapeHtml(year)}</span>` : ""}
+          <span>${task.assignments.length} tracks</span>
+          <span>${totalRuntime} min</span>
+          <span class="tv-match-confidence">Confidence ${escapeHtml(confidenceLabel)}</span>
+        </div>
+        <p class="tv-disc-identifier">Disc ID <code>${escapeHtml(task.fingerprint)}</code></p>
+        ${overview ? `<p class="tv-disc-overview">${escapeHtml(overview)}</p>` : ""}
+      </div>
+      <div class="tv-disc-progress">
+        <span class="tv-match-status ${status.className}">${escapeHtml(status.label)}</span>
+        <strong>Matched ${progress.matchedCount} / ${progress.totalCount}</strong>
+        <span>${progress.unmatchedCount} unmatched</span>
+      </div>
     </div>
-    ${canMap && assignments ? `<div class="tv-task-assignments">${assignments}</div>` : ""}
-    ${mediaTypeAudit.length ? `<details><summary>Media classification audit (${mediaTypeAudit.length})</summary><ul>${mediaTypeAudit.map((record) =>
-      `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
-    ).join("")}</ul></details>` : ""}
-    <details><summary>Disc diagnostics</summary><pre>${escapeHtml(JSON.stringify(task.diagnostics, null, 2))}</pre></details>
+    ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
+    <div class="tv-disc-actions">
+      <button type="button" class="button primary tv-task-open">${canMap ? "Open Matching" : "Identify Series"}</button>
+      <button type="button" class="button secondary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Identification" : "Search for Series"}</button>
+      ${progress.matchedCount > 0 && progress.unmatchedCount > 0
+        ? `<button type="button" class="button danger tv-delete-unmatched">Delete unmatched tracks</button>` : ""}
+      <button type="button" class="text-button tv-task-delete">Remove disc from review</button>
+    </div>
+    <section class="tv-disc-matching hidden" data-matching-panel>
+      ${canMap ? `<div class="tv-matching-guide">
+        <div><h4>Match each staged track</h4><p>Suggestions are not confirmed until you save. Unmatched tracks remain safely staged.</p></div>
+        ${guide?.error ? `<p class="tv-episode-guide-error">Episode guide unavailable: ${escapeHtml(guide.error)}. You can still choose episode numbers.</p>` : ""}
+      </div>
+      <div class="tv-track-list">${trackRows}</div>
+      <div class="tv-save-workflow">
+        <p>Matched <b data-matched-count>${progress.matchedCount} / ${progress.totalCount}</b> · Unmatched <b data-unmatched-count>${progress.unmatchedCount}</b></p>
+        <button type="button" class="button primary tv-task-save">${progress.fullyMatched ? "Save matches & publish" : "Save progress"}</button>
+      </div>` : `<div class="tv-matching-guide"><h4>Identify this disc to start episode matching</h4><p>The complete disc is already staged and will not be published before you review it.</p></div>`}
+      ${recovery ? `<details class="tv-classification-details"><summary>Media classification</summary>
+        <form class="tv-task-media-override" data-fingerprint="${escapeHtml(task.fingerprint)}">
+          <p class="hint">Automatic Classification: ${escapeHtml(recovery.detectedMediaType)} · Manual Override: ${escapeHtml(recovery.mediaTypeOverridden ? recovery.finalMediaType : "None")}${recovery.mediaTypeOverridden ? " (active)" : ""}</p>
+          <label>Media type<select name="mediaType">${mediaTypeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${recovery.finalMediaType === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
+          <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
+          <button type="submit" class="button secondary">Save classification</button>
+        </form>
+      </details>` : ""}
+      ${mediaTypeAudit.length ? `<details><summary>Classification history (${mediaTypeAudit.length})</summary><ul>${mediaTypeAudit.map((record) =>
+        `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+      ).join("")}</ul></details>` : ""}
+    </section>
   </article>`;
 }
 
 async function loadTvMatchingTasks() {
   const { tasks } = await api("/api/v1/tv/matching");
+  await loadTvEpisodeGuides(tasks);
   $("#tv-matching-queue").innerHTML = tasks.length
     ? tasks.map(renderTvMatchingTask).join("")
-    : '<div class="empty-state">No staged TV discs are awaiting identification.</div>';
+    : '<div class="empty-state">No staged TV discs need review.</div>';
 }
 
 const forgetDiscDialog = $("#forget-disc-dialog");
@@ -1237,40 +1371,265 @@ $("#tv-delete-confirm").addEventListener("click", async () => {
   }
 });
 
-$("#tv-matching-queue").addEventListener("click", async (event) => {
-  const deleteButton = event.target.closest(".tv-task-delete");
-  if (deleteButton) {
-    requestTvTaskDeletion(deleteButton.dataset.jobId);
-    return;
-  }
-  const continueButton = event.target.closest(".tv-task-continue");
-  if (!continueButton) return;
-  continueButton.disabled = true;
+const tvUnmatchedDeleteDialog = $("#tv-unmatched-delete-dialog");
+let tvUnmatchedDeleteJobId = null;
+
+$("#tv-unmatched-delete-cancel").addEventListener("click", () => {
+  tvUnmatchedDeleteJobId = null;
+  tvUnmatchedDeleteDialog.close();
+});
+$("#tv-unmatched-delete-confirm").addEventListener("click", async () => {
+  if (!tvUnmatchedDeleteJobId) return;
+  const button = $("#tv-unmatched-delete-confirm");
+  button.disabled = true;
   try {
-    const taskId = continueButton.dataset.jobId;
-    const card = continueButton.closest(".tv-matching-task");
-    const assignments = [...card.querySelectorAll("[data-track-id]")].map((input) => {
-      const episodeNumbers = input.value.split(",").map((value) => value.trim()).filter(Boolean)
-        .map(Number);
-      return { trackId: input.dataset.trackId, episodeNumbers };
+    const result = await api(`/api/v1/tv/matching/${encodeURIComponent(tvUnmatchedDeleteJobId)}/unmatched`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirmed: true })
     });
-    if (assignments.some((assignment) => assignment.episodeNumbers.length === 0 ||
-      assignment.episodeNumbers.some((number) => !Number.isInteger(number) || number < 0 || number > 1000))) {
-      throw new Error("Enter valid episode numbers for each staged track; use commas for multi-episode tracks.");
-    }
-    if (assignments.length) {
-      await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
-        method: "PUT", body: JSON.stringify({ assignments })
-      });
-    }
-    await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/continue`, { method: "POST" });
-    notify("TV processing resumed from staged files.");
-    await loadTvMatchingTasks();
+    tvUnmatchedDeleteDialog.close();
+    tvUnmatchedDeleteJobId = null;
+    notify(result.continuation === "started"
+      ? "Unmatched tracks were deleted. The fully matched disc is now publishing."
+      : "Unmatched tracks were deleted. Publishing will continue when the active job finishes.");
+    await Promise.all([loadTvMatchingTasks(), loadTvReviews()]);
   } catch (error) {
     notify(error.message, true);
   } finally {
-    continueButton.disabled = false;
+    button.disabled = false;
   }
+});
+
+function updateTvTrackSelection(trackRow) {
+  const selects = [...trackRow.querySelectorAll("[data-episode-select]")];
+  const selected = selects.map((select) => select.selectedOptions[0]).filter((option) => option?.value);
+  const preview = trackRow.querySelector("[data-episode-preview]");
+  preview.textContent = selected.length
+    ? selected.map((option) => option.textContent.trim()).join(" + ")
+    : "Not matched";
+  preview.classList.toggle("matched", selected.length > 0 && selected.length === selects.length);
+}
+
+function updateTvTaskProgress(card) {
+  const trackRows = [...card.querySelectorAll(".tv-track-row")];
+  const matchedCount = trackRows.filter((row) => {
+    const selects = [...row.querySelectorAll("[data-episode-select]")];
+    return selects.length > 0 && selects.every((select) => Boolean(select.value));
+  }).length;
+  const unmatchedCount = trackRows.length - matchedCount;
+  const matched = card.querySelector("[data-matched-count]");
+  const unmatched = card.querySelector("[data-unmatched-count]");
+  if (matched) matched.textContent = `${matchedCount} / ${trackRows.length}`;
+  if (unmatched) unmatched.textContent = String(unmatchedCount);
+  const save = card.querySelector(".tv-task-save");
+  if (save) save.textContent = unmatchedCount === 0 ? "Save matches & publish" : "Save progress";
+}
+
+function filterTvEpisodeOptions(trackRow) {
+  const query = trackRow.querySelector("[data-episode-search]").value.trim().toLocaleLowerCase();
+  for (const select of trackRow.querySelectorAll("[data-episode-select]")) {
+    for (const option of select.options) {
+      option.hidden = Boolean(query && option.value && !option.textContent.toLocaleLowerCase().includes(query));
+    }
+  }
+}
+
+async function saveTvTaskAssignments(button) {
+  const card = button.closest(".tv-matching-task");
+  const taskId = card.dataset.jobId;
+  button.disabled = true;
+  try {
+    const assignments = [...card.querySelectorAll(".tv-track-row")].map((row) => {
+      const selectedOptions = [...row.querySelectorAll("[data-episode-select]")]
+        .map((select) => select.selectedOptions[0])
+        .filter((option) => option?.value);
+      const episodeNumbers = selectedOptions.map((option) => Number(option.value));
+      if (new Set(episodeNumbers).size !== episodeNumbers.length) {
+        throw new Error(`Track ${row.dataset.trackId} contains the same episode more than once.`);
+      }
+      return {
+        trackId: row.dataset.trackId,
+        episodeNumbers,
+        episodeTitles: selectedOptions.map((option) => option.dataset.title || "")
+      };
+    });
+    const result = await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
+      method: "PUT",
+      body: JSON.stringify({ assignments })
+    });
+    const progress = result.progress;
+    if (result.continuation === "started") {
+      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Publishing has resumed automatically.`);
+    } else if (result.continuation === "queued") {
+      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Publishing will resume after the active job.`);
+    } else if (result.continuation === "blocked") {
+      notify("Matches were saved, but the manual media classification must be set to TV Series before publishing.", true);
+    } else {
+      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Unmatched tracks remain safely staged.`);
+    }
+    await Promise.all([loadTvMatchingTasks(), loadTvReviews()]);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+const tvPreviewDialog = $("#tv-track-preview-dialog");
+const tvPreviewVideo = $("#tv-track-preview-video");
+let tvPreviewTrackRow = null;
+
+function addPreviewThumbnail(strip, dataUrl, time, label) {
+  const button = document.createElement("button");
+  button.className = "tv-preview-thumbnail";
+  button.type = "button";
+  button.dataset.seek = String(time);
+  button.setAttribute("aria-label", `Seek to ${label}`);
+  const image = document.createElement("img");
+  image.src = dataUrl;
+  image.alt = label;
+  button.append(image);
+  strip.append(button);
+}
+
+async function captureTvPreviewFrames() {
+  const status = $("#tv-track-preview-status");
+  const dialogStrip = $("#tv-track-preview-thumbnails");
+  dialogStrip.replaceChildren();
+  const duration = tvPreviewVideo.duration;
+  if (!Number.isFinite(duration) || duration <= 0 || !tvPreviewVideo.videoWidth) {
+    status.textContent = "Preview loaded, but video frames are not available.";
+    return;
+  }
+  const positions = [0.15, 0.5, 0.85];
+  try {
+    for (const position of positions) {
+      const time = Math.min(Math.max(0, duration - 0.1), duration * position);
+      if (Math.abs(tvPreviewVideo.currentTime - time) > 0.05) {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Timed out while seeking preview")), 10000);
+          tvPreviewVideo.addEventListener("seeked", () => {
+            clearTimeout(timeout);
+            resolve();
+          }, { once: true });
+          tvPreviewVideo.currentTime = time;
+        });
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = 320;
+      canvas.height = 180;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Thumbnail canvas is unavailable");
+      const scale = Math.min(canvas.width / tvPreviewVideo.videoWidth, canvas.height / tvPreviewVideo.videoHeight);
+      const width = tvPreviewVideo.videoWidth * scale;
+      const height = tvPreviewVideo.videoHeight * scale;
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(tvPreviewVideo, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.78);
+      const label = formatDuration(time);
+      addPreviewThumbnail(dialogStrip, dataUrl, time, label);
+      if (tvPreviewTrackRow) {
+        const trackStrip = tvPreviewTrackRow.querySelector("[data-thumbnail-strip]");
+        trackStrip.replaceChildren();
+        for (const thumbnail of dialogStrip.querySelectorAll(".tv-preview-thumbnail")) {
+          const copy = thumbnail.cloneNode(true);
+          trackStrip.append(copy);
+        }
+      }
+    }
+    tvPreviewVideo.currentTime = 0;
+    status.textContent = "Preview ready. Select a thumbnail to jump to that moment.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+tvPreviewVideo.addEventListener("loadedmetadata", () => {
+  if (tvPreviewTrackRow) {
+    const resolution = tvPreviewTrackRow.querySelector("[data-track-resolution]");
+    resolution.textContent = `${tvPreviewVideo.videoWidth} × ${tvPreviewVideo.videoHeight}`;
+  }
+  void captureTvPreviewFrames();
+});
+tvPreviewVideo.addEventListener("error", () => {
+  $("#tv-track-preview-status").textContent = "This staged track preview could not be played. The original remains safely staged.";
+});
+$("#tv-track-preview-close").addEventListener("click", () => {
+  tvPreviewVideo.pause();
+  tvPreviewVideo.removeAttribute("src");
+  tvPreviewVideo.load();
+  tvPreviewDialog.close();
+  tvPreviewTrackRow = null;
+});
+
+document.addEventListener("click", async (event) => {
+  const openButton = event.target.closest(".tv-task-open");
+  if (openButton) {
+    const card = openButton.closest(".tv-matching-task");
+    const panel = card.querySelector("[data-matching-panel]");
+    panel.classList.toggle("hidden");
+    openButton.textContent = panel.classList.contains("hidden") ? "Open Matching" : "Close Matching";
+    return;
+  }
+  const deleteButton = event.target.closest(".tv-task-delete");
+  if (deleteButton) {
+    requestTvTaskDeletion(deleteButton.closest(".tv-matching-task").dataset.jobId);
+    return;
+  }
+  const unmatchedButton = event.target.closest(".tv-delete-unmatched");
+  if (unmatchedButton) {
+    tvUnmatchedDeleteJobId = unmatchedButton.closest(".tv-matching-task").dataset.jobId;
+    tvUnmatchedDeleteDialog.showModal();
+    return;
+  }
+  const addEpisodeButton = event.target.closest(".tv-add-episode");
+  if (addEpisodeButton) {
+    const row = addEpisodeButton.closest(".tv-track-row");
+    const list = row.querySelector("[data-episode-select-list]");
+    if (list.children.length >= 3) {
+      notify("A staged track can map to at most three episodes.", true);
+      return;
+    }
+    const select = list.querySelector("[data-episode-select]").cloneNode(true);
+    select.value = "";
+    list.append(select);
+    updateTvTrackSelection(row);
+    updateTvTaskProgress(addEpisodeButton.closest(".tv-matching-task"));
+    return;
+  }
+  const previewButton = event.target.closest(".tv-track-preview-button");
+  if (previewButton) {
+    const row = previewButton.closest(".tv-track-row");
+    const card = previewButton.closest(".tv-matching-task");
+    tvPreviewTrackRow = row;
+    $("#tv-track-preview-title").textContent = `Track ${row.dataset.trackId} · ${row.querySelector("h4").textContent}`;
+    $("#tv-track-preview-status").textContent = "Preparing a short preview clip and thumbnail strip…";
+    $("#tv-track-preview-thumbnails").replaceChildren();
+    tvPreviewVideo.src = `/api/v1/tv/matching/${encodeURIComponent(card.dataset.jobId)}/preview/${encodeURIComponent(row.dataset.trackId)}`;
+    tvPreviewDialog.showModal();
+    tvPreviewVideo.load();
+    return;
+  }
+  const thumbnail = event.target.closest(".tv-preview-thumbnail");
+  if (thumbnail) {
+    tvPreviewVideo.currentTime = Number(thumbnail.dataset.seek);
+    return;
+  }
+  const saveButton = event.target.closest(".tv-task-save");
+  if (saveButton) await saveTvTaskAssignments(saveButton);
+});
+
+document.addEventListener("input", (event) => {
+  const search = event.target.closest("[data-episode-search]");
+  if (search) filterTvEpisodeOptions(search.closest(".tv-track-row"));
+});
+document.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-episode-select]");
+  if (!select) return;
+  const row = select.closest(".tv-track-row");
+  updateTvTrackSelection(row);
+  updateTvTaskProgress(select.closest(".tv-matching-task"));
 });
 
 async function loadTvReviews() {
@@ -1281,6 +1640,7 @@ async function loadTvReviews() {
     api(`/api/v1/tv/reviews?${query}`),
     api("/api/v1/tv/matching")
   ]);
+  await loadTvEpisodeGuides(tasks);
   const planCards = plans.length
     ? (await Promise.all(plans.map(async (plan) => {
       const { recovery, mediaTypeAudit = [] } = await api(`/api/v1/tv/plans/${encodeURIComponent(plan.id)}/recovery`);
@@ -1531,14 +1891,6 @@ async function loadSettings() {
   renderOutputProfiles();
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
-  const retentionDays = data.settings.tvStagingRetentionDays;
-  const retentionChoice = form.elements.namedItem("tvStagingRetentionChoice");
-  const standardRetentions = [7, 30, 90];
-  retentionChoice.value = retentionDays === null ? "never" :
-    standardRetentions.includes(retentionDays) ? String(retentionDays) : "custom";
-  form.elements.namedItem("tvStagingRetentionCustomDays").value =
-    retentionDays !== null && !standardRetentions.includes(retentionDays) ? retentionDays : "";
-  updateTvStagingRetentionFields();
   const libraryMetadata = data.settings.libraryMetadata;
   for (const key of [
     "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
@@ -1612,14 +1964,6 @@ async function refreshStoragePathDiagnostics() {
     ["Cache Directory", paths.cache]
   ]);
   $("#diagnostics-storage-paths").innerHTML = diagnosticPairs(pathEntries);
-}
-
-function updateTvStagingRetentionFields() {
-  const form = $("#settings-form");
-  const choice = form.elements.namedItem("tvStagingRetentionChoice").value;
-  const custom = choice === "custom";
-  $("#tv-staging-custom-label").classList.toggle("hidden", !custom);
-  form.elements.namedItem("tvStagingRetentionCustomDays").required = custom;
 }
 
 function activeOutputProfile() {
@@ -1945,7 +2289,7 @@ function showPage(page) {
     dashboard: "Dashboard",
     diagnostics: "Disc Diagnostics",
     history: "History",
-    "tv-matching": "TV Matching",
+    "tv-matching": "TV Disc Review",
     "tv-analysis": "TV Analysis",
     "episode-matching": "Episode Matching",
     "tv-reviews": "Review Centre",
@@ -2705,11 +3049,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
     },
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
-    tvStagingRetentionDays: values.get("tvStagingRetentionChoice") === "never"
-      ? null
-      : values.get("tvStagingRetentionChoice") === "custom"
-        ? Number(values.get("tvStagingRetentionCustomDays"))
-        : Number(values.get("tvStagingRetentionChoice")),
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
     tvMetadataLookupEnabled: form.elements.namedItem("tvMetadataLookupEnabled").checked,
     tvMetadataPreferredProviderId: values.get("tvMetadataPreferredProviderId"),
@@ -2769,9 +3108,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
     $("#settings-message").textContent = error.message;
   }
 });
-
-$("#settings-form").elements.namedItem("tvStagingRetentionChoice")
-  .addEventListener("change", updateTvStagingRetentionFields);
 
 $("#check-paths").addEventListener("click", async () => {
   const button = $("#check-paths");

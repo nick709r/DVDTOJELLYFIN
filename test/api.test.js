@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -538,6 +538,10 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(tvSummary.json().totalDiscsAnalyzed, 2);
     const matchingJobId = "staged-tv-api-job";
     const matchingFingerprint = "staged-tv-api-fingerprint";
+    const matchingStagingPath = path.join(root, "tv-staging", matchingJobId);
+    await mkdir(matchingStagingPath, { recursive: true });
+    await writeFile(path.join(matchingStagingPath, "episode01.mp4"), Buffer.alloc(2048, 7));
+    await writeFile(path.join(matchingStagingPath, "episode02.mp4"), Buffer.alloc(2048, 9));
     jobs.repositories.jobs.add(matchingJobId, "fresh-off-the-boat", matchingFingerprint, "dvd");
     jobs.repositories.jobs.finish(matchingJobId, "awaiting-identification", "Awaiting series identification");
     jobs.repositories.discRecovery.recordDetection(matchingFingerprint, "dvd", "tv_series");
@@ -545,7 +549,7 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       jobId: matchingJobId,
       fingerprint: matchingFingerprint,
       status: "awaiting-identification",
-      stagingPath: path.join(root, "tv-staging", matchingJobId),
+      stagingPath: matchingStagingPath,
       source: {
         sourceId: "dvd-api",
         providerId: "source.video-dvd.makemkv",
@@ -554,10 +558,16 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         manifest: { mediaKind: "dvd", attributes: {}, items: [] }
       },
       diagnostics: { status: "analysis-unavailable" },
-      files: { "1": "episode01.mkv" },
+      files: { "1": "episode01.mp4", "2": "episode02.mp4" },
       assignments: [{
         trackId: "1",
         title: "Title 1",
+        durationSeconds: 1300,
+        episodeCandidates: [],
+        selectedEpisodes: undefined
+      }, {
+        trackId: "2",
+        title: "Title 2",
         durationSeconds: 1300,
         episodeCandidates: [],
         selectedEpisodes: undefined
@@ -566,6 +576,14 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     const matchingQueue = await app.inject({ method: "GET", url: "/api/v1/tv/matching", headers: { cookie } });
     assert.equal(matchingQueue.statusCode, 200);
     assert.equal(matchingQueue.json().tasks.some(({ task }) => task.jobId === matchingJobId), true);
+    const trackPreview = await app.inject({
+      method: "GET",
+      url: `/api/v1/tv/matching/${matchingJobId}/preview/1`,
+      headers: { cookie, range: "bytes=0-3" }
+    });
+    assert.equal(trackPreview.statusCode, 206);
+    assert.equal(trackPreview.headers["content-range"], "bytes 0-3/2048");
+    assert.equal(trackPreview.rawPayload.length, 4);
     const saveMatchingIdentification = await app.inject({
       method: "PUT",
       url: `/api/v1/tv/matching/${matchingJobId}/identification`,
@@ -580,14 +598,6 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(saveMatchingIdentification.statusCode, 200);
     assert.equal(saveMatchingIdentification.json().recovery.seriesName, "Fresh Off The Boat");
     assert.equal(saveMatchingIdentification.json().recovery.discNumber, null);
-    const saveMatchingAssignments = await app.inject({
-      method: "PUT",
-      url: `/api/v1/tv/matching/${matchingJobId}/assignments`,
-      headers: { cookie },
-      payload: { assignments: [{ trackId: "1", episodeNumbers: [1, 2] }] }
-    });
-    assert.equal(saveMatchingAssignments.statusCode, 200);
-    assert.deepEqual(saveMatchingAssignments.json().task.assignments[0].selectedEpisodes.map((item) => item.episodeNumber), [1, 2]);
     let continuedMatchingJobId;
     server.setTvMatchingActions({
       continue: async (jobId) => { continuedMatchingJobId = jobId; },
@@ -598,12 +608,41 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         }
       }
     });
-    const continueMatching = await app.inject({
+    const saveMatchingAssignments = await app.inject({
+      method: "PUT",
+      url: `/api/v1/tv/matching/${matchingJobId}/assignments`,
+      headers: { cookie },
+      payload: { assignments: [
+        { trackId: "1", episodeNumbers: [1], episodeTitles: ["Coming From America"] },
+        { trackId: "2", episodeNumbers: [] }
+      ] }
+    });
+    assert.equal(saveMatchingAssignments.statusCode, 200);
+    assert.deepEqual(saveMatchingAssignments.json().task.assignments[0].selectedEpisodes.map((item) => item.episodeNumber), [1]);
+    assert.equal(saveMatchingAssignments.json().task.assignments[0].selectedEpisodes[0].title, "Coming From America");
+    assert.equal(saveMatchingAssignments.json().task.status, "partially-matched");
+    assert.equal(saveMatchingAssignments.json().progress.matchedCount, 1);
+    assert.equal(saveMatchingAssignments.json().continuation, "not-ready");
+    assert.equal(continuedMatchingJobId, undefined);
+    const continuePartialMatching = await app.inject({
       method: "POST",
       url: `/api/v1/tv/matching/${matchingJobId}/continue`,
       headers: { cookie }
     });
-    assert.equal(continueMatching.statusCode, 202);
+    assert.equal(continuePartialMatching.statusCode, 409);
+    const saveCompleteMatching = await app.inject({
+      method: "PUT",
+      url: `/api/v1/tv/matching/${matchingJobId}/assignments`,
+      headers: { cookie },
+      payload: { assignments: [
+        { trackId: "1", episodeNumbers: [1], episodeTitles: ["Coming From America"] },
+        { trackId: "2", episodeNumbers: [2], episodeTitles: ["Home Sweet Home-School"] }
+      ] }
+    });
+    assert.equal(saveCompleteMatching.statusCode, 200);
+    assert.equal(saveCompleteMatching.json().task.status, "ready-to-publish");
+    assert.equal(saveCompleteMatching.json().progress.fullyMatched, true);
+    assert.equal(saveCompleteMatching.json().continuation, "started");
     assert.equal(continuedMatchingJobId, matchingJobId);
     const deleteWithoutConfirmation = await app.inject({
       method: "DELETE",

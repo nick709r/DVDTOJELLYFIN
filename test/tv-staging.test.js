@@ -19,6 +19,7 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
     ...defaultSettings,
     workDir: path.join(root, "work"),
     tvStagingDir: path.join(root, "dedicated-tv-staging"),
+    tvStagingRetentionDays: 1,
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
     musicDir: path.join(root, "published-music")
@@ -110,10 +111,20 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
     assert.equal(task.status, "awaiting-identification");
     assert.equal(task.stagingPath, path.join(root, "dedicated-tv-staging", task.jobId));
     assert.equal(Object.keys(task.files).length, 4);
-    assert.equal(jobs.getJob(task.jobId).status, "awaiting-identification");
+    assert.equal(jobs.getJob(task.jobId).status, "review");
     const stagedFile = path.join(task.stagingPath, task.files["1"]);
     assert.equal((await stat(stagedFile)).size, 2048);
     assert.match(await readFile(path.join(task.stagingPath, "metadata.json"), "utf8"), /episodeCount/);
+    database.prepare("UPDATE tv_matching_tasks SET created_at = ? WHERE job_id = ?")
+      .run("2000-01-01T00:00:00.000Z", task.jobId);
+    await workflow.pruneExpiredTvMatchingTasks();
+    assert.equal((await stat(stagedFile)).size, 2048, "legacy retention settings must not delete unmatched media");
+    const orphanId = "10000000-0000-4000-8000-000000000001";
+    const orphanPath = path.join(root, "dedicated-tv-staging", orphanId);
+    await mkdir(orphanPath, { recursive: true });
+    await writeFile(path.join(orphanPath, "recovered-track.mkv"), Buffer.alloc(2048));
+    await workflow.recoverOrphanedTvStagingDirectories();
+    assert.equal((await stat(path.join(orphanPath, "recovered-track.mkv"))).size, 2048);
 
     repositories.tvMatchingTasks.update(task.jobId, { status: "processing" });
     repositories.jobs.setStatus(task.jobId, "converting", "Matching episodes");

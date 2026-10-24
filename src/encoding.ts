@@ -66,6 +66,38 @@ export async function mediaDuration(file: string, signal?: AbortSignal): Promise
   return duration;
 }
 
+export async function inspectVideo(file: string, signal?: AbortSignal): Promise<{
+  durationSeconds?: number;
+  resolution?: string;
+}> {
+  const result = await runProcess(ffprobe, [
+    "-v", "error",
+    "-select_streams", "v:0",
+    "-show_entries", "stream=width,height:format=duration",
+    "-of", "json",
+    file
+  ], { timeoutMs: 30_000, ...(signal ? { signal } : {}) });
+  const metadata: unknown = JSON.parse(result.stdout);
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    throw new Error("FFprobe returned invalid video metadata");
+  }
+  const value = metadata as {
+    streams?: Array<{ width?: unknown; height?: unknown }>;
+    format?: { duration?: unknown };
+  };
+  const stream = value.streams?.[0];
+  const width = Number(stream?.width);
+  const height = Number(stream?.height);
+  const durationSeconds = Number(value.format?.duration);
+  return {
+    ...(Number.isInteger(width) && width > 0 && width <= 32768 &&
+      Number.isInteger(height) && height > 0 && height <= 32768
+      ? { resolution: `${width} × ${height}` } : {}),
+    ...(Number.isFinite(durationSeconds) && durationSeconds > 0
+      ? { durationSeconds } : {})
+  };
+}
+
 function parseClock(value: string): number {
   const parts = value.split(":").map(Number);
   if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return 0;

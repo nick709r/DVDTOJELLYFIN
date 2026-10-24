@@ -147,3 +147,58 @@ dialog{background:#151c27;border:1px solid #343e4c;border-radius:12px;color:#edf
 #tv-delete-dialog{max-width:440px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:22px}
 #tv-delete-dialog::backdrop{background:rgba(0,0,0,.68)}
 #tv-delete-dialog li{margin:.45rem 0;color:var(--muted)}
+.tv-disc-review{margin:14px 0;padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}
+.tv-disc-summary{display:grid;grid-template-columns:112px minmax(0,1fr) auto;gap:18px;align-items:start}
+.tv-disc-poster{width:112px;aspect-ratio:2/3;object-fit:cover;border-radius:9px;background:var(--surface);box-shadow:0 5px 18px #0003}
+.tv-disc-poster-placeholder{display:grid;place-items:center;color:var(--muted);font-size:1.5rem;font-weight:800;border:1px dashed var(--line)}
+.tv-disc-info h3{margin:2px 0;font-size:1.35rem;line-height:1.25}
+.tv-disc-season{margin:5px 0 10px;color:var(--muted);font-weight:600}
+.tv-disc-facts{display:flex;flex-wrap:wrap;gap:7px;margin:9px 0}
+.tv-disc-facts span{padding:4px 8px;border:1px solid var(--line);border-radius:20px;font-size:.75rem;color:var(--muted)}
+.tv-disc-identifier{font-size:.72rem;color:var(--muted);overflow-wrap:anywhere}
+.tv-disc-identifier code{font-size:.7rem}
+.tv-disc-overview{max-width:76ch;margin:10px 0 0;color:var(--muted);font-size:.86rem;line-height:1.55}
+.tv-disc-progress{display:grid;justify-items:end;gap:7px;min-width:126px;font-size:.78rem}
+.tv-disc-progress strong{margin-top:8px;font-size:.93rem}
+.tv-match-status{padding:6px 10px;border-radius:20px;font-size:.72rem;font-weight:800;white-space:nowrap}
+.tv-match-status.fully-matched{background:#213a2b;color:#8ce2a6}
+.tv-match-status.partially-matched{background:#483a1e;color:#ffd16e}
+.tv-match-status.unidentified{background:#48272b;color:#ff9da6}
+.tv-disc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin-top:15px;padding-top:13px;border-top:1px solid var(--line)}
+.tv-disc-matching{margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
+.tv-matching-guide{display:flex;justify-content:space-between;align-items:start;gap:14px;margin-bottom:12px}
+.tv-matching-guide h4{margin:0;font-size:.98rem}
+.tv-matching-guide p{margin:5px 0;color:var(--muted);font-size:.8rem}
+.tv-episode-guide-error{max-width:50%;color:var(--warning,#e4b94e)!important}
+.tv-track-list{display:grid;gap:10px}
+.tv-track-row{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.tv-track-heading{display:flex;justify-content:space-between;align-items:start;gap:12px}
+.tv-track-heading h4{margin:2px 0;font-size:.92rem}
+.tv-track-number{font-size:.65rem;font-weight:800;letter-spacing:.08em;color:var(--muted)}
+.tv-track-tech{display:flex;gap:12px;color:var(--muted);font-size:.75rem;text-align:right}
+.tv-track-preview{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0}
+.tv-track-thumbnail-strip,.tv-track-preview-thumbnails{display:flex;align-items:center;gap:6px;min-height:54px}
+.tv-thumbnail-placeholder{color:var(--muted);font-size:.72rem}
+.tv-preview-thumbnail{width:88px;height:50px;padding:0;overflow:hidden;border:1px solid var(--line);border-radius:5px;background:#000;cursor:pointer}
+.tv-preview-thumbnail img{display:block;width:100%;height:100%;object-fit:cover}
+.tv-track-mapping{display:grid;grid-template-columns:minmax(180px,1fr);gap:6px}
+.tv-track-mapping label{display:grid;gap:5px;font-size:.75rem;font-weight:700}
+.tv-track-mapping input{max-width:420px}
+.tv-episode-select-list{display:flex;flex-wrap:wrap;gap:7px}
+.tv-episode-select-list select{min-width:min(100%,280px);max-width:100%}
+.tv-track-map-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+.tv-episode-preview{font-size:.77rem;color:var(--muted)}
+.tv-episode-preview.matched{color:var(--accent);font-weight:700}
+.tv-track-suggestion{color:var(--muted);font-size:.7rem}
+.tv-save-workflow{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
+.tv-save-workflow p{margin:0;color:var(--muted);font-size:.82rem}
+.tv-classification-details summary,.tv-matching-task details summary{cursor:pointer;color:var(--muted);font-size:.78rem}
+.tv-track-preview-dialog{width:min(850px,calc(100vw - 28px));max-width:850px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--text);padding:20px}
+.tv-track-preview-dialog::backdrop{background:#000b}
+.tv-track-preview-heading{display:flex;justify-content:space-between;align-items:start;gap:12px}
+.tv-track-preview-heading h2{margin:0}
+#tv-track-preview-video{display:block;width:100%;max-height:62vh;margin:12px auto;background:#000;border-radius:8px}
+.tv-track-preview-thumbnails{justify-content:center;flex-wrap:wrap;margin-top:12px}
+#tv-unmatched-delete-dialog{max-width:470px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:22px}
+#tv-unmatched-delete-dialog::backdrop{background:#000b}
+@media(max-width:720px){.tv-disc-summary{grid-template-columns:78px minmax(0,1fr)}.tv-disc-poster{width:78px}.tv-disc-progress{grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;min-width:0}.tv-disc-progress strong{margin:0}.tv-matching-guide{display:block}.tv-episode-guide-error{max-width:none}.tv-track-heading{flex-direction:column}.tv-track-tech{text-align:left}.tv-save-workflow{align-items:flex-start;flex-direction:column}}

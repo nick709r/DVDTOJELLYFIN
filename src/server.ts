@@ -2,10 +2,11 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyRateLimit from "@fastify/rate-limit";
 import { randomBytes, scryptSync } from "node:crypto";
-import { access, lstat, mkdir, open, readdir, stat, statfs, unlink } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { access, lstat, mkdir, open, readdir, realpath, rename, stat, statfs, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, join, posix, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeJob, dailyJobStats, dbPath, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
@@ -58,6 +59,7 @@ import {
   tvStagingDirectory,
   tvStagingPathSource
 } from "./storage-paths.js";
+import { tvMatchingProgress, tvMatchingReviewStatus, type TvMatchingTask } from "./domain/tv-matching.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
 interface ReviewJobActions {
@@ -1205,6 +1207,7 @@ app.post<{ Body: unknown }>("/api/v1/tv/identify/search", async (request, reply)
 app.get("/api/v1/tv/matching", async () => ({
   tasks: repositories.tvMatchingTasks.list().map((task) => ({
     task,
+    progress: tvMatchingProgress(task.assignments),
     recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
     mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
   }))
@@ -1215,17 +1218,160 @@ app.get<{ Params: { id: string } }>("/api/v1/tv/matching/:id", async (request, r
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
   return {
     task,
+    progress: tvMatchingProgress(task.assignments),
     recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
     mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
   };
+});
+
+async function resolveStagedTvTrack(task: TvMatchingTask, trackId: string): Promise<{ path: string; size: number }> {
+  const fileName = task.files[trackId];
+  if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) {
+    throw new Error("Staged track file reference is invalid");
+  }
+  const rootInfo = await lstat(task.stagingPath);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error("TV staging task path is not a regular directory");
+  }
+  const filePath = resolve(task.stagingPath, fileName);
+  const info = await lstat(filePath);
+  if (!info.isFile() || info.isSymbolicLink() || info.size < 1024) {
+    throw new Error("Staged track file is missing or invalid");
+  }
+  const [rootPath, resolvedFile] = await Promise.all([
+    realpath(task.stagingPath),
+    realpath(filePath)
+  ]);
+  const relativeFile = relative(rootPath, resolvedFile);
+  if (relativeFile === ".." || relativeFile.startsWith(`..${sep}`) || isAbsolute(relativeFile)) {
+    throw new Error("Staged track file resolves outside its protected task directory");
+  }
+  return { path: resolvedFile, size: info.size };
+}
+
+async function tvTrackPreviewPath(task: TvMatchingTask, trackId: string, sourcePath: string): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(trackId)) throw new Error("Track identifier is invalid");
+  const previewDirectory = resolve(task.stagingPath, ".previews");
+  await mkdir(previewDirectory, { recursive: true, mode: 0o750 });
+  const previewInfo = await lstat(previewDirectory);
+  if (!previewInfo.isDirectory() || previewInfo.isSymbolicLink()) {
+    throw new Error("TV preview directory is not a regular directory");
+  }
+  const destination = resolve(previewDirectory, `${trackId}.mp4`);
+  try {
+    const cached = await lstat(destination);
+    if (!cached.isFile() || cached.isSymbolicLink() || cached.size < 1024) {
+      throw new Error("Cached TV preview is invalid");
+    }
+    return destination;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (error instanceof Error && error.message === "Cached TV preview is invalid") await unlink(destination);
+      else throw error;
+    }
+  }
+  const duration = task.assignments.find((assignment) => assignment.trackId === trackId)?.durationSeconds ?? 0;
+  const offset = Math.max(0, Math.floor((duration - 45) * 0.35));
+  const temporary = resolve(previewDirectory, `${trackId}.${randomUUID()}.tmp.mp4`);
+  try {
+    await runProcess(process.env.FFMPEG_COMMAND ?? "ffmpeg", [
+      "-hide_banner", "-nostdin", "-y",
+      ...(offset ? ["-ss", String(offset)] : []),
+      "-i", sourcePath,
+      "-t", "45",
+      "-map", "0:v:0",
+      "-vf", "scale=960:-2:force_original_aspect_ratio=decrease",
+      "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+      "-movflags", "+faststart",
+      temporary
+    ], { timeoutMs: 180_000 });
+    const generated = await lstat(temporary);
+    if (!generated.isFile() || generated.isSymbolicLink() || generated.size < 1024) {
+      throw new Error("FFmpeg produced an invalid preview clip");
+    }
+    const [rootPath, resolvedPreview] = await Promise.all([
+      realpath(task.stagingPath),
+      realpath(temporary)
+    ]);
+    const relativePreview = relative(rootPath, resolvedPreview);
+    if (relativePreview === ".." || relativePreview.startsWith(`..${sep}`) || isAbsolute(relativePreview)) {
+      throw new Error("Generated TV preview resolves outside its protected task directory");
+    }
+    await rename(temporary, destination);
+    return destination;
+  } catch (error) {
+    try {
+      await unlink(temporary);
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") {
+        app.log.error({ err: cleanupError, path: temporary }, "Failed to clean incomplete TV preview clip");
+      }
+    }
+    throw error;
+  }
+}
+
+app.get<{ Params: { id: string; trackId: string } }>("/api/v1/tv/matching/:id/preview/:trackId", async (request, reply) => {
+  const task = repositories.tvMatchingTasks.get(request.params.id);
+  if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
+  try {
+    const staged = await resolveStagedTvTrack(task, request.params.trackId);
+    const previewPath = extname(staged.path).toLowerCase() === ".mp4"
+      ? staged.path
+      : await tvTrackPreviewPath(task, request.params.trackId, staged.path);
+    const preview = await stat(previewPath);
+    const range = request.headers.range;
+    let start = 0;
+    let end = preview.size - 1;
+    let statusCode = 200;
+    if (typeof range === "string") {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (!match || (!match[1] && !match[2])) {
+        return reply.code(416).header("Content-Range", `bytes */${preview.size}`).send();
+      }
+      if (match[1]) {
+        start = Number(match[1]);
+        end = match[2] ? Number(match[2]) : end;
+      } else {
+        const suffixLength = Number(match[2]);
+        start = Math.max(0, preview.size - suffixLength);
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+        start < 0 || end < start || start >= preview.size) {
+        return reply.code(416).header("Content-Range", `bytes */${preview.size}`).send();
+      }
+      end = Math.min(end, preview.size - 1);
+      statusCode = 206;
+      reply.header("Content-Range", `bytes ${start}-${end}/${preview.size}`);
+    }
+    return reply
+      .code(statusCode)
+      .header("Accept-Ranges", "bytes")
+      .header("Content-Length", String(end - start + 1))
+      .header("Content-Type", "video/mp4")
+      .header("Content-Disposition", "inline")
+      .header("Cache-Control", "private, no-store")
+      .header("X-Content-Type-Options", "nosniff")
+      .send(createReadStream(previewPath, { start, end }));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return reply.code(404).send({ error: "Staged track file was not found" });
+    request.log.warn({ err: error, taskId: task.jobId, trackId: request.params.trackId },
+      "Staged TV preview could not be opened");
+    return reply.code(500).send({ error: error instanceof Error ? error.message : "Staged track preview failed" });
+  }
 });
 
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/identification", async (request, reply) => {
   const task = repositories.tvMatchingTasks.get(request.params.id);
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
   if (task.status === "processing") return reply.code(409).send({ error: "TV matching task is already processing" });
+  const priorRecovery = repositories.discRecovery.get(task.fingerprint);
   const outcome = saveIdentification(task.fingerprint, request.body);
   if ("error" in outcome) return reply.code(outcome.status).send({ error: outcome.error });
+  const identityChanged = priorRecovery?.seriesName !== outcome.recovery.seriesName ||
+    priorRecovery?.providerId !== outcome.recovery.providerId ||
+    priorRecovery?.seasonNumber !== outcome.recovery.seasonNumber;
   const filesystemVolumeName = task.source.manifest.attributes?.filesystemVolumeName;
   const volumeName = typeof filesystemVolumeName === "string" ? filesystemVolumeName.trim() : "";
   const metadata = outcome.recovery.importedMetadata ?? {};
@@ -1236,19 +1382,31 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/iden
   if (task.source.label.trim()) knownLabels.add(task.source.label.trim());
   if (volumeName) knownVolumeNames.add(volumeName);
   const learnedRecovery = repositories.discRecovery.update(task.fingerprint, {
+    ...(identityChanged ? { mappings: [] } : {}),
     importedMetadata: { ...metadata, knownLabels: [...knownLabels], knownVolumeNames: [...knownVolumeNames] }
   });
   if (!learnedRecovery) return reply.code(409).send({ error: "Identification was saved but series evidence could not be stored" });
-  repositories.tvMatchingTasks.update(task.jobId, {
-    status: task.assignments.length ? "awaiting-mapping" : "awaiting-identification"
+  const assignments = identityChanged
+    ? task.assignments.map((assignment) => {
+      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = assignment;
+      return { ...unmatched, confirmed: false };
+    })
+    : task.assignments;
+  const updatedTask = repositories.tvMatchingTasks.update(task.jobId, {
+    assignments,
+    status: assignments.length ? "awaiting-mapping" : "awaiting-identification"
   });
-  return { recovery: learnedRecovery };
+  if (!updatedTask) return reply.code(409).send({ error: "Identification was saved but the staged disc could not be updated" });
+  events.emit("status");
+  return { recovery: learnedRecovery, task: updatedTask };
 });
 
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/assignments", async (request, reply) => {
   const task = repositories.tvMatchingTasks.get(request.params.id);
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
-  if (task.status === "processing") return reply.code(409).send({ error: "TV matching task is already processing" });
+  if (task.status === "processing" || task.status === "completed") {
+    return reply.code(409).send({ error: "TV matching task is not available for episode changes" });
+  }
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
     return reply.code(400).send({ error: "Episode assignments must be an object" });
   }
@@ -1258,7 +1416,7 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/assi
   if (!recovery?.seriesName || recovery.seasonNumber === null) {
     return reply.code(409).send({ error: "Identify the series and season before assigning episodes" });
   }
-  const requested = new Map<string, { episodeNumbers: number[]; title?: string }>();
+  const requested = new Map<string, { episodeNumbers: number[]; episodeTitles?: string[]; title?: string }>();
   for (const value of rawAssignments) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       return reply.code(400).send({ error: "Each episode assignment must be an object" });
@@ -1270,9 +1428,17 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/assi
     }
     const episodeNumbers = Array.isArray(assignment.episodeNumbers)
       ? assignment.episodeNumbers : [assignment.episodeNumber];
-    if (!episodeNumbers.length || episodeNumbers.length > 3 ||
+    if (episodeNumbers.length > 3 ||
       episodeNumbers.some((number) => !Number.isInteger(number) || Number(number) < 0 || Number(number) > 1000)) {
-      return reply.code(400).send({ error: "Provide one to three episode numbers from 0 to 1000" });
+      return reply.code(400).send({ error: "Provide up to three episode numbers from 0 to 1000" });
+    }
+    if (new Set(episodeNumbers).size !== episodeNumbers.length) {
+      return reply.code(400).send({ error: "A track cannot be matched to the same episode more than once" });
+    }
+    if (assignment.episodeTitles !== undefined &&
+      (!Array.isArray(assignment.episodeTitles) || assignment.episodeTitles.length !== episodeNumbers.length ||
+        assignment.episodeTitles.some((title) => typeof title !== "string" || title.length > 200))) {
+      return reply.code(400).send({ error: "Episode titles must match the selected episodes and be at most 200 characters" });
     }
     if (assignment.title !== undefined &&
       (typeof assignment.title !== "string" || assignment.title.length > 200)) {
@@ -1280,34 +1446,73 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/assi
     }
     requested.set(assignment.trackId, {
       episodeNumbers: episodeNumbers.map(Number),
+      ...(Array.isArray(assignment.episodeTitles)
+        ? { episodeTitles: assignment.episodeTitles as string[] } : {}),
       ...(typeof assignment.title === "string" && assignment.title.trim() ? { title: assignment.title.trim() } : {})
     });
   }
   const seriesId = recovery.providerId || recovery.seriesName;
   const assignments = task.assignments.map((item) => {
     const selected = requested.get(item.trackId);
-    return selected ? {
+    if (!selected) return item;
+    if (selected.episodeNumbers.length === 0) {
+      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = item;
+      return { ...unmatched, confirmed: false };
+    }
+    return {
       ...item,
-      selectedEpisodes: selected.episodeNumbers.map((episodeNumber) => ({
+      confirmed: true,
+      selectedEpisodes: selected.episodeNumbers.map((episodeNumber, index) => ({
         seriesId,
         seasonNumber: recovery.seasonNumber!,
         episodeNumber,
-        ...(selected.title ? { title: selected.title } : {})
+        ...(selected.episodeTitles?.[index] ? { title: selected.episodeTitles[index] } :
+          selected.title ? { title: selected.title } : {})
       }))
-    } : item;
+    };
   });
   const updated = repositories.tvMatchingTasks.update(task.jobId, {
     assignments,
-    status: "awaiting-mapping"
+    status: tvMatchingReviewStatus(assignments),
+    failure: null
   });
   if (!updated) return reply.code(404).send({ error: "TV matching task could not be updated" });
-  return { task: updated };
+  const mappings = assignments.flatMap((assignment) =>
+    assignment.confirmed && assignment.selectedEpisodes?.length
+      ? [{ trackId: assignment.trackId, episodes: assignment.selectedEpisodes }]
+      : []);
+  const updatedRecovery = repositories.discRecovery.update(task.fingerprint, { mappings });
+  if (!updatedRecovery) {
+    return reply.code(409).send({ error: "Episode selections were saved, but disc recovery mappings could not be updated" });
+  }
+  let continuation: "not-ready" | "queued" | "started" | "blocked" = "not-ready";
+  const progress = tvMatchingProgress(updated.assignments);
+  if (progress.fullyMatched) {
+    const currentRecovery = repositories.discRecovery.get(task.fingerprint);
+    if (currentRecovery?.mediaTypeOverridden && currentRecovery.finalMediaType !== "tv_series") {
+      continuation = "blocked";
+    } else if (activeJob()) {
+      continuation = "queued";
+    } else if (tvMatchingActions) {
+      continuation = "started";
+      void tvMatchingActions.continue(task.jobId).catch((error: unknown) => {
+        request.log.error({ err: error, jobId: task.jobId }, "Automatic TV publishing continuation failed");
+      });
+    } else {
+      return reply.code(503).send({ error: "TV matching service is unavailable; saved matches remain ready to resume" });
+    }
+  }
+  events.emit("status");
+  return { task: updated, progress, continuation };
 });
 
 app.post<{ Params: { id: string } }>("/api/v1/tv/matching/:id/continue", async (request, reply) => {
   const task = repositories.tvMatchingTasks.get(request.params.id);
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
   if (task.status === "processing") return reply.code(409).send({ error: "TV matching task is already processing" });
+  if (task.status === "partially-matched") {
+    return reply.code(409).send({ error: "Save matches for every remaining track before publishing; unmatched tracks are still safely staged" });
+  }
   const recovery = repositories.discRecovery.get(task.fingerprint);
   if (recovery?.mediaTypeOverridden && recovery.finalMediaType !== "tv_series") {
     return reply.code(409).send({ error: "The manual media classification is not TV Series; this staged TV workflow cannot be published" });
@@ -1318,6 +1523,62 @@ app.post<{ Params: { id: string } }>("/api/v1/tv/matching/:id/continue", async (
     request.log.error({ err: error, jobId: task.jobId }, "TV matching continuation failed");
   });
   return reply.code(202).send({ accepted: true, jobId: task.jobId });
+});
+
+app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/unmatched", async (request, reply) => {
+  const task = repositories.tvMatchingTasks.get(request.params.id);
+  if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
+  if (task.status === "processing" || task.status === "completed") {
+    return reply.code(409).send({ error: "Unmatched tracks cannot be removed while the TV task is processing or completed" });
+  }
+  const body = request.body as Record<string, unknown> | null;
+  if (body?.confirmed !== true) return reply.code(400).send({ error: "Confirm deletion of unmatched staged tracks" });
+  const retained = task.assignments.filter((assignment) =>
+    assignment.confirmed === true && Boolean(assignment.selectedEpisodes?.length));
+  if (!retained.length) {
+    return reply.code(409).send({ error: "Match at least one track first, or remove the entire disc from review" });
+  }
+  const retainedTrackIds = new Set(retained.map((assignment) => assignment.trackId));
+  const removedFiles = Object.entries(task.files).filter(([trackId]) => !retainedTrackIds.has(trackId));
+  const files = Object.fromEntries(Object.entries(task.files).filter(([trackId]) => retainedTrackIds.has(trackId)));
+  const updated = repositories.tvMatchingTasks.update(task.jobId, {
+    assignments: retained,
+    files,
+    status: "ready-to-publish",
+    failure: null
+  });
+  if (!updated) return reply.code(409).send({ error: "TV matching task could not be updated" });
+  const recovery = repositories.discRecovery.update(task.fingerprint, {
+    mappings: retained.map((assignment) => ({
+      trackId: assignment.trackId,
+      episodes: assignment.selectedEpisodes!
+    }))
+  });
+  if (!recovery) {
+    return reply.code(409).send({ error: "Unmatched tracks were removed from the task but recovery mappings could not be updated" });
+  }
+  try {
+    for (const [trackId] of removedFiles) {
+      const staged = await resolveStagedTvTrack(task, trackId);
+      await unlink(staged.path);
+    }
+  } catch (error) {
+    request.log.error({ err: error, taskId: task.jobId }, "Failed to delete one or more unmatched staged TV tracks");
+    return reply.code(500).send({
+      error: error instanceof Error
+        ? `The task was updated, but unmatched staging cleanup failed: ${error.message}`
+        : "The task was updated, but unmatched staging cleanup failed"
+    });
+  }
+  let continuation: "queued" | "started" = "queued";
+  if (!activeJob() && tvMatchingActions) {
+    continuation = "started";
+    void tvMatchingActions.continue(task.jobId).catch((error: unknown) => {
+      request.log.error({ err: error, jobId: task.jobId }, "Automatic TV publishing continuation failed after track removal");
+    });
+  }
+  events.emit("status");
+  return { task: updated, progress: tvMatchingProgress(updated.assignments), continuation };
 });
 
 app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id", async (request, reply) => {

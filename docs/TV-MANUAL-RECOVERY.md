@@ -55,6 +55,31 @@ multi-episode filename. If a disc processing attempt fails, outputs created by
 that attempt are removed when possible; cleanup failures are recorded in the
 job error. Existing output files are never deleted or replaced.
 
+## Disc-centric review and partial matches
+
+Every TV disc is ripped into protected staging before review, including discs
+whose automatic suggestions are high confidence. Review Centre and **TV Disc
+Review** show the disc identity, series/season, cover art and overview when
+available, year, confidence, track count, runtime, and a searchable episode
+selector for each track. The Preview action opens a short browser-playable clip
+with a thumbnail strip; runtime and resolution are shown alongside the track.
+
+Selecting a suggestion does not confirm it until **Save progress** is clicked.
+Saving persists all selected track-to-episode mappings, including partial
+progress. Unselected tracks remain staged and the disc remains visible with a
+Partially matched status. The task and mappings survive service restarts and
+recovery. When all remaining tracks are matched, AutoDisc automatically
+resumes processing and publishing; if another job is active, it resumes when
+that job finishes. No separate Continue action is required.
+
+To publish only the confirmed portion, explicitly choose **Delete unmatched
+tracks**; this removes only unmatched staged files and then resumes publishing
+the remaining confirmed mappings. **Remove disc from review** removes the
+entire staged task. AutoDisc never applies a retention timer to unmatched TV
+content and preserves orphaned staged directories for recovery. Existing
+retention settings are retained for compatibility but no longer delete staged
+TV content automatically.
+
 ## Provider support
 
 | Provider | Series lookup | Season episode import | Credentials |
@@ -83,6 +108,8 @@ Migration 26 adds the append-only `media_type_override_audit` table. Manual
 changes retain the prior and new classifications, disc fingerprint, optional
 job ID, administrator username, timestamp and optional reason. Updating the
 recovery record and appending its audit row are one SQLite transaction.
+Migration 27 expands the persisted TV matching task states for partial matches
+and ready-to-publish work while preserving existing staged task rows.
 
 Supported manual media classifications include Movie (`movie`), TV Series
 (`tv_series`), Music (`music_album`) and Data Disc (`data_disc`). Detected
@@ -140,6 +167,15 @@ These authenticated routes expose the recovery workflow:
   and (for manual entry) `seriesName`.
 - `POST /api/v1/tv/metadata/episodes/lookup` accepts `provider`, `providerId`,
   and `seasonNumber`.
+- `GET /api/v1/tv/matching` and `GET /api/v1/tv/matching/:id` return staged
+  disc details and confirmed match counts.
+- `PUT /api/v1/tv/matching/:id/assignments` saves confirmed matches; empty
+  `episodeNumbers` leaves that track unmatched. Fully matched tasks resume
+  publishing automatically.
+- `GET /api/v1/tv/matching/:id/preview/:trackId` serves a short authenticated
+  video preview with byte-range support.
+- `DELETE /api/v1/tv/matching/:id/unmatched` deletes only explicitly confirmed
+  unmatched tracks while retaining matched files and mappings.
 
 The dashboard provides a dropdown episode assignment for keyboard/mouse
 operation and native drag-and-drop from detected tracks to mapping rows.
