@@ -73,9 +73,15 @@ function renderJob(job, fallbackStatus = "idle") {
   badge.className = `badge ${status}`;
   const isMusic = job?.mediaType === "audio_cd";
   $("#job-title").textContent = job?.title || job?.discLabel || (status === "idle" ? "Waiting for a disc" : status === "completed" ? "Disc completed" : status === "failed" ? "Disc processing error" : "Checking inserted disc…");
-  $("#job-detail").textContent = job?.error || (job?.outputPath
+  const jobDetail = job?.error || (job?.outputPath
     ? job.outputPath
     : status === "idle" ? "Insert a video DVD or music CD to begin." : status === "inspecting" ? "Checking disc contents and title information." : status === "completed" ? (isMusic ? "Finished album is ready in Jellyfin Music." : "Finished movie is ready in Jellyfin Movies.") : status === "failed" ? "Check conversion history and service logs for details." : `Processing stage: ${status === "publishing" ? "moving" : status}`);
+  const classificationDetail = job?.classification
+    ? `Automatic classification: ${job.classification.detectedMediaType}. ${job.classification.mediaTypeOverridden
+      ? `Manual override active: ${job.classification.finalMediaType}.`
+      : "No manual override."}`
+    : "";
+  $("#job-detail").textContent = [jobDetail, classificationDetail].filter(Boolean).join(" · ");
   const progress = Number(job?.progress || 0);
   $("#progress-bar").style.width = `${Math.max(0, Math.min(100, progress))}%`;
   $("#progress-label").textContent = status === "idle" ? "Waiting" : `${Math.round(progress)}%`;
@@ -132,9 +138,53 @@ function renderJobList(target, jobs, allowDelete = false) {
     const action = allowDelete && !isActive
       ? `<button class="button danger remove-job" type="button" data-job-id="${escapeHtml(job.id)}" aria-label="Remove ${title} from history">Remove</button>`
       : "";
-    return `<div class="list-row${action ? " with-actions" : ""}"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${action}</div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
+    const classification = job.classification;
+    const mediaTypeOptions = [
+      ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"]
+    ];
+    if (classification && !mediaTypeOptions.some(([value]) => value === classification.finalMediaType)) {
+      mediaTypeOptions.unshift([classification.finalMediaType, `Current: ${classification.finalMediaType}`]);
+    }
+    const classificationControl = job.discFingerprint && classification
+      ? `<details class="job-media-override"><summary>${classification.mediaTypeOverridden ? "Manual classification active" : "Automatic classification"} · ${escapeHtml(classification.finalMediaType)}</summary>
+        <form class="job-media-override-form" data-fingerprint="${escapeHtml(job.discFingerprint)}">
+          <p class="hint">Automatic Classification: ${escapeHtml(classification.detectedMediaType)}${classification.mediaTypeOverridden ? ` · Active Manual Override: ${escapeHtml(classification.finalMediaType)}` : ""}</p>
+          <label>Manual override<select name="mediaType">${mediaTypeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${classification.finalMediaType === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
+          <label>Reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
+          <button class="button secondary" type="submit"${isActive ? " disabled" : ""}>Save classification</button>
+          ${isActive ? '<p class="hint">Changes are paused while this job is processing to protect its output. Save after it finishes.</p>' : ""}
+          ${classification.audit?.length ? `<ul>${classification.audit.map((record) =>
+            `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+          ).join("")}</ul>` : ""}
+        </form>
+      </details>`
+      : "";
+    return `<div class="list-row${action ? " with-actions" : ""}"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${action}</div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}${classificationControl}</div>`;
   }).join("");
 }
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest(".job-media-override-form");
+  if (!form) return;
+  event.preventDefault();
+  const button = form.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    await api(`/api/v1/discs/recovery/${encodeURIComponent(form.dataset.fingerprint)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        mediaType: form.elements.mediaType.value,
+        mediaTypeReason: form.elements.mediaTypeReason.value.trim() || undefined
+      })
+    });
+    notify("Manual media classification saved and audit logged.");
+    await Promise.all([refreshHistory(), refreshDashboard()]);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({
@@ -247,15 +297,20 @@ async function renderDiscRecovery(payload) {
     `<option value="${value}">${label}</option>`).join("");
   form.elements.discType.value = item.finalDiscType;
   form.elements.mediaType.value = item.finalMediaType;
+  form.elements.mediaTypeReason.value = "";
   form.elements.metadataProvider.value = item.metadataProvider;
   form.elements.providerId.value = item.providerId || "";
   form.elements.seriesName.value = item.seriesName || "";
   form.elements.seasonNumber.value = item.seasonNumber ?? "";
   form.elements.notes.value = item.notes || "";
   $("#disc-recovery-summary").textContent =
-    `Detected ${item.detectedDiscType} / ${item.detectedMediaType}; final ${item.finalDiscType} / ${item.finalMediaType}` +
+    `Automatic Classification: ${item.detectedMediaType}; Manual Override: ${item.mediaTypeOverridden ? item.finalMediaType : "None (automatic classification active)"}. ` +
+    `Detected disc: ${item.detectedDiscType}; final disc: ${item.finalDiscType}` +
     `${item.detectedConfidence === null ? "" : ` · detection confidence ${Math.round(item.detectedConfidence * 100)}%`}` +
-    `${item.discTypeOverridden || item.mediaTypeOverridden ? " (manual override active)" : " (no override)"}.`;
+    `${item.mediaTypeOverridden ? " · MANUAL MEDIA OVERRIDE ACTIVE" : ""}.` +
+    ((recovery.mediaTypeAudit || []).length
+      ? ` Last override: ${recovery.mediaTypeAudit[0].originalType} → ${recovery.mediaTypeAudit[0].newType} by ${recovery.mediaTypeAudit[0].username} at ${new Date(recovery.mediaTypeAudit[0].timestamp).toLocaleString()}${recovery.mediaTypeAudit[0].reason ? ` (${recovery.mediaTypeAudit[0].reason})` : ""}.`
+      : "");
   form.classList.remove("hidden");
 }
 
@@ -283,6 +338,7 @@ $("#disc-recovery-form").addEventListener("submit", async (event) => {
       body: JSON.stringify({
         discType: form.elements.discType.value,
         mediaType: form.elements.mediaType.value,
+        mediaTypeReason: form.elements.mediaTypeReason.value.trim() || undefined,
         metadataProvider: form.elements.metadataProvider.value,
         providerId: form.elements.providerId.value.trim() || null,
         seriesName: form.elements.seriesName.value.trim() || null,
@@ -704,8 +760,10 @@ function renderIdentificationDiagnostics(d) {
 const identifyDialog = $("#identify-disc-dialog");
 const identifyState = { planId: null, taskId: null, fingerprint: null, selected: null, existing: null };
 
-function fillNumberSelect(select, from, to, value, zeroLabel = "") {
-  const options = [];
+function fillNumberSelect(select, from, to, value, zeroLabel = "", optionalLabel = "") {
+  const options = optionalLabel
+    ? [`<option value=""${value === null || value === undefined ? " selected" : ""}>${escapeHtml(optionalLabel)}</option>`]
+    : [];
   for (let number = from; number <= to; number += 1) {
     options.push(`<option value="${number}"${number === value ? " selected" : ""}>${number === 0 && zeroLabel ? zeroLabel : number}</option>`);
   }
@@ -718,7 +776,7 @@ function showIdentifySelection(selected, season, disc, discName) {
   $("#identify-selected").innerHTML = `<b>${escapeHtml(selected.title)}${selected.year ? ` (${escapeHtml(selected.year)})` : ""}</b> · ${escapeHtml(selected.providerName || selected.provider)}`;
   const maxSeason = Math.max(selected.seasonCount || 0, season || 0, 15);
   fillNumberSelect($("#identify-season"), 0, maxSeason, season ?? 1, "0 - Specials");
-  fillNumberSelect($("#identify-disc"), 1, Math.max(disc || 0, 20), disc ?? 1);
+  fillNumberSelect($("#identify-disc"), 1, Math.max(disc || 0, 20), disc, "", "Not specified");
   $("#identify-disc-name").value = discName || "";
   $("#identify-save").disabled = false;
 }
@@ -831,7 +889,7 @@ $("#identify-disc-form").addEventListener("submit", async (event) => {
       provider: selected.provider,
       providerId: selected.seriesId || null,
       seasonNumber: Number($("#identify-season").value),
-      discNumber: Number($("#identify-disc").value),
+      discNumber: $("#identify-disc").value ? Number($("#identify-disc").value) : null,
       discName: $("#identify-disc-name").value.trim() || null,
       ...(selected.year ? { year: selected.year } : {}),
       ...(selected.posterUrl ? { posterUrl: selected.posterUrl } : {}),
@@ -936,16 +994,17 @@ function renderTvRecoveryEditor(plan, recovery) {
   const provider = recovery?.metadataProvider || "manual";
   return `<details class="tv-recovery-editor">
     <summary>Manual classification, metadata & episode recovery</summary>
-    <p class="hint">Detected: ${escapeHtml(recovery?.detectedDiscType || "DVD")} / ${escapeHtml(recovery?.detectedMediaType || "TV series")} · Final: ${escapeHtml(discType)} / ${escapeHtml(mediaType)}${recovery?.mediaTypeOverridden || recovery?.discTypeOverridden ? " (manual override active)" : " (no override)"}</p>
+    <p class="hint">Automatic Classification: ${escapeHtml(recovery?.detectedMediaType || "TV series")} · Manual Override: ${escapeHtml(recovery?.mediaTypeOverridden ? mediaType : "None")}${recovery?.mediaTypeOverridden ? " (active)" : ""}. Physical disc: ${escapeHtml(recovery?.detectedDiscType || "DVD")} → ${escapeHtml(discType)}</p>
     <form class="tv-recovery-form" data-plan-id="${escapeHtml(plan.id)}">
       <div class="tv-recovery-fields">
         <label>Disc type<select name="discType">${[
           ["cd", "CD"], ["dvd", "DVD"], ["bluray", "Blu-ray"], ["uhd_bluray", "UHD Blu-ray"], ["data_disc", "Data Disc"], ["unknown", "Unknown"]
         ].map(([value, label]) => `<option value="${value}"${discType === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
         <label>Media type<select name="mediaType">${[
-          ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music Album"], ["audiobook", "Audiobook"],
+          ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"], ["audiobook", "Audiobook"],
           ["music_video", "Music Video"], ["concert", "Concert"], ["documentary", "Documentary"], ["mixed_content", "Mixed Content"], ["other", "Other"]
         ].map(([value, label]) => `<option value="${value}"${mediaType === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+        <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
         <label>Metadata provider<select name="metadataProvider">${[
           ["tvdb", "TVDB"], ["tmdb", "TMDB"], ["imdb", "IMDb"], ["anidb", "AniDB"], ["manual", "Manual Entry"]
         ].map(([value, label]) => `<option value="${value}"${provider === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
@@ -1048,7 +1107,7 @@ async function loadTvMatching() {
 }
 
 function renderTvMatchingTask(entry) {
-  const { task, recovery } = entry;
+  const { task, recovery, mediaTypeAudit = [] } = entry;
   const series = recovery?.seriesName;
   const runtime = task.assignments.length
     ? Math.round(task.assignments.reduce((sum, assignment) => sum + assignment.durationSeconds, 0) /
@@ -1068,19 +1127,36 @@ function renderTvMatchingTask(entry) {
       <small class="muted">${suggestionText ? `Suggestions: ${escapeHtml(suggestionText)}` : "No automatic episode suggestion."}</small>
     </div>`;
   }).join("");
-  const canMap = Boolean(series && recovery?.seasonNumber !== null && recovery?.discNumber !== null);
+  const canMap = Boolean(series && recovery?.seasonNumber !== null);
+  const confidence = recovery?.detectedConfidence ?? task.diagnostics?.confidence;
+  const mediaTypeOptions = [
+    ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"]
+  ];
+  if (recovery && !mediaTypeOptions.some(([value]) => value === recovery.finalMediaType)) {
+    mediaTypeOptions.unshift([recovery.finalMediaType, `Current: ${recovery.finalMediaType}`]);
+  }
   return `<article class="tv-plan-card tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
     <div class="tv-plan-heading"><div><b>${escapeHtml(series || `${task.source.label || "Unidentified TV disc"}?`)}</b>
       <span class="list-sub">${escapeHtml(task.assignments.length)} episodes · about ${runtime} minutes each · Source label: ${escapeHtml(task.source.label || "Unavailable")}</span></div>
       <span class="result ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></div>
+    <p>${series ? "Identification status" : "Identification required"} · Confidence: ${confidence === undefined || confidence === null ? "Unavailable" : `${Math.round(confidence * 100)}%`} · Workflow: ${escapeHtml(task.status)}</p>
     ${series ? `<p>Season ${escapeHtml(recovery.seasonNumber ?? "unknown")} · Disc ${escapeHtml(recovery.discNumber ?? "unknown")}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} · ${escapeHtml(recovery.metadataProvider || "manual")}</p>` : ""}
     ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
+    ${recovery ? `<form class="tv-task-media-override" data-fingerprint="${escapeHtml(task.fingerprint)}">
+      <p class="hint">Automatic Classification: ${escapeHtml(recovery.detectedMediaType)} · Manual Override: ${escapeHtml(recovery.mediaTypeOverridden ? recovery.finalMediaType : "None")}${recovery.mediaTypeOverridden ? " (active)" : ""}</p>
+      <label>Media type<select name="mediaType">${mediaTypeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${recovery.finalMediaType === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
+      <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
+      <button type="submit" class="button secondary">Save classification</button>
+    </form>` : ""}
     <div class="tv-actions">
       <button type="button" class="button primary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Series / Season / Disc" : "Identify"}</button>
       ${canMap ? `<button type="button" class="button secondary tv-task-continue" data-job-id="${escapeHtml(task.jobId)}">${task.assignments.length ? "Save Mappings & Continue" : "Continue"}</button>` : ""}
       <button type="button" class="button danger tv-task-delete" data-job-id="${escapeHtml(task.jobId)}">Delete</button>
     </div>
     ${canMap && assignments ? `<div class="tv-task-assignments">${assignments}</div>` : ""}
+    ${mediaTypeAudit.length ? `<details><summary>Media classification audit (${mediaTypeAudit.length})</summary><ul>${mediaTypeAudit.map((record) =>
+      `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+    ).join("")}</ul></details>` : ""}
     <details><summary>Disc diagnostics</summary><pre>${escapeHtml(JSON.stringify(task.diagnostics, null, 2))}</pre></details>
   </article>`;
 }
@@ -1163,13 +1239,27 @@ async function loadTvReviews() {
   const selected = $("#tv-review-filter").value;
   const query = new URLSearchParams({ limit: "100" });
   if (selected) query.set("state", selected);
-  const { plans } = await api(`/api/v1/tv/reviews?${query}`);
-  $("#tv-review-list").innerHTML = plans.length
+  const [{ plans }, { tasks }] = await Promise.all([
+    api(`/api/v1/tv/reviews?${query}`),
+    api("/api/v1/tv/matching")
+  ]);
+  const planCards = plans.length
     ? (await Promise.all(plans.map(async (plan) => {
-      const { recovery } = await api(`/api/v1/tv/plans/${encodeURIComponent(plan.id)}/recovery`);
-      return `${renderTvPlanCard(plan, true, recovery, true)}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`;
+      const { recovery, mediaTypeAudit = [] } = await api(`/api/v1/tv/plans/${encodeURIComponent(plan.id)}/recovery`);
+      const audit = mediaTypeAudit.length
+        ? `<details><summary>Media classification audit (${mediaTypeAudit.length})</summary><ul>${mediaTypeAudit.map((record) =>
+          `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+        ).join("")}</ul></details>`
+        : "";
+      return `${renderTvPlanCard(plan, true, recovery, true)}${audit}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`;
     }))).join("")
-    : '<div class="empty-state">No plans in this review state.</div>';
+    : "";
+  const identificationCards = tasks.length
+    ? `<h3>TV discs requiring identification</h3>${tasks.map(renderTvMatchingTask).join("")}`
+    : "";
+  $("#tv-review-list").innerHTML = planCards || identificationCards
+    ? `${identificationCards}${planCards}`
+    : '<div class="empty-state">No plans or unknown TV discs require review.</div>';
 }
 
 const reviewCategoryLabels = {
@@ -2099,6 +2189,28 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  const tvForm = event.target.closest(".tv-task-media-override");
+  if (tvForm) {
+    event.preventDefault();
+    const button = tvForm.querySelector('[type="submit"]');
+    button.disabled = true;
+    try {
+      await api(`/api/v1/discs/recovery/${encodeURIComponent(tvForm.dataset.fingerprint)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          mediaType: tvForm.elements.mediaType.value,
+          mediaTypeReason: tvForm.elements.mediaTypeReason.value.trim() || undefined
+        })
+      });
+      notify("Manual media classification saved and audit logged.");
+      await Promise.all([loadTvMatchingTasks(), loadTvReviews()]);
+    } catch (error) {
+      notify(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
   const form = event.target.closest(".tv-recovery-form");
   if (!form) return;
   event.preventDefault();
@@ -2138,6 +2250,7 @@ document.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         discType: form.elements.discType.value,
         mediaType: form.elements.mediaType.value,
+        mediaTypeReason: form.elements.mediaTypeReason.value.trim() || undefined,
         metadataProvider: form.elements.metadataProvider.value,
         providerId: form.elements.providerId.value.trim() || null,
         seriesName: form.elements.seriesName.value.trim() || null,

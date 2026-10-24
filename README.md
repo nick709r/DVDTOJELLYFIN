@@ -65,6 +65,7 @@ AutoDisc is built on a provider and workflow model, so new media types and metad
 - **Disc diagnostics**: a live view of detection, classification, metadata and processing.
 - **Explainable decisions**: confidence scores with per-criterion evidence.
 - **Review Centre**: a single place to resolve failed jobs, unknown media and metadata conflicts.
+- **Media-type overrides**: correct a disc to Movie, TV Series, Music or Data Disc; automatic detection remains visible and every correction records the administrator, time and optional reason.
 - **Destination profiles**: named output profiles with per-media routing.
 - **Automated workflows**: Regular Auto, Full Auto and Review-Based modes.
 - **Fingerprint tracking**: recognises discs it has seen and reuses prior decisions.
@@ -174,6 +175,11 @@ It collects:
 - **Recovery actions**: retry where safe, set provider IDs, map tracks to episodes, enter metadata manually, fix folders and retry
 
 Every manual correction is recorded with the administrator and time. The original detection is never overwritten, and an append-only audit trail with text and JSON export supports later analysis.
+Unknown TV discs are also listed here with their workflow state and confidence.
+Choose **Identify** to search series candidates, select a series and season,
+optionally add disc information, preview provider metadata, and confirm. AutoDisc
+then enriches the saved recovery record and continues from staged files whenever
+episode matches are reliable; unresolved mappings stay staged for review.
 
 ---
 
@@ -185,11 +191,16 @@ episode counts, runtimes, source labels and diagnostics while the media remains
 unpublished.
 
 Identify the series by title, TVDB ID, TMDB ID or IMDb ID, then choose the
-season and disc number and map the staged titles to episodes. **Identify And
+season, optionally add a disc number, and map staged titles to episodes. **Identify And
 Continue** processes and publishes the existing staged files; the disc does
 not need to be reinserted or re-ripped. Staged content is kept indefinitely by
 default. Deleting a matching task removes only its temporary staged content,
 and optional retention can be configured in days.
+
+An override is stored with the disc fingerprint, so it survives restarts,
+rescans and recovery. Publishing continues to use the effective manual
+classification; unsupported media are held rather than routed through the
+wrong encoder. History and diagnostics show both automatic and manual values.
 
 ---
 

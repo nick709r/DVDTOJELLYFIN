@@ -728,7 +728,7 @@ async function processMappedTvEpisodes(
       if (task.status !== "processing" && !activeJob) continue;
       const message = "TV matching was interrupted; staged media is available to continue.";
       jobs.updateTvMatchingTask(task.jobId, {
-        status: recovery?.seriesName && recovery.seasonNumber !== null && recovery.discNumber !== null
+        status: recovery?.seriesName && recovery.seasonNumber !== null
           ? "awaiting-mapping" : "awaiting-identification",
         failure: message
       });
@@ -749,15 +749,15 @@ async function processMappedTvEpisodes(
     jobs.updateTvMatchingTask(task.jobId, { status: "processing", failure: null });
     try {
       const recovery = jobs.getDiscRecovery(task.fingerprint);
-      if (!recovery?.seriesName || recovery.seasonNumber === null || recovery.discNumber === null) {
-        throw new Error("Identify the series, season, and disc number before continuing");
+      if (!recovery?.seriesName || recovery.seasonNumber === null) {
+        throw new Error("Identify the series and season before continuing");
       }
       const savedIdentification: TvSavedIdentification = {
         seriesName: recovery.seriesName,
         seriesId: recovery.providerId,
         provider: recovery.metadataProvider === "manual" ? "manual" : recovery.metadataProvider,
         seasonNumber: recovery.seasonNumber,
-        discNumber: recovery.discNumber,
+        discNumber: recovery.discNumber ?? 1,
         discName: recovery.discName,
         origin: recovery.identifiedBy === "user" ? "user" : "fingerprint",
         ...(typeof recovery.importedMetadata?.year === "number" ? { year: recovery.importedMetadata.year } : {})

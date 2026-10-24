@@ -21,7 +21,7 @@ import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
 import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manual-music-metadata.js";
 import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
-import type { AppSettings, EncoderChoice, LibraryMetadataSettings, OutputFormat } from "./model.js";
+import type { AppSettings, EncoderChoice, Job, LibraryMetadataSettings, OutputFormat } from "./model.js";
 import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js";
 import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
@@ -299,11 +299,28 @@ app.get("/api/health", async () => {
   };
 });
 
+function jobWithClassification(job: Job): Job {
+  const recovery = job.discFingerprint ? repositories.discRecovery.get(job.discFingerprint) : undefined;
+  return {
+    ...job,
+    classification: recovery ? {
+      detectedMediaType: recovery.detectedMediaType,
+      finalMediaType: recovery.finalMediaType,
+      mediaTypeOverridden: recovery.mediaTypeOverridden,
+      audit: repositories.discRecovery.mediaTypeOverrideAudit(recovery.fingerprint)
+    } : null
+  };
+}
+
+function isDiscRecoveryActive(fingerprint: string): boolean {
+  return repositories.jobs.active()?.discFingerprint === fingerprint;
+}
+
 app.get("/api/v1/status", async () => {
   const active = activeJob();
   return {
     state: active?.status ?? getRuntimeStatus(),
-    job: active,
+    job: active ? jobWithClassification(active) : active,
     manualMusicMetadata: active ? getManualMusicMetadataPrompt(active.id) : null,
     passwordConfigured: passwordConfigured(),
     encoderPreference: getSettings().encoder
@@ -316,8 +333,8 @@ app.get("/api/v1/dashboard", async () => {
     stats: jobStats(),
     mediaStats: repositories.history.statsByMediaType(),
     libraries: await libraryHealth(),
-    recent: listJobs(10),
-    active,
+    recent: listJobs(10).map(jobWithClassification),
+    active: active ? jobWithClassification(active) : active,
     manualMusicMetadata: active ? getManualMusicMetadataPrompt(active.id) : null,
     state: active?.status ?? getRuntimeStatus()
   };
@@ -325,7 +342,7 @@ app.get("/api/v1/dashboard", async () => {
 
 app.get<{ Querystring: { limit?: string } }>("/api/v1/history", async (request) => {
   const limit = Math.max(1, Math.min(250, Number(request.query.limit ?? 100) || 100));
-  return { jobs: listJobs(limit) };
+  return { jobs: listJobs(limit).map(jobWithClassification) };
 });
 
 app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/history/:id", async (request, reply) => {
@@ -453,7 +470,7 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/jobs/:id/music-meta
 app.get<{ Params: { id: string } }>("/api/v1/history/:id", async (request, reply) => {
   const details = jobDetails(request.params.id);
   if (!details) return reply.code(404).send({ error: "Job not found" });
-  return details;
+  return { ...details, job: jobWithClassification(details.job) };
 });
 
 app.get<{ Querystring: { jobId?: string; live?: string } }>("/api/v1/diagnostics", async (request, reply) => {
@@ -854,7 +871,10 @@ app.get<{ Querystring: { state?: string; limit?: string } }>("/api/v1/tv/reviews
 app.get<{ Params: { id: string } }>("/api/v1/tv/plans/:id/recovery", async (request, reply) => {
   const plan = repositories.tvProcessingPlans.get(request.params.id);
   if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
-  return { recovery: repositories.discRecovery.get(plan.fingerprint) ?? null };
+  return {
+    recovery: repositories.discRecovery.get(plan.fingerprint) ?? null,
+    mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(plan.fingerprint)
+  };
 });
 
 function parseEpisodeMappings(value: unknown): EpisodeMapping[] {
@@ -963,12 +983,12 @@ function isValidLibraryMetadata(value: unknown): value is LibraryMetadataSetting
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recovery", async (request, reply) => {
   const plan = repositories.tvProcessingPlans.get(request.params.id);
   if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
-  if (repositories.jobs.active()) return reply.code(409).send({ error: "Wait until disc processing finishes before changing recovery data" });
+  if (isDiscRecoveryActive(plan.fingerprint)) return reply.code(409).send({ error: "Wait until this disc finishes processing before changing recovery data" });
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
     return reply.code(400).send({ error: "Recovery metadata must be an object" });
   }
   const body = request.body as Record<string, unknown>;
-  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber",
+  const allowed = ["discType", "mediaType", "mediaTypeReason", "metadataProvider", "providerId", "seriesName", "seasonNumber",
     "mappings", "notes", "importedMetadata", "artworkReferences"];
   if (Object.keys(body).some((key) => !allowed.includes(key))) {
     return reply.code(400).send({ error: "Recovery metadata contains unsupported fields" });
@@ -984,6 +1004,8 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recover
       (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100)) ||
     (body.notes !== undefined && body.notes !== null &&
       (typeof body.notes !== "string" || body.notes.length > 2000)) ||
+    (body.mediaTypeReason !== undefined &&
+      (typeof body.mediaTypeReason !== "string" || body.mediaTypeReason.length > 500)) ||
     (body.mappings !== undefined && (!Array.isArray(body.mappings) || body.mappings.length > 100)) ||
     (body.importedMetadata !== undefined && !validImportedMetadata(body.importedMetadata)) ||
     (body.artworkReferences !== undefined && !validArtworkReferences(body.artworkReferences))) {
@@ -993,9 +1015,19 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recover
   let patch: DiscRecoveryUpdate;
   try {
     mappings = body.mappings === undefined ? undefined : parseEpisodeMappings(body.mappings);
+    const username = repositories.setup.get().adminUsername;
+    if (body.mediaType !== undefined && !username) {
+      return reply.code(503).send({ error: "Administrator identity is unavailable" });
+    }
     patch = {
       ...(body.discType === undefined ? {} : { finalDiscType: body.discType as DiscType }),
       ...(body.mediaType === undefined ? {} : { finalMediaType: body.mediaType as MediaType }),
+      ...(body.mediaType === undefined ? {} : {
+        mediaTypeOverrideAudit: {
+          username: username!,
+          reason: typeof body.mediaTypeReason === "string" ? body.mediaTypeReason : null
+        }
+      }),
       ...(body.metadataProvider === undefined ? {} : { metadataProvider: body.metadataProvider as MetadataProviderId }),
       ...(body.providerId === undefined ? {} : { providerId: body.providerId as string | null }),
       ...(body.seriesName === undefined ? {} : { seriesName: body.seriesName as string | null }),
@@ -1039,8 +1071,9 @@ function saveIdentification(
   if (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100) {
     return { status: 400, error: "Season number must be an integer from 0 to 100" };
   }
-  if (!Number.isInteger(body.discNumber) || Number(body.discNumber) < 1 || Number(body.discNumber) > 100) {
-    return { status: 400, error: "Disc number must be an integer from 1 to 100" };
+  if (body.discNumber !== undefined && body.discNumber !== null &&
+    (!Number.isInteger(body.discNumber) || Number(body.discNumber) < 1 || Number(body.discNumber) > 100)) {
+    return { status: 400, error: "Disc number must be an integer from 1 to 100 when provided" };
   }
   if (body.discName !== undefined && body.discName !== null &&
     (typeof body.discName !== "string" || body.discName.length > 200)) {
@@ -1061,13 +1094,19 @@ function saveIdentification(
   }
   try {
     repositories.discRecovery.recordDetection(fingerprint, "dvd", "tv_series");
+    const username = repositories.setup.get().adminUsername;
+    if (!username) return { status: 503, error: "Administrator identity is unavailable" };
     const recovery = repositories.discRecovery.update(fingerprint, {
       finalMediaType: "tv_series",
+      mediaTypeOverrideAudit: {
+        username,
+        reason: "Confirmed guided TV identification"
+      },
       metadataProvider: provider,
       providerId: (body.providerId as string | null | undefined) ?? null,
       seriesName: body.seriesName.trim(),
       seasonNumber: Number(body.seasonNumber),
-      discNumber: Number(body.discNumber),
+      discNumber: body.discNumber === undefined || body.discNumber === null ? null : Number(body.discNumber),
       discName: typeof body.discName === "string" && body.discName.trim() ? body.discName.trim() : null,
       identifiedBy: "user",
       importedMetadata: {
@@ -1123,14 +1162,19 @@ app.post<{ Body: unknown }>("/api/v1/tv/identify/search", async (request, reply)
 app.get("/api/v1/tv/matching", async () => ({
   tasks: repositories.tvMatchingTasks.list().map((task) => ({
     task,
-    recovery: repositories.discRecovery.get(task.fingerprint) ?? null
+    recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
+    mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
   }))
 }));
 
 app.get<{ Params: { id: string } }>("/api/v1/tv/matching/:id", async (request, reply) => {
   const task = repositories.tvMatchingTasks.get(request.params.id);
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
-  return { task, recovery: repositories.discRecovery.get(task.fingerprint) ?? null };
+  return {
+    task,
+    recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
+    mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
+  };
 });
 
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/identification", async (request, reply) => {
@@ -1221,6 +1265,10 @@ app.post<{ Params: { id: string } }>("/api/v1/tv/matching/:id/continue", async (
   const task = repositories.tvMatchingTasks.get(request.params.id);
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
   if (task.status === "processing") return reply.code(409).send({ error: "TV matching task is already processing" });
+  const recovery = repositories.discRecovery.get(task.fingerprint);
+  if (recovery?.mediaTypeOverridden && recovery.finalMediaType !== "tv_series") {
+    return reply.code(409).send({ error: "The manual media classification is not TV Series; this staged TV workflow cannot be published" });
+  }
   if (activeJob()) return reply.code(409).send({ error: "Wait until the active disc job finishes before continuing this TV task" });
   if (!tvMatchingActions) return reply.code(503).send({ error: "TV matching service is unavailable" });
   void tvMatchingActions.continue(task.jobId).catch((error: unknown) => {
@@ -1266,7 +1314,7 @@ app.get<{ Params: { id: string } }>("/api/v1/tv/plans/:id/identification", async
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/identification", async (request, reply) => {
   const plan = repositories.tvProcessingPlans.get(request.params.id);
   if (!plan) return reply.code(404).send({ error: "TV processing plan not found" });
-  if (repositories.jobs.active()) return reply.code(409).send({ error: "Wait until disc processing finishes before identifying the disc" });
+  if (isDiscRecoveryActive(plan.fingerprint)) return reply.code(409).send({ error: "Wait until this disc finishes processing before identifying it" });
   const outcome = saveIdentification(plan.fingerprint, request.body);
   if ("error" in outcome) return reply.code(outcome.status).send({ error: outcome.error });
   return outcome;
@@ -1276,7 +1324,7 @@ app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/:fing
   if (!/^[0-9a-f]{16,128}$/i.test(request.params.fingerprint)) {
     return reply.code(400).send({ error: "Disc fingerprint is invalid" });
   }
-  if (repositories.jobs.active()) return reply.code(409).send({ error: "Wait until disc processing finishes before identifying the disc" });
+  if (isDiscRecoveryActive(request.params.fingerprint)) return reply.code(409).send({ error: "Wait until this disc finishes processing before identifying it" });
   const outcome = saveIdentification(request.params.fingerprint, request.body);
   if ("error" in outcome) return reply.code(outcome.status).send({ error: outcome.error });
   return outcome;
@@ -1292,16 +1340,17 @@ app.get<{ Querystring: { limit?: string } }>("/api/v1/discs/overridden", async (
 });
 
 app.get<{ Params: { fingerprint: string } }>("/api/v1/discs/recovery/:fingerprint", async (request) => ({
-  recovery: repositories.discRecovery.get(request.params.fingerprint) ?? null
+  recovery: repositories.discRecovery.get(request.params.fingerprint) ?? null,
+  mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(request.params.fingerprint)
 }));
 
 app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/recovery/:fingerprint", async (request, reply) => {
-  if (repositories.jobs.active()) return reply.code(409).send({ error: "Wait until disc processing finishes before changing recovery data" });
+  if (isDiscRecoveryActive(request.params.fingerprint)) return reply.code(409).send({ error: "Wait until this disc finishes processing before changing recovery data" });
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
     return reply.code(400).send({ error: "Recovery update must be an object" });
   }
   const body = request.body as Record<string, unknown>;
-  const allowed = ["discType", "mediaType", "metadataProvider", "providerId", "seriesName", "seasonNumber",
+  const allowed = ["discType", "mediaType", "mediaTypeReason", "metadataProvider", "providerId", "seriesName", "seasonNumber",
     "mappings", "notes", "importedMetadata", "artworkReferences"];
   if (Object.keys(body).some((key) => !allowed.includes(key)) ||
     (body.discType !== undefined && !discTypes.includes(body.discType as never)) ||
@@ -1315,14 +1364,26 @@ app.put<{ Params: { fingerprint: string }; Body: unknown }>("/api/v1/discs/recov
       (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100)) ||
     (body.notes !== undefined && body.notes !== null &&
       (typeof body.notes !== "string" || body.notes.length > 2000)) ||
+    (body.mediaTypeReason !== undefined &&
+      (typeof body.mediaTypeReason !== "string" || body.mediaTypeReason.length > 500)) ||
     (body.importedMetadata !== undefined && !validImportedMetadata(body.importedMetadata)) ||
     (body.artworkReferences !== undefined && !validArtworkReferences(body.artworkReferences))) {
     return reply.code(400).send({ error: "Recovery update contains invalid values" });
   }
   try {
+    const username = repositories.setup.get().adminUsername;
+    if (body.mediaType !== undefined && !username) {
+      return reply.code(503).send({ error: "Administrator identity is unavailable" });
+    }
     const recovery = repositories.discRecovery.update(request.params.fingerprint, {
       ...(body.discType === undefined ? {} : { finalDiscType: body.discType as DiscType }),
       ...(body.mediaType === undefined ? {} : { finalMediaType: body.mediaType as MediaType }),
+      ...(body.mediaType === undefined ? {} : {
+        mediaTypeOverrideAudit: {
+          username: username!,
+          reason: typeof body.mediaTypeReason === "string" ? body.mediaTypeReason : null
+        }
+      }),
       ...(body.metadataProvider === undefined ? {} : { metadataProvider: body.metadataProvider as MetadataProviderId }),
       ...(body.providerId === undefined ? {} : { providerId: body.providerId as string | null }),
       ...(body.seriesName === undefined ? {} : { seriesName: body.seriesName as string | null }),

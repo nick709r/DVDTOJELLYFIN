@@ -426,4 +426,22 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (25, ?)")
       .run(new Date().toISOString());
   }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 26").get()) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS media_type_override_audit (
+        id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        job_id TEXT,
+        original_type TEXT NOT NULL,
+        new_type TEXT NOT NULL,
+        username TEXT NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS media_type_override_audit_disc
+        ON media_type_override_audit(fingerprint, created_at DESC);
+    `);
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (26, ?)")
+      .run(new Date().toISOString());
+  }
 }

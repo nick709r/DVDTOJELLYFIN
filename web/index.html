@@ -112,10 +112,11 @@
             <p id="disc-recovery-summary" class="classification-history-content">Detected and final classifications are stored separately.</p>
             <label>Final disc type<select name="discType"></select></label>
             <label>Final media type<select name="mediaType">
-              <option value="movie">Movie</option><option value="tv_series">TV Series</option><option value="music_album">Music Album</option>
+              <option value="movie">Movie</option><option value="tv_series">TV Series</option><option value="music_album">Music</option><option value="data_disc">Data Disc</option>
               <option value="audiobook">Audiobook</option><option value="music_video">Music Video</option><option value="concert">Concert</option>
               <option value="documentary">Documentary</option><option value="mixed_content">Mixed Content</option><option value="other">Other</option>
             </select></label>
+            <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
             <label>Metadata provider<select name="metadataProvider">
               <option value="tvdb">TVDB</option><option value="tmdb">TMDB</option><option value="imdb">IMDb</option>
               <option value="anidb">AniDB</option><option value="manual">Manual Entry</option>
@@ -125,7 +126,7 @@
             <label>Season number<input name="seasonNumber" type="number" min="0" max="100"></label>
             <label>Notes<textarea name="notes" maxlength="2000"></textarea></label>
             <button class="button secondary" type="submit">Save Media Recovery</button>
-            <p class="hint">Manual choices take precedence on the next disc detection. TV tracks can then be mapped in Review Centre.</p>
+            <p class="hint">Automatic classification remains visible for reference. Manual choices take precedence on the next disc detection and are audit logged. TV tracks can then be mapped in Review Centre.</p>
           </form>
           <div id="classification-metrics"></div>
         </article>
@@ -438,7 +439,7 @@
           <p id="identify-selected" class="inline-info"></p>
           <div class="form-row">
             <label>Season Number<select id="identify-season"></select></label>
-            <label>Disc Number<select id="identify-disc"></select></label>
+            <label>Disc Number (optional)<select id="identify-disc"></select></label>
           </div>
           <label>Disc Name (optional)<input id="identify-disc-name" maxlength="200"></label>
         </div>

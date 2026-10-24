@@ -5,11 +5,17 @@ metadata, and track-to-episode mappings by disc fingerprint. These user values
 take precedence over automatic classification and episode suggestions. The
 detected values remain stored and are never rewritten by an override.
 
-## Identify Disc (series, season and disc number)
+## Identify Disc (series and season; optional disc number)
 
 TV identification no longer depends on the disc label. `TvWorkflowService.prepare` works through, in order: user-saved identification, saved fingerprint mapping, optical volume label, filesystem volume name, MakeMKV disc name, DVD metadata, TVDB search, TMDB search, runtime/structure analysis and episode-count matching. Names are normalized (`fresh-off-the-boat`, `Fresh_Off_The_Boat` and `FRESH OFF THE BOAT` all become `Fresh Off The Boat`; season/disc markers are stripped) and several search variants are tried. An empty label does not stop the pipeline.
 
-If automatic matching fails, use **Identify Disc** (Review Centre header, Disc Diagnostics, or **Identify Series / Change Series / Change Season / Change Disc Number** on a TV review card). Search by title, `tvdb:ID`, `tmdb:ID` or an IMDb ID (`tt…`), choose a result, pick the season and disc number (optional disc name) and save. The mapping is stored against the disc fingerprint and is applied automatically when the disc is inserted again. Episode-to-title mapping still requires confirmation and execution stays disabled.
+If automatic matching fails, use **Identify Disc** in Review Centre or Disc Diagnostics, or select **Identify** on an unknown-TV card. Search by title, `tvdb:ID`, `tmdb:ID` or an IMDb ID (`tt…`), compare possible matches, choose a series and season, and optionally enter the disc number and name. The confirmation records provider metadata and artwork references, then resumes analysis against the staged files. Reliable episode matches are generated automatically; uncertain tracks remain staged for review rather than being published without confirmation.
+
+Unknown TV discs are visible in Review Centre with an identification-required
+status, the detection confidence when available, current task state and a
+series-search action. A task in `awaiting-identification` remains durable in
+SQLite and its extracted files remain protected in staging across restart and
+crash recovery. Reopening the task resumes identification without another rip.
 
 Identification diagnostics (volume label, filesystem name, fingerprint, queries, per-provider matches, failures, candidates, the 10 pipeline steps) appear in the review card and in Disc Diagnostics.
 
@@ -73,6 +79,16 @@ number, episode mappings (including optional air dates and notes), notes, and
 the update timestamp. Migration 20 adds imported metadata and validated
 artwork references to that recovery record. Existing databases receive the
 new columns without rewriting jobs, TV plans, or classification audit history.
+Migration 26 adds the append-only `media_type_override_audit` table. Manual
+changes retain the prior and new classifications, disc fingerprint, optional
+job ID, administrator username, timestamp and optional reason. Updating the
+recovery record and appending its audit row are one SQLite transaction.
+
+Supported manual media classifications include Movie (`movie`), TV Series
+(`tv_series`), Music (`music_album`) and Data Disc (`data_disc`). Detected
+classification is retained as the automatic value. A manual value takes
+precedence on later scans; a Data Disc or another unsupported DVD workflow
+classification is held for review instead of being sent to the movie publisher.
 
 At processing time, a manual final media classification is checked before the
 automatic TV heuristic. Saved episode mappings are used directly and do not
@@ -85,12 +101,16 @@ These authenticated routes expose the recovery workflow:
 
 - `GET /api/v1/discs/recovery/:fingerprint` reads a disc recovery record.
 - `PUT /api/v1/discs/recovery/:fingerprint` saves disc/media classification,
-  provider selection, series/season metadata, mappings, and notes.
+  provider selection, series/season metadata, mappings, and notes. Include
+  optional `mediaTypeReason` (up to 500 characters) to annotate a manual
+  classification change.
+- The recovery GET response includes `mediaTypeAudit`, newest first, with the
+  original/new classification, username, timestamp, optional reason and job ID.
 - `GET /api/v1/discs/overridden?limit=100` lists records with a classification
   override.
 - `GET /api/v1/tv/plans/:id/recovery` reads recovery data for a TV review plan.
 - `PUT /api/v1/tv/plans/:id/recovery` saves classification, series metadata,
-  and mappings. A mapping has the shape
+  and mappings, and accepts the same optional `mediaTypeReason`. A mapping has the shape
   `{ "trackId": "1", "episodes": [{ "seriesId": "provider-id", "seasonNumber": 1, "episodeNumber": 1, "title": "Pilot", "airDate": "2020-01-01", "notes": "Verified" }] }`.
   Optional `importedMetadata` and `artworkReferences` fields preserve the
   confirmed provider result on the disc recovery record.

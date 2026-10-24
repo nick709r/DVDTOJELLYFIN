@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { scryptSync } from "node:crypto";
 import { defaultSettings } from "../dist/infrastructure/database/default-settings.js";
@@ -47,7 +50,11 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 25);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 26);
+  assert.deepEqual(
+    db.pragma("table_info(media_type_override_audit)").map((column) => column.name),
+    ["id", "fingerprint", "job_id", "original_type", "new_type", "username", "reason", "created_at"]
+  );
   assert.deepEqual(
     db.pragma("table_info(tv_matching_tasks)").map((column) => column.name),
     ["job_id", "fingerprint", "status", "staging_path", "source_json", "diagnostics_json", "files_json",
@@ -73,6 +80,7 @@ test("database migrations preserve legacy job history and add current columns", 
   const updatedRecovery = recovery.update("recovery-disc", {
     finalDiscType: "dvd",
     finalMediaType: "tv_series",
+    mediaTypeOverrideAudit: { username: "admin", reason: "Disc label indicates television" },
     metadataProvider: "manual",
     seriesName: "Example Show",
     seasonNumber: 1,
@@ -86,6 +94,17 @@ test("database migrations preserve legacy job history and add current columns", 
   assert.equal(updatedRecovery.detectedMediaType, "movie");
   assert.equal(updatedRecovery.finalMediaType, "tv_series");
   assert.equal(updatedRecovery.mediaTypeOverridden, true);
+  assert.deepEqual(recovery.mediaTypeOverrideAudit("recovery-disc").map((entry) => ({
+    originalType: entry.originalType,
+    newType: entry.newType,
+    username: entry.username,
+    reason: entry.reason
+  })), [{
+    originalType: "movie",
+    newType: "tv_series",
+    username: "admin",
+    reason: "Disc label indicates television"
+  }]);
   assert.equal(updatedRecovery.mappings[0].episodes[0].title, "Pilot");
   assert.equal(updatedRecovery.importedMetadata.year, 2024);
   assert.equal(updatedRecovery.artworkReferences[0].kind, "poster");
@@ -173,8 +192,41 @@ test("destination migration preserves saved legacy library paths and routes exis
   });
   assert.equal(profile.routes.music, "lidarr");
   assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
-  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 25);
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 26);
   db.close();
+});
+
+test("Migration 26 is repeatable and media overrides survive restart and rescan", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-media-override-migration-"));
+  const filename = path.join(root, "state.sqlite");
+  let db = new Database(filename);
+  let repositories = createSqliteRepositories(db, defaultSettings);
+  try {
+    migrateDatabase(db, defaultSettings);
+    migrateDatabase(db, defaultSettings);
+    assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 26);
+    repositories.discRecovery.recordDetection("persistent-override", "dvd", "movie", 0.81);
+    repositories.discRecovery.update("persistent-override", {
+      finalMediaType: "tv_series",
+      mediaTypeOverrideAudit: { username: "admin", reason: "Episode-shaped titles" }
+    });
+    repositories.close();
+
+    db = new Database(filename);
+    migrateDatabase(db, defaultSettings);
+    repositories = createSqliteRepositories(db, defaultSettings);
+    const persisted = repositories.discRecovery.get("persistent-override");
+    assert.equal(persisted.finalMediaType, "tv_series");
+    assert.equal(persisted.mediaTypeOverridden, true);
+    assert.equal(repositories.discRecovery.mediaTypeOverrideAudit("persistent-override")[0].reason, "Episode-shaped titles");
+
+    repositories.discRecovery.recordDetection("persistent-override", "dvd", "movie", 0.95);
+    assert.equal(repositories.discRecovery.get("persistent-override").finalMediaType, "tv_series");
+    assert.equal(repositories.discRecovery.mediaTypeOverrideAudit("persistent-override").length, 1);
+  } finally {
+    repositories.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("SQLite repository adapters preserve settings, job, history, event and recovery contracts", () => {

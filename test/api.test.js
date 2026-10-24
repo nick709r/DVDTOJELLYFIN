@@ -523,12 +523,12 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         seriesName: "Fresh Off The Boat",
         provider: "tvdb",
         providerId: "292941",
-        seasonNumber: 3,
-        discNumber: 1
+        seasonNumber: 3
       }
     });
     assert.equal(saveMatchingIdentification.statusCode, 200);
     assert.equal(saveMatchingIdentification.json().recovery.seriesName, "Fresh Off The Boat");
+    assert.equal(saveMatchingIdentification.json().recovery.discNumber, null);
     const saveMatchingAssignments = await app.inject({
       method: "PUT",
       url: `/api/v1/tv/matching/${matchingJobId}/assignments`,

@@ -48,6 +48,7 @@ test("disc recovery API preserves detections and gives saved manual values prece
       payload: {
         discType: "dvd",
         mediaType: "tv_series",
+        mediaTypeReason: "Several episode-length titles",
         metadataProvider: "manual",
         providerId: null,
         seriesName: "Example Show",
@@ -73,13 +74,33 @@ test("disc recovery API preserves detections and gives saved manual values prece
     assert.equal(update.json().recovery.detectedConfidence, 0.82);
     assert.equal(update.json().recovery.finalMediaType, "tv_series");
     assert.equal(update.json().recovery.mediaTypeOverridden, true);
+    const persisted = await inject({ method: "GET", url: "/api/v1/discs/recovery/fingerprint-recovery" });
+    const overrideAudit = persisted.json().mediaTypeAudit;
+    assert.equal(overrideAudit.length, 1);
+    assert.equal(overrideAudit[0].originalType, "movie");
+    assert.equal(overrideAudit[0].newType, "tv_series");
+    assert.equal(overrideAudit[0].username, "recovery-admin");
+    assert.equal(overrideAudit[0].reason, "Several episode-length titles");
     assert.equal(update.json().recovery.mappings[0].episodes[0].airDate, "2020-01-01");
     assert.equal(update.json().recovery.mappings[0].episodes[0].notes, "User-verified episode");
     assert.equal(update.json().recovery.importedMetadata.overview, "Series details");
     assert.equal(update.json().recovery.artworkReferences[0].kind, "poster");
-    const persisted = await inject({ method: "GET", url: "/api/v1/discs/recovery/fingerprint-recovery" });
     assert.deepEqual(persisted.json().recovery.mappings, update.json().recovery.mappings);
     assert.deepEqual(persisted.json().recovery.artworkReferences, update.json().recovery.artworkReferences);
+    repositories.discRecovery.recordDetection("fingerprint-recovery", "dvd", "movie", 0.95);
+    assert.equal(repositories.discRecovery.get("fingerprint-recovery").finalMediaType, "tv_series");
+
+    const dataDiscOverride = await inject({
+      method: "PUT",
+      url: "/api/v1/discs/recovery/fingerprint-recovery",
+      payload: { mediaType: "data_disc", mediaTypeReason: "The disc contains files, not video" }
+    });
+    assert.equal(dataDiscOverride.statusCode, 200);
+    assert.equal(dataDiscOverride.json().recovery.finalMediaType, "data_disc");
+    const updatedAudit = await inject({ method: "GET", url: "/api/v1/discs/recovery/fingerprint-recovery" });
+    assert.equal(updatedAudit.json().mediaTypeAudit.length, 2);
+    assert.equal(updatedAudit.json().mediaTypeAudit[0].originalType, "tv_series");
+    assert.equal(updatedAudit.json().mediaTypeAudit[0].newType, "data_disc");
 
     const invalid = await inject({
       method: "PUT",
