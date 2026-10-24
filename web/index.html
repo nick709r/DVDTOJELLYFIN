@@ -92,7 +92,7 @@
       <section id="page-diagnostics" class="page hidden">
         <article class="card table-card">
           <div class="card-heading"><div><p class="eyebrow">LIVE INSPECTION</p><h2>Disc Diagnostics</h2></div>
-            <div class="diagnostics-controls"><label for="diagnostics-job">Disc or job</label><select id="diagnostics-job"></select><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button></div>
+            <div class="diagnostics-controls"><label for="diagnostics-job">Disc or job</label><select id="diagnostics-job"></select><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button><button id="forget-diagnostics-disc" class="button danger" type="button">Forget Disc</button></div>
           </div>
           <div id="diagnostics-live" class="diagnostics-grid"></div>
           <p id="diagnostics-live-status" class="hint" role="status">Waiting for disc detection data.</p>
@@ -448,6 +448,19 @@
           <button id="identify-cancel" class="button secondary" type="button">Cancel</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="forget-disc-dialog">
+      <div class="delete-confirmation">
+        <h2>Forget Disc?</h2>
+        <p>This will permanently remove:</p>
+        <ul><li>Disc history</li><li>Review records</li><li>Episode matches</li><li>Metadata</li><li>Diagnostics</li><li>Processing logs</li><li>Disc fingerprints</li></ul>
+        <p>The disc will be treated as completely new if inserted again.</p>
+        <p><strong>This action cannot be undone.</strong></p>
+        <div class="metadata-actions">
+          <button id="forget-disc-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="forget-disc-confirm" class="button danger" type="button">Forget Disc</button>
+        </div>
+      </div>
     </dialog>
     <dialog id="tv-delete-dialog">
       <div class="delete-confirmation">

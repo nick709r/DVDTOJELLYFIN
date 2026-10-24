@@ -1,10 +1,11 @@
 import { access, copyFile, lstat, mkdir, readdir, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { MediaWorkflow, MediaWorkflowContext } from "../../application/media-workflow-registry.js";
 import type { InspectedMediaSource } from "../../application/media-source-coordinator.js";
 import type { MediaCandidate } from "../../domain/media.js";
+import { fingerprintDisc } from "../../domain/disc-fingerprint.js";
 import type { MediaSourceCoordinator } from "../../application/media-source-coordinator.js";
 import type { DiscTitle } from "../../model.js";
 import { events, notifyStatus } from "../../events.js";
@@ -732,7 +733,21 @@ async function processMappedTvEpisodes(
           ? "awaiting-mapping" : "awaiting-identification",
         failure: message
       });
-      if (job && job.status !== "interrupted") jobs.interruptTvMatching(task.jobId, message);
+      if (job && ["inspecting", "ripping", "converting", "publishing"].includes(job.status)) {
+        jobs.interruptTvMatching(task.jobId, message);
+      }
+      if (job) {
+        jobs.createReview({
+          category: "tv_review",
+          severity: "medium",
+          title: "TV disc matching needs to continue",
+          description: message,
+          relatedJobId: job.id,
+          ...(job.discLabel ? { relatedDisc: job.discLabel } : {}),
+          discFingerprint: task.fingerprint,
+          suggestedActions: [{ type: "view-job", label: "Open TV Matching" }]
+        });
+      }
     }
   }
 
@@ -893,10 +908,7 @@ async function processMappedTvEpisodes(
       });
       return false;
     }
-    const fingerprint = createHash("sha256").update(JSON.stringify({
-      label: info.label.trim().normalize("NFKC").toLocaleLowerCase(),
-      titles: titles.map((title) => [title.id, title.durationSeconds, title.name.trim().normalize("NFKC")])
-    })).digest("hex");
+    const fingerprint = fingerprintDisc(info);
     if (jobs.lastDiscFingerprint() === fingerprint) {
       log("info", "disc", "Already-processed disc is still inserted; ignoring duplicate detection event");
       setRuntimeStatus("completed");

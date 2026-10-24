@@ -15,25 +15,29 @@ import { SqliteClassificationAuditRepository } from "./classification-audit-repo
 import { SqliteSetupRepository } from "./setup-repository.js";
 import { SqliteDiscRecoveryRepository } from "./disc-recovery-repository.js";
 import { SqliteTvMatchingTaskRepository } from "./tv-matching-task-repository.js";
+import { SqliteForgetDiscService } from "./forget-disc-service.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
   const events = new SqliteEventRepository(db);
   const classificationAudit = new SqliteClassificationAuditRepository(db);
+  const settings = new SqliteSettingsRepository(db, defaults);
+  const reviewItems = new SqliteReviewItemRepository(db);
   return {
     setup: new SqliteSetupRepository(db),
-    settings: new SqliteSettingsRepository(db, defaults),
+    settings,
     jobs: new SqliteJobRepository(db, events, classificationAudit),
     history: new SqliteHistoryRepository(db),
     events,
-    recovery: new SqliteRecoveryRepository(db, events),
+    recovery: new SqliteRecoveryRepository(db, events, classificationAudit, reviewItems),
     tvEpisodeFeedback: new SqliteTvEpisodeFeedbackRepository(db),
     tvProcessingPlans: new SqliteTvProcessingPlanRepository(db),
     tvValidationEvidence: new SqliteTvValidationEvidenceRepository(db),
-    reviewItems: new SqliteReviewItemRepository(db),
+    reviewItems,
     reviewJobs: new SqliteReviewJobRepository(db),
     classificationAudit,
     discRecovery: new SqliteDiscRecoveryRepository(db),
     tvMatchingTasks: new SqliteTvMatchingTaskRepository(db),
+    forgetDisc: new SqliteForgetDiscService(db, settings),
     close: () => db.close()
   };
 }
