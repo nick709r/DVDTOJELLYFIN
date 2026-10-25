@@ -32,7 +32,7 @@ function metadataProvider(identify) {
   };
 }
 
-function createTvService({ candidates = [], feedback = [], savedPlans = [] } = {}) {
+function createTvService({ candidates = [], feedback = [], savedPlans = [], completedDiscHistory } = {}) {
   const resolver = new MetadataResolver([metadataProvider(async (input) =>
     candidates.filter((candidate) => candidate.entityType === input.entityType)
   )]);
@@ -52,7 +52,11 @@ function createTvService({ candidates = [], feedback = [], savedPlans = [] } = {
         savedPlans.push(saved);
         return saved;
       }
-    }
+    },
+    undefined,
+    undefined,
+    undefined,
+    completedDiscHistory ? { completedDiscHistory } : {}
   );
 }
 
@@ -189,6 +193,200 @@ test("TV workflow applies provider disc order and records the automatic assignme
   })));
   assert.ok(result.plan.assignments.every((item) => item.assignmentMethod === "provider-disc-mapping"));
   assert.equal(result.plan.confidence, 1);
+});
+
+test("a Disc 2 label and completed Disc 1 history override conflicting Disc 1 metadata", async () => {
+  const episodes = [1, 2, 3, 4];
+  const candidates = [
+    {
+      id: "series-1",
+      providerId: "metadata.test.tv",
+      entityType: "series",
+      title: "Fresh Off the Boat",
+      confidence: 0.96,
+      metadata: { seriesId: "series-1", title: "Fresh Off the Boat" }
+    },
+    {
+      id: "season-3",
+      providerId: "metadata.test.tv",
+      entityType: "season",
+      title: "Season 3",
+      confidence: 0.96,
+      metadata: { seriesId: "series-1", seasonNumber: 3, title: "Season 3" }
+    },
+    ...["1", "2"].flatMap((itemId) => episodes.map((episodeNumber) => ({
+      id: `${itemId}-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode",
+      title: `Episode ${episodeNumber}`,
+      confidence: 0.95,
+      metadata: {
+        itemId,
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber,
+        title: `Episode ${episodeNumber}`,
+        runtimeSeconds: 1200
+      }
+    }))),
+    ...[1, 2].map((episodeNumber) => ({
+      id: `disc-1-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode-disc",
+      title: `Episode ${episodeNumber}`,
+      confidence: 1,
+      metadata: {
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber,
+        discNumber: 1,
+        discOrder: episodeNumber
+      }
+    }))
+  ];
+  const completedDiscHistory = {
+    listForSeason: () => [{
+      jobId: "completed-disc-1",
+      fingerprint: "previous-disc-1",
+      metadataProvider: "metadata.test.tv",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber: 1,
+      mappings: [
+        { trackId: "1", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 1 }] },
+        { trackId: "2", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 2 }] }
+      ],
+      episodes: [1, 2].map((episodeNumber) => ({
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber
+      })),
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }]
+  };
+  const saved = {
+    seriesName: "Fresh Off the Boat",
+    seriesId: "series-1",
+    provider: "metadata.test.tv",
+    seasonNumber: 3,
+    discNumber: 1,
+    discName: null,
+    origin: "fingerprint"
+  };
+  const result = await createTvService({ candidates, completedDiscHistory }).prepare(
+    tvSource("fresh-off-the-boat-s3-d2"),
+    "new-disc-2",
+    undefined,
+    saved
+  );
+
+  assert.ok(result);
+  assert.equal(result.plan.discPosition.discNumber, 2);
+  assert.equal(result.identification.discLabelSuggestion.seasonNumber, 3);
+  assert.equal(result.identification.discLabelSuggestion.discNumber, 2);
+  assert.ok(result.analysis.discPositionCandidates[0].evidence.some((evidence) =>
+    evidence.includes("Optical disc volume label")
+  ));
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [3, 4]);
+  assert.ok(result.matches.items.every((item) =>
+    item.assignmentMethod === "sequential-disc-assignment"
+  ));
+});
+
+test("an already completed fingerprint keeps its original disc and episode assignments", async () => {
+  const episodes = [1, 2, 3, 4];
+  const candidates = [
+    {
+      id: "series-1",
+      providerId: "metadata.test.tv",
+      entityType: "series",
+      title: "Fresh Off the Boat",
+      confidence: 0.96,
+      metadata: { seriesId: "series-1", title: "Fresh Off the Boat" }
+    },
+    ...["1", "2"].flatMap((itemId) => episodes.map((episodeNumber) => ({
+      id: `${itemId}-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode",
+      title: `Episode ${episodeNumber}`,
+      confidence: 0.95,
+      metadata: {
+        itemId,
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber,
+        title: `Episode ${episodeNumber}`,
+        runtimeSeconds: 1200
+      }
+    })))
+  ];
+  const completedDiscHistory = {
+    listForSeason: () => [{
+      jobId: "completed-disc-1",
+      fingerprint: "same-fingerprint",
+      metadataProvider: "metadata.test.tv",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber: 1,
+      mappings: [
+        { trackId: "1", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 1 }] },
+        { trackId: "2", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 2 }] }
+      ],
+      episodes: [1, 2].map((episodeNumber) => ({
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber
+      })),
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }]
+  };
+  const result = await createTvService({ candidates, completedDiscHistory }).prepare(
+    tvSource("fresh-off-the-boat-s3-d1"),
+    "same-fingerprint"
+  );
+
+  assert.ok(result);
+  assert.equal(result.plan.discPosition.discNumber, 1);
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [1, 2]);
+  assert.ok(result.matches.items.every((item) =>
+    item.assignmentMethod === "exact-fingerprint-history"
+  ));
+});
+
+test("completed TV disc history reads successful imports from job and recovery records", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  try {
+    repositories.discRecovery.recordDetection("completed-fingerprint", "dvd", "tv_series", 0.95);
+    repositories.discRecovery.update("completed-fingerprint", {
+      finalMediaType: "tv_series",
+      metadataProvider: "tvdb",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber: 1,
+      mappings: [{
+        trackId: "track-1",
+        episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 1 }]
+      }]
+    });
+    db.prepare(`
+      INSERT INTO jobs (id, status, disc_fingerprint, started_at, finished_at)
+      VALUES (?, 'completed', ?, ?, ?)
+    `).run("completed-job", "completed-fingerprint", "2026-10-24T11:00:00.000Z", "2026-10-24T12:00:00.000Z");
+
+    const history = repositories.completedTvDiscHistory.listForSeason(3);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].discNumber, 1);
+    assert.equal(history[0].fingerprint, "completed-fingerprint");
+    assert.deepEqual(history[0].episodes.map((episode) => episode.episodeNumber), [1]);
+    assert.equal(history[0].completedAt, "2026-10-24T12:00:00.000Z");
+  } finally {
+    repositories.close();
+  }
 });
 
 test("TV workflow keeps incomplete metadata low-confidence and requires review", async () => {

@@ -28,7 +28,7 @@ import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js
 import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
 import { tvWorkflowPolicy } from "./application/tv-workflow-service.js";
-import { searchVariants } from "./application/tv-name-normalization.js";
+import { normalizeDiscName, searchVariants } from "./application/tv-name-normalization.js";
 import { repositories } from "./db.js";
 import { KNOWN_DISK_TYPES, OVERRIDE_REASONS, CLASSIFICATION_REVIEW_STATUSES } from "./domain/classification.js";
 import { exportClassificationJson, exportClassificationText } from "./application/classification-export.js";
@@ -1351,11 +1351,25 @@ app.post<{ Body: unknown }>("/api/v1/tv/identify/search", async (request, reply)
   };
 });
 
+function completedTvDiscHistoryForTask(task: TvMatchingTask) {
+  const recovery = repositories.discRecovery.get(task.fingerprint);
+  if (!recovery?.seriesName || recovery.seasonNumber === null ||
+    !Number.isInteger(recovery.seasonNumber) || recovery.seasonNumber < 0 || recovery.seasonNumber > 100) return [];
+  const normalizedSeries = normalizeDiscName(recovery.seriesName).toLocaleLowerCase();
+  return repositories.completedTvDiscHistory.listForSeason(recovery.seasonNumber)
+    .filter((record) =>
+      (recovery.providerId !== null && recovery.providerId === record.providerId &&
+        recovery.metadataProvider === record.metadataProvider) ||
+      (normalizedSeries !== "" && normalizeDiscName(record.seriesName).toLocaleLowerCase() === normalizedSeries)
+    );
+}
+
 app.get("/api/v1/tv/matching", async () => ({
   tasks: repositories.tvMatchingTasks.list().map((task) => ({
     task,
     progress: tvMatchingProgress(task.assignments),
     recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
+    completedDiscHistory: completedTvDiscHistoryForTask(task),
     mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
   }))
 }));
@@ -1367,6 +1381,7 @@ app.get<{ Params: { id: string } }>("/api/v1/tv/matching/:id", async (request, r
     task,
     progress: tvMatchingProgress(task.assignments),
     recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
+    completedDiscHistory: completedTvDiscHistoryForTask(task),
     mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
   };
 });

@@ -18,6 +18,8 @@ import type {
 } from "../domain/tv-identification.js";
 import type {
   TvAnalysisRecommendation,
+  CompletedTvDiscHistory,
+  HistoricalEpisodeEvidence,
   TvDiscAnalysisReport,
   TvEpisodeMatchReport,
   TvEpisodeMetadataCandidate,
@@ -33,7 +35,7 @@ import type {
   TvProviderDiscEpisode
 } from "../domain/television.js";
 
-const seriesLabelPattern = /\b(?:season|series|episodes?)\b|\bs\d{1,2}(?:[\s._-]*d\d{1,2})?\b/i;
+const seriesLabelPattern = /\b(?:season|series|episodes?)\b|\bseason[\s._-]*\d+|\bs\d{1,2}(?:[\s._-]*d\d{1,2})?\b/i;
 const nonEpisodeTitlePattern = /\b(?:bonus|extra|featurette|behind the scenes|trailer|deleted scene|interview|making of|gallery|commentary)\b/i;
 
 export const tvWorkflowPolicy = {
@@ -202,6 +204,9 @@ export interface TvWorkflowDependencies {
   seriesSearch?: TvSeriesSearchFunction;
   /** Returns episode counts per season for a known series. */
   seasonEpisodeCounts?: TvSeasonEpisodeCountFunction;
+  completedDiscHistory?: {
+    listForSeason(seasonNumber: number, limit?: number): CompletedTvDiscHistory[];
+  };
 }
 
 interface ProviderSearchOutcome {
@@ -490,11 +495,26 @@ export class TvWorkflowService {
       name: entry.name,
       raw: entry.raw,
       normalized: normalizeDiscName(entry.raw),
-      variants: searchVariants(entry.raw)
+      variants: searchVariants(entry.raw),
+      structure: parseDiscStructure(entry.raw ?? "")
     }));
+    const discStructureHints = nameSources.flatMap((entry) => {
+      const { seasonNumber, discNumber, discCount } = entry.structure;
+      if (seasonNumber === undefined && discNumber === undefined) return [];
+      const confidence = entry.stepId === "volume-label" ? 0.98
+        : entry.stepId === "filesystem-volume-name" ? 0.92
+          : entry.stepId === "makemkv-disc-name" ? 0.9 : 0.85;
+      return [{
+        source: entry.name,
+        confidence,
+        ...(seasonNumber === undefined ? {} : { seasonNumber }),
+        ...(discNumber === undefined ? {} : { discNumber }),
+        ...(discCount === undefined ? {} : { discCount })
+      }];
+    });
 
     // Season, disc and disc-count hints come from the saved identification first, then any disc name.
-    const hints = rawNames.map((entry) => parseDiscStructure(entry.raw ?? ""));
+    const hints = nameSources.map((entry) => entry.structure);
     const firstHint = <K extends "seasonNumber" | "discNumber" | "discCount">(key: K): number | undefined =>
       hints.map((hint) => hint[key]).find((value) => value !== undefined);
     const seasonStructure: { seasonNumber?: number; discNumber?: number; discCount?: number } = {
@@ -576,6 +596,11 @@ export class TvWorkflowService {
     const bestRaw = [...seriesCandidatesRaw].sort((left, right) => right.confidence - left.confidence)[0];
     const selectedName = saved?.seriesName ?? bestRaw?.title ??
       nameSources.find((entry) => entry.normalized)?.normalized ?? source.label.trim();
+    const completedDiscHistory = seasonStructure.seasonNumber !== undefined &&
+      Number.isInteger(seasonStructure.seasonNumber) &&
+      seasonStructure.seasonNumber >= 0 && seasonStructure.seasonNumber <= 100
+      ? this.identification.completedDiscHistory?.listForSeason(seasonStructure.seasonNumber) ?? []
+      : [];
     const timedResolve = async (
       entityType: string,
       input: Parameters<MetadataResolver["resolve"]>[0]
@@ -662,15 +687,39 @@ export class TvWorkflowService {
       }
     }
 
-    const history: HistoricalDiscAnalysis[] = saved ? [{
-      fingerprint,
-      series: { id: saved.seriesId ?? `saved:${saved.seriesName.toLocaleLowerCase()}`, title: saved.seriesName,
-        ...(saved.year === undefined ? {} : { year: saved.year }) },
-      ...(seasonStructure.seasonNumber === undefined ? {} : { seasonNumber: seasonStructure.seasonNumber }),
-      ...(seasonStructure.discNumber === undefined ? {} : { discNumber: seasonStructure.discNumber }),
-      ...(seasonStructure.discCount === undefined ? {} : { discCount: seasonStructure.discCount }),
-      episodeMatches: []
-    }] : [];
+    const currentItems = new Map(source.manifest.items.map((item) => [item.id, item]));
+    const history: HistoricalDiscAnalysis[] = [
+      ...(saved ? [{
+        fingerprint,
+        series: {
+          id: saved.seriesId ?? `saved:${saved.seriesName.toLocaleLowerCase()}`,
+          title: saved.seriesName,
+          ...(saved.year === undefined ? {} : { year: saved.year })
+        },
+        ...(seasonStructure.seasonNumber === undefined ? {} : { seasonNumber: seasonStructure.seasonNumber }),
+        ...(seasonStructure.discNumber === undefined ? {} : { discNumber: seasonStructure.discNumber }),
+        ...(seasonStructure.discCount === undefined ? {} : { discCount: seasonStructure.discCount }),
+        episodeMatches: []
+      }] : []),
+      ...completedDiscHistory.filter((record) => record.fingerprint === fingerprint).map((record) => ({
+        fingerprint: record.fingerprint,
+        series: {
+          id: record.providerId ?? `saved:${record.seriesName.toLocaleLowerCase()}`,
+          title: record.seriesName
+        },
+        seasonNumber: record.seasonNumber,
+        ...(record.discNumber === null ? {} : { discNumber: record.discNumber }),
+        episodeMatches: record.mappings.flatMap((mapping): HistoricalEpisodeEvidence[] => {
+          const item = currentItems.get(mapping.trackId);
+          if (!item) return [];
+          return mapping.episodes.map((episode) => ({
+            itemSignature: tvItemSignature(item),
+            episode,
+            confidence: 1
+          }));
+        })
+      }))
+    ];
     const analysis = this.analysisEngine.analyze({
       sourceId: source.sourceId,
       manifestId: source.manifest.identifiers?.manifestId ?? fingerprint,
@@ -678,8 +727,11 @@ export class TvWorkflowService {
       discLabel: source.label || nameSources.find((entry) => entry.normalized)?.raw || "",
       fingerprint,
       disc: seasonStructure,
+      discStructureHints,
+      discNumberUserConfirmed: saved?.origin === "user",
       history,
       providerDiscEpisodes,
+      completedDiscHistory,
       metadata: { seriesCandidates, seasonCandidates, episodeCandidates }
     });
     const feedback = analysis.items.flatMap((item) =>
@@ -749,6 +801,15 @@ export class TvWorkflowService {
       return `${relevant.length} quer${relevant.length === 1 ? "y" : "ies"}, ${relevant.reduce((sum, query) => sum + query.matches, 0)} matches`;
     };
     const assessment = assessTvDisc(source);
+    const volumeLabelStructure = nameSources.find((entry) => entry.stepId === "volume-label")?.structure;
+    const discLabelSuggestion = volumeLabelStructure?.discNumber === undefined
+      ? undefined
+      : {
+        ...(normalizeDiscName(source.label) ? { seriesName: normalizeDiscName(source.label) } : {}),
+        ...(volumeLabelStructure.seasonNumber === undefined
+          ? {} : { seasonNumber: volumeLabelStructure.seasonNumber }),
+        discNumber: volumeLabelStructure.discNumber
+      };
     const steps: TvIdentificationStep[] = [
       { order: 1, id: "user-specified", name: "User-specified identification",
         status: saved?.origin === "user" ? "matched" : "skipped",
@@ -792,6 +853,7 @@ export class TvWorkflowService {
         providerId: candidate.providerId,
         confidence: candidate.confidence
       })),
+      ...(discLabelSuggestion ? { discLabelSuggestion } : {}),
       selected: topDetected ? {
         title: topDetected.series.title,
         ...(topDetected.series.year === undefined ? {} : { year: topDetected.series.year }),

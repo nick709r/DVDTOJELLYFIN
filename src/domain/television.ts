@@ -101,6 +101,28 @@ export interface HistoricalDiscAnalysis {
   episodeMatches: readonly HistoricalEpisodeEvidence[];
 }
 
+export interface CompletedTvDiscHistory {
+  jobId: string;
+  fingerprint: string;
+  metadataProvider: string;
+  providerId: string | null;
+  seriesName: string;
+  seasonNumber: number;
+  discNumber: number | null;
+  mappings: readonly { trackId: string; episodes: readonly Episode[] }[];
+  episodes: readonly Episode[];
+  completedAt: string;
+}
+
+export interface CompletedTvDiscHistoryRepository {
+  listForSeason(seasonNumber: number, limit?: number): CompletedTvDiscHistory[];
+}
+
+export interface TvDiscStructureHint extends DiscAnalysisStructure {
+  source: string;
+  confidence: ConfidenceScore;
+}
+
 export interface EpisodeCorrection {
   fingerprint: string;
   itemSignature: string;
@@ -116,7 +138,10 @@ export interface TvAnalysisInput {
   fingerprint?: string;
   disc?: DiscAnalysisStructure;
   metadata: TvMetadataEvidence;
+  discStructureHints?: readonly TvDiscStructureHint[];
+  discNumberUserConfirmed?: boolean;
   providerDiscEpisodes?: readonly TvProviderDiscEpisode[];
+  completedDiscHistory?: readonly CompletedTvDiscHistory[];
   history?: readonly HistoricalDiscAnalysis[];
   corrections?: readonly EpisodeCorrection[];
 }

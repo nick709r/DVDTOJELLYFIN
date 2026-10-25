@@ -212,7 +212,11 @@ When series, season and disc are confidently identified, provider DVD order
 ambiguity checks. If provider disc order is unavailable or incomplete, AutoDisc
 falls back to sequential episode ordering after excluding extras and confirmed
 duplicates. Assignment reports record whether provider order, sequential order
-or runtime matching was used.
+or runtime matching was used. Volume labels and disc titles are also parsed for
+series, season and disc hints (including compact forms such as `S03D02`); these
+hints are confidence evidence and are weighed against completed-disc history.
+The TV review card shows the parsed label suggestion and previously completed
+discs for the same season.
 
 ### TV staging and storage paths
 

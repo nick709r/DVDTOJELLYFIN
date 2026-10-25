@@ -1,6 +1,7 @@
 import type { MediaManifestItem } from "../domain/media.js";
 import type {
   ConfidenceComponents,
+  CompletedTvDiscHistory,
   EpisodeCandidate,
   EpisodeCorrection,
   HistoricalDiscAnalysis,
@@ -217,6 +218,21 @@ function rankSeasons(
     entry.evidence.add("Season number supplied by disc structure");
     byNumber.set(number, entry);
   }
+  for (const hint of input.discStructureHints ?? []) {
+    if (hint.seasonNumber === undefined) continue;
+    const entry = byNumber.get(hint.seasonNumber) ?? {
+      season: {
+        seriesId: selectedSeries ? seriesKey(selectedSeries.series) : "",
+        number: hint.seasonNumber
+      },
+      metadata: [],
+      historical: [],
+      evidence: new Set<string>()
+    };
+    entry.metadata.push(checkedConfidence(hint.confidence, "Disc-label season"));
+    entry.evidence.add(`Season ${hint.seasonNumber} suggested by ${hint.source}`);
+    byNumber.set(hint.seasonNumber, entry);
+  }
   const results = [...byNumber.entries()].map(([number, entry]) => {
     const structure = input.disc?.seasonNumber === number ? 1 : undefined;
     const components: ConfidenceComponents = {
@@ -241,48 +257,160 @@ function rankSeasons(
 
 function rankDiscPositions(
   input: TvAnalysisInput,
-  history: readonly HistoricalDiscAnalysis[]
+  history: readonly HistoricalDiscAnalysis[],
+  selectedSeries?: TvSeriesMatchCandidate,
+  selectedSeason?: TvSeasonMatchCandidate
 ): TvDiscPositionCandidate[] {
   const candidates = new Map<number, {
     discCount?: number;
     structure: number[];
     historical: number[];
+    metadata: number[];
     evidence: Set<string>;
+    completed: CompletedTvDiscHistory[];
   }>();
-  if (input.disc?.discNumber !== undefined) {
-    const entry = candidates.get(input.disc.discNumber) ?? {
-      structure: [], historical: [], evidence: new Set<string>()
+  const candidateFor = (discNumber: number) => {
+    const entry = candidates.get(discNumber) ?? {
+      structure: [],
+      historical: [],
+      metadata: [],
+      evidence: new Set<string>(),
+      completed: []
     };
+    candidates.set(discNumber, entry);
+    return entry;
+  };
+  if (input.disc?.discNumber !== undefined) {
+    const entry = candidateFor(input.disc.discNumber);
     entry.structure.push(1);
     entry.evidence.add("Disc number supplied by disc structure");
     if (input.disc.discCount !== undefined) entry.discCount = input.disc.discCount;
-    candidates.set(input.disc.discNumber, entry);
+  }
+  const discHints = (input.discStructureHints ?? []).filter((hint) => hint.discNumber !== undefined);
+  for (const hint of discHints) {
+    const discNumber = hint.discNumber;
+    if (discNumber === undefined) continue;
+    const entry = candidateFor(discNumber);
+    entry.metadata.push(checkedConfidence(hint.confidence, "Disc-label position"));
+    entry.evidence.add(`Disc ${discNumber} suggested by ${hint.source}`);
+    if (hint.discCount !== undefined) entry.discCount = hint.discCount;
+  }
+  const seriesIdentity = selectedSeries?.series;
+  const seasonNumber = selectedSeason?.season.number;
+  const completedHistory = (input.completedDiscHistory ?? []).filter((record) => {
+    if (!seriesIdentity || seasonNumber === undefined || record.seasonNumber !== seasonNumber) return false;
+    const normalizedSeries = normalizedText(seriesIdentity.title);
+    const normalizedHistory = normalizedText(record.seriesName);
+    const providerIdentityMatches = input.metadata.seriesCandidates.some((candidate) =>
+      seriesKey(candidate.series) === seriesKey(seriesIdentity) &&
+      candidate.providerId === record.metadataProvider &&
+      candidate.series.id !== undefined && candidate.series.id === record.providerId
+    );
+    return providerIdentityMatches || normalizedSeries === normalizedHistory;
+  });
+  const relevantHistory = completedHistory.filter((record) => record.discNumber !== null);
+  for (const mapping of input.providerDiscEpisodes ?? []) {
+    if (selectedSeason && (mapping.episode.seriesId !== selectedSeason.seriesId ||
+      mapping.episode.seasonNumber !== selectedSeason.season.number)) continue;
+    const entry = candidateFor(mapping.discNumber);
+    entry.metadata.push(checkedConfidence(mapping.confidence, "Provider disc position"));
+    entry.evidence.add(`Disc ${mapping.discNumber} has DVD ordering metadata from ${mapping.providerId}`);
   }
   for (const record of history) {
     if (record.discNumber === undefined) continue;
-    const entry = candidates.get(record.discNumber) ?? {
-      structure: [], historical: [], evidence: new Set<string>()
-    };
+    const entry = candidateFor(record.discNumber);
     const exactDisc = input.fingerprint !== undefined && record.fingerprint === input.fingerprint;
     entry.historical.push(exactDisc ? 1 : 0.65);
     entry.evidence.add(exactDisc
       ? "Disc position was confirmed for this disc fingerprint"
       : "Disc position appears in matching historical item analysis");
     if (record.discCount !== undefined) entry.discCount = record.discCount;
-    candidates.set(record.discNumber, entry);
   }
+  for (const record of relevantHistory) {
+    if (record.discNumber === null) continue;
+    const entry = candidateFor(record.discNumber);
+    entry.completed.push(record);
+    const exactFingerprint = input.fingerprint === record.fingerprint;
+    entry.historical.push(exactFingerprint ? 1 : 0.65);
+    entry.evidence.add(exactFingerprint
+      ? `Disc ${record.discNumber} was already completed for this fingerprint`
+      : `Disc ${record.discNumber} was previously completed on ${record.completedAt}`);
+  }
+  const hasLabelDiscNumber = discHints.length > 0;
+  const currentDiscWasCompleted = input.disc?.discNumber !== undefined &&
+    relevantHistory.some((record) => record.discNumber === input.disc?.discNumber &&
+      record.fingerprint !== input.fingerprint);
+  if (!hasLabelDiscNumber && currentDiscWasCompleted && relevantHistory.length > 0) {
+    const completedNumbers = new Set(relevantHistory.flatMap((record) =>
+      record.discNumber === null ? [] : [record.discNumber]
+    ));
+    let nextDiscNumber = 1;
+    while (completedNumbers.has(nextDiscNumber)) nextDiscNumber += 1;
+    const next = candidateFor(nextDiscNumber);
+    next.historical.push(0.85);
+    next.evidence.add(`Disc ${nextDiscNumber} is the next unprocessed position in completed-disc history`);
+  }
+  const strongestDiscHint = discHints.slice().sort((left, right) =>
+    right.confidence - left.confidence || left.source.localeCompare(right.source)
+  )[0];
+  const strongestDiscHints = strongestDiscHint
+    ? discHints.filter((hint) => strongestDiscHint.confidence - hint.confidence <= 0.05)
+    : [];
+  const hasConflictingStrongHints = new Set(strongestDiscHints.map((hint) => hint.discNumber)).size > 1;
   return [...candidates.entries()].map(([discNumber, entry]) => {
     const components: ConfidenceComponents = {
       ...(entry.structure.length ? { discStructure: Math.max(...entry.structure) } : {}),
-      ...(entry.historical.length ? { historicalMatch: Math.max(...entry.historical) } : {})
+      ...(entry.historical.length ? { historicalMatch: Math.max(...entry.historical) } : {}),
+      ...(entry.metadata.length ? { metadata: Math.max(...entry.metadata) } : {})
     };
+    let confidence = weightedScore(components, {
+      ...tvAnalysisWeights.discPosition,
+      metadata: 0.4,
+      discStructure: 0.35,
+      historicalMatch: 0.25,
+      titleSimilarity: 0,
+      runtimeSimilarity: 0,
+      userCorrection: 0
+    });
+    const exactFingerprintHistory = entry.completed.some((record) => record.fingerprint === input.fingerprint);
+    const mappedEpisodes = new Set((input.providerDiscEpisodes ?? [])
+      .filter((mapping) => mapping.discNumber === discNumber &&
+        (!selectedSeason || (mapping.episode.seriesId === selectedSeason.seriesId &&
+          mapping.episode.seasonNumber === selectedSeason.season.number)))
+      .map((mapping) => `${mapping.episode.seriesId}:${mapping.episode.seasonNumber}:${mapping.episode.episodeNumber}`));
+    const importedEpisodes = new Set(completedHistory.flatMap((record) =>
+      record.episodes.map((episode) =>
+        `${episode.seriesId}:${episode.seasonNumber}:${episode.episodeNumber}`
+      )
+    ));
+    const overlap = mappedEpisodes.size === 0 ? 0 :
+      [...mappedEpisodes].filter((episode) => importedEpisodes.has(episode)).length / mappedEpisodes.size;
+    const missingCoverage = mappedEpisodes.size === 0 ? 0 :
+      [...mappedEpisodes].filter((episode) => !importedEpisodes.has(episode)).length / mappedEpisodes.size;
+    if (!exactFingerprintHistory) {
+      const historyPenalty = (entry.completed.length > 0 ? 0.45 : 0) + overlap * 0.45;
+      if (historyPenalty > 0) {
+        confidence *= Math.max(0.05, 1 - historyPenalty);
+        entry.evidence.add("Previously completed disc positions and episode sets reduce confidence");
+      }
+      if (importedEpisodes.size > 0 && missingCoverage > 0) {
+        confidence = Math.min(1, confidence + missingCoverage * 0.1);
+        entry.evidence.add("Unimported episodes increase confidence for this disc position");
+      }
+    }
+    const conflictsWithLabel = strongestDiscHint !== undefined &&
+      !hasConflictingStrongHints && strongestDiscHint.discNumber !== discNumber;
+    if (!input.discNumberUserConfirmed && !exactFingerprintHistory && conflictsWithLabel) {
+      confidence *= 0.25;
+      entry.evidence.add(`Disc ${discNumber} conflicts with the strongest parsed disc label`);
+    }
+    if (mappedEpisodes.size > 0 && missingCoverage > 0) {
+      entry.evidence.add("Provider disc mapping includes episodes not found in completed-disc history");
+    }
     return {
       discNumber,
       ...(entry.discCount === undefined ? {} : { discCount: entry.discCount }),
-      confidence: weightedScore(components, {
-        ...tvAnalysisWeights.discPosition, metadata: 0,
-        titleSimilarity: 0, runtimeSimilarity: 0, userCorrection: 0
-      }),
+      confidence: checkedConfidence(confidence, "Disc position"),
       evidence: [...entry.evidence].sort(),
       scoreComponents: components
     };
@@ -654,11 +782,11 @@ export class TvAnalysisEngine {
     const detectedSeries = seriesCandidates[0];
     const seasonCandidates = rankSeasons(input, history, detectedSeries);
     const detectedSeason = seasonCandidates[0];
-    const discPositionCandidates = rankDiscPositions(input, history);
+    const discPositionCandidates = rankDiscPositions(input, history, detectedSeries, detectedSeason);
     const discPosition = discPositionCandidates[0];
     const disc = {
       ...input.disc,
-      ...(input.disc?.discNumber === undefined && discPosition ? { discNumber: discPosition.discNumber } : {}),
+      ...(discPosition ? { discNumber: discPosition.discNumber } : {}),
       ...(input.disc?.discCount === undefined && discPosition?.discCount !== undefined
         ? { discCount: discPosition.discCount }
         : {})

@@ -162,6 +162,8 @@ dialog{background:#151c27;border:1px solid #343e4c;border-radius:12px;color:#edf
 .tv-disc-poster-placeholder{display:grid;place-items:center;color:var(--muted);font-size:1.5rem;font-weight:800;border:1px dashed var(--line)}
 .tv-disc-info h3{margin:2px 0;font-size:1.35rem;line-height:1.25}
 .tv-disc-season{margin:5px 0 10px;color:var(--muted);font-weight:600}
+.tv-disc-label-evidence,.tv-disc-history-notice{margin:4px 0;color:var(--muted);font-size:.82rem}
+.tv-disc-label-evidence{color:#9fc8ff}
 .tv-disc-facts{display:flex;flex-wrap:wrap;gap:7px;margin:9px 0}
 .tv-disc-facts span{padding:4px 8px;border:1px solid var(--line);border-radius:20px;font-size:.75rem;color:var(--muted)}
 .tv-disc-identifier{font-size:.72rem;color:var(--muted);overflow-wrap:anywhere}

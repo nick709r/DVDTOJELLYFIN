@@ -102,6 +102,61 @@ test("TV analysis uses matching history and previous corrections as evidence wit
   assert.ok(report.recommendations.some((recommendation) => recommendation.action === "confirm-disc-position") === false);
 });
 
+test("a user-confirmed disc position is not overturned by a conflicting parsed label", () => {
+  const report = engine.analyze(baseInput({
+    disc: { seasonNumber: 2, discNumber: 1 },
+    discStructureHints: [{
+      source: "Optical disc volume label",
+      seasonNumber: 2,
+      discNumber: 2,
+      confidence: 0.98
+    }],
+    discNumberUserConfirmed: true
+  }));
+
+  assert.equal(report.discPositionCandidates[0].discNumber, 1);
+  assert.equal(report.disc.discNumber, 1);
+});
+
+test("completed episode history favors provider discs covering missing episodes", () => {
+  const report = engine.analyze(baseInput({
+    completedDiscHistory: [{
+      jobId: "completed-disc-1",
+      fingerprint: "older-disc",
+      metadataProvider: "metadata.test",
+      providerId: "series-1",
+      seriesName: "The Example Show",
+      seasonNumber: 2,
+      discNumber: 1,
+      mappings: [],
+      episodes: [{ seriesId: "series-1", seasonNumber: 2, episodeNumber: 1 }],
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }],
+    providerDiscEpisodes: [
+      {
+        episode: { seriesId: "series-1", seasonNumber: 2, episodeNumber: 1 },
+        providerId: "tvdb",
+        discNumber: 1,
+        discOrder: 1,
+        confidence: 1
+      },
+      {
+        episode: { seriesId: "series-1", seasonNumber: 2, episodeNumber: 2 },
+        providerId: "tvdb",
+        discNumber: 2,
+        discOrder: 1,
+        confidence: 0.8
+      }
+    ]
+  }));
+
+  assert.equal(report.discPositionCandidates[0].discNumber, 2);
+  assert.ok(report.discPositionCandidates[0].confidence >= 0.9);
+  assert.ok(report.discPositionCandidates[0].evidence.some((evidence) =>
+    evidence.includes("Unimported episodes")
+  ));
+});
+
 test("TV analysis identifies duplicate episodes and alternate cuts", () => {
   const input = baseInput({
     manifest: {

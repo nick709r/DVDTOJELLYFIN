@@ -1487,8 +1487,19 @@ function tvAssignmentConfidence(confidence) {
   return `${band} confidence · ${Math.round(confidence * 100)}%`;
 }
 
+function formatCompletedTvDiscDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown date";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(date).replace(",", "");
+}
+
 function renderTvMatchingTask(entry) {
-  const { task, recovery, mediaTypeAudit = [] } = entry;
+  const { task, recovery, completedDiscHistory = [], mediaTypeAudit = [] } = entry;
   const series = recovery?.seriesName || "";
   const season = recovery?.seasonNumber;
   const discNumber = recovery?.discNumber;
@@ -1564,6 +1575,16 @@ function renderTvMatchingTask(entry) {
   }
   const seasonText = season === null || season === undefined ? "Season not identified" : `Season ${season}`;
   const discText = discNumber === null || discNumber === undefined ? "Disc number not specified" : `Disc ${discNumber}`;
+  const labelSuggestion = task.diagnostics?.discLabelSuggestion;
+  const labelSuggestionText = Number.isInteger(labelSuggestion?.seasonNumber) &&
+    Number.isInteger(labelSuggestion?.discNumber)
+    ? `Disc label suggests: Season ${labelSuggestion.seasonNumber} Disc ${labelSuggestion.discNumber}`
+    : "";
+  const completedDiscNotices = completedDiscHistory
+    .filter((record) => Number.isInteger(record.discNumber))
+    .map((record) =>
+      `Season ${record.seasonNumber} Disc ${record.discNumber} already processed on ${formatCompletedTvDiscDate(record.completedAt)}.`
+    );
   return `<article class="tv-disc-review tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
     <div class="tv-disc-summary">
       ${poster
@@ -1573,6 +1594,8 @@ function renderTvMatchingTask(entry) {
         <p class="eyebrow">STAGED TV DISC</p>
         <h3>${escapeHtml(series || task.source.label || "Unidentified TV disc")}</h3>
         <p class="tv-disc-season">${escapeHtml(seasonText)}${discNumber === null || discNumber === undefined ? "" : ` · ${escapeHtml(discText)}`}</p>
+        ${labelSuggestionText ? `<p class="tv-disc-label-evidence">${escapeHtml(labelSuggestionText)}</p>` : ""}
+        ${completedDiscNotices.map((notice) => `<p class="tv-disc-history-notice">${escapeHtml(notice)}</p>`).join("")}
         <div class="tv-disc-facts">
           ${year ? `<span>${escapeHtml(year)}</span>` : ""}
           <span>${task.assignments.length} tracks</span>

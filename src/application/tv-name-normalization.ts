@@ -17,9 +17,11 @@ const genericNamePattern =
 
 export function parseDiscStructureHints(value: string): DiscStructureHints {
   const text = value.replace(/[_.]+/g, " ");
-  const season = text.match(/\bseasons?[\s-]*(\d+)\b/i) ??
+  const seasonDisc = text.match(/\b(?:seasons?|s)[\s-]*(\d{1,2})[\s-]*(?:disc|disk|d)[\s-]*(\d{1,2})\b/i);
+  const season = seasonDisc ?? text.match(/\bseasons?[\s-]*(\d+)\b/i) ??
     text.match(/\bs(\d{1,2})(?:[\s-]*d\d{1,2})?\b/i);
-  const disc = text.match(/\b(?:disc|disk|dvd)[\s-]*(\d+)\b/i) ?? text.match(/\bd(\d{1,2})\b/i);
+  const disc = seasonDisc ? [seasonDisc[0], seasonDisc[2]] :
+    text.match(/\b(?:disc|disk|dvd)[\s-]*(\d+)\b/i) ?? text.match(/\bd(\d{1,2})\b/i);
   const count = text.match(/\b(?:of|\/)\s*(\d+)\s*(?:discs?|disks?)\b/i) ??
     text.match(/\b(?:disc|disk)[\s-]*\d+\s*(?:of|\/)\s*(\d+)\b/i);
   return {
@@ -52,6 +54,7 @@ function separateWords(value: string): string {
 function stripMarkers(value: string): string {
   return value
     .replace(/\b(?:the\s+)?complete\s+(?:series|season)s?\b/gi, " ")
+    .replace(/\b(?:season|s)\s*\d{1,2}\s*(?:disc|disk|d)\s*\d{1,2}\b/gi, " ")
     .replace(/\b(?:season|series|seasons)\s*\d+\b/gi, " ")
     .replace(/\bs\d{1,2}\s*e\d{1,3}\b/gi, " ")
     .replace(/\bs\d{1,2}(?:\s*d\d{1,2})?\b/gi, " ")

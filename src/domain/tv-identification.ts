@@ -26,6 +26,11 @@ export interface TvIdentificationNameSource {
   raw: string | null;
   normalized: string;
   variants: readonly string[];
+  structure: {
+    seasonNumber?: number;
+    discNumber?: number;
+    discCount?: number;
+  };
 }
 
 export interface TvIdentificationQuery {
@@ -61,6 +66,11 @@ export interface TvIdentificationDiagnostics {
   failures: readonly { providerId: string; query: string; message: string }[];
   seriesCandidates: readonly { title: string; year?: number; providerId: string; seriesId: string; confidence: number }[];
   seasonCandidates: readonly { seasonNumber: number; providerId: string; confidence: number }[];
+  discLabelSuggestion?: {
+    seriesName?: string;
+    seasonNumber?: number;
+    discNumber?: number;
+  };
   selected: TvIdentificationSelection | null;
   episodeTitleCount: number;
   recordedAt: string;
