@@ -349,7 +349,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates && \
   tar xzf autodisc.tar.gz && cd DVDTOJELLYFIN-main && sudo ./scripts/install.sh
 ```
 
-The installer sets up Node.js 22+, FFmpeg, cdparanoia, cd-discid and helper tools, builds AutoDisc, and enables the `autodisc.service` unit. It is safe to rerun for updates.
+The installer sets up Node.js 22+, FFmpeg, cdparanoia, cd-discid and helper tools, builds AutoDisc, and enables the `autodisc.service` unit. It is safe to rerun for updates. It also configures library roots for group inheritance and adds AutoDisc to their groups. AutoDisc publishes directories with `775` permissions and files with `664`; world-write access is never enabled. For a custom destination profile, add the `autodisc` service account to the library group and restart the service so new content inherits that group.
 
 1. **Optional: install MakeMKV** to enable DVD ripping. It is separately licensed and is not bundled. Audio CD ripping works without it.
 2. **Open the dashboard** at `http://<server-ip>:8787`. If it is bound only locally, use an SSH tunnel: `ssh -L 8787:127.0.0.1:8787 user@server`.
@@ -394,6 +394,10 @@ sudo journalctl -u autodisc.service -f
 ---
 
 ## Release History
+
+### Version 1.27.0
+
+- Standardized published-media permissions across movie, TV, music and review workflows, with destination-group inheritance and no world-write access.
 
 ### Version 1.26.3
 

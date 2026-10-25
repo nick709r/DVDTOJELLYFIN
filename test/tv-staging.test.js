@@ -195,6 +195,20 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
     assert.equal(conversions, 4);
     assert.equal(task.status, "completed");
     assert.equal(jobs.getJob(task.jobId).status, "completed");
+    const publishedEpisode = jobs.getJob(task.jobId).outputPath;
+    assert.ok(publishedEpisode);
+    const publishedRoot = path.join(root, "published-tv");
+    const libraryInfo = await stat(publishedRoot);
+    const seriesInfo = await stat(path.dirname(path.dirname(publishedEpisode)));
+    const episodeInfo = await stat(publishedEpisode);
+    if (process.platform !== "win32") {
+      assert.equal(seriesInfo.gid, libraryInfo.gid);
+      assert.equal(episodeInfo.gid, libraryInfo.gid);
+      assert.equal(seriesInfo.mode & 0o777, 0o775);
+      assert.equal(episodeInfo.mode & 0o777, 0o664);
+      assert.equal(seriesInfo.mode & 0o002, 0);
+      assert.equal(episodeInfo.mode & 0o002, 0);
+    }
     const timeline = repositories.history.timeline(task.jobId);
     const lastResumeIndex = timeline.map((event) =>
       event.message === "Resuming from preserved extracted media").lastIndexOf(true);

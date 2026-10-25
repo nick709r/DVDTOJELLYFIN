@@ -7,6 +7,7 @@ import type { MetadataResolver } from "./metadata-resolver.js";
 import type { JobContext } from "./job-coordinator.js";
 import { convert } from "../encoding.js";
 import { createMovieOutput } from "../movie-output.js";
+import { applyPublishedPermissions } from "../published-media-permissions.js";
 import { safeTitle } from "../media.js";
 import { events, notifyStatus } from "../events.js";
 import { setRuntimeStatus } from "../runtime-status.js";
@@ -87,6 +88,7 @@ export class ReviewJobProcessor {
       context.throwIfCancelled();
       const outputInfo = await stat(output.path);
       if (outputInfo.size < 1024) throw new Error("Published movie failed size validation");
+      await applyPublishedPermissions(output.directory, settings.moviesDir);
       this.jobs.update(context, {
         title,
         outputPath: output.path,

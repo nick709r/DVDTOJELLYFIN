@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -68,6 +68,17 @@ test("audio destination folders are created recursively for missing artist and a
     );
     assert.equal(albumDirectory, path.join(artistDirectory, "An Album"));
     assert.equal(await readFile(path.join(albumDirectory, "01 - Track.flac"), "utf8"), "audio");
+    const libraryInfo = await stat(output);
+    const albumInfo = await stat(albumDirectory);
+    const trackInfo = await stat(path.join(albumDirectory, "01 - Track.flac"));
+    if (process.platform !== "win32") {
+      assert.equal(albumInfo.gid, libraryInfo.gid);
+      assert.equal(trackInfo.gid, libraryInfo.gid);
+      assert.equal(albumInfo.mode & 0o777, 0o775);
+      assert.equal(trackInfo.mode & 0o777, 0o664);
+      assert.equal(albumInfo.mode & 0o002, 0);
+      assert.equal(trackInfo.mode & 0o002, 0);
+    }
     assert.deepEqual(reviews, []);
   } finally {
     await rm(root, { recursive: true, force: true });

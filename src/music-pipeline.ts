@@ -9,7 +9,7 @@ import type { DiscRecovery } from "./domain/disc-recovery.js";
 import type { MusicAlbumMetadata } from "./music-metadata.js";
 import { events } from "./events.js";
 import { log } from "./logger.js";
-import { outputTarget } from "./output-destinations.js";
+import { outputPath, outputTarget } from "./output-destinations.js";
 import { getLiveDiscDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
 import type { MetadataResolver } from "./application/metadata-resolver.js";
 import { isMusicAlbumMetadata } from "./providers/metadata/musicbrainz.js";
@@ -19,6 +19,7 @@ import { runProcess } from "./process.js";
 import { ejectDisc, safeTitle } from "./media.js";
 import { setRuntimeStatus } from "./runtime-status.js";
 import { libraryTemplate, metadataDocument, renderLibraryTemplate, writeMetadataBundle } from "./library-metadata.js";
+import { applyPublishedPermissions } from "./published-media-permissions.js";
 
 const minimumWorkBytes = 2 * 1024 ** 3;
 const minimumMusicBytes = 256 * 1024 ** 2;
@@ -30,7 +31,7 @@ interface AudioDestinationFailure {
 }
 
 async function createDestinationDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o755 });
+  await mkdir(path, { recursive: true, mode: 0o775 });
   await access(path, constants.R_OK | constants.W_OK | constants.X_OK);
   const info = await stat(path);
   if (!info.isDirectory()) throw new Error(`${path} exists but is not a directory`);
@@ -168,6 +169,7 @@ export async function publishAudioAlbum(
   try {
     finalPath = await uniqueAlbumPath(artistDirectory, albumFolder);
     await publish(stagingDir, finalPath);
+    await applyPublishedPermissions(finalPath, dirname(artistDirectory));
   } catch (error) {
     const destinationFailure = await recordFolderCreationReview(jobs, context, finalPath, disc, device, error, "publish");
     throw Object.assign(new Error(destinationFailure.message), {
@@ -208,6 +210,23 @@ export async function processAudioCd(
   let failureCode: string | undefined;
   let failureDetails: Readonly<Record<string, unknown>> | undefined;
   const context = jobs.begin(id, disc.discId ? `Audio CD ${disc.discId}` : "Audio CD", "audio_cd", disc.fingerprint, signal, device);
+  const applyAudioPermissions = async (
+    target: string,
+    libraryRoot: string,
+    recursive = true
+  ): Promise<void> => {
+    try {
+      await applyPublishedPermissions(target, libraryRoot, recursive);
+    } catch (error) {
+      const failure = await recordFolderCreationReview(jobs, context, target, disc, device, error, "publish");
+      failureCode = "folder_creation_failed";
+      failureDetails = failure.details;
+      throw Object.assign(new Error(failure.message), {
+        code: failureCode,
+        reviewDetails: failureDetails
+      });
+    }
+  };
   let recovery: DiscRecovery;
   updateDiscDiagnostics({ status: "Audio CD identified", classification: "Audio", mediaType: "audio_cd" });
   jobs.record(context, "disc-detected", "info", JSON.stringify({
@@ -413,8 +432,8 @@ export async function processAudioCd(
       }
       throw error;
     }
-    const writeMusicMetadata = async (albumDirectory: string, artistOutputDirectory: string): Promise<void> => {
-      if (!settings.libraryMetadata.downloadMusicMetadata && !settings.libraryMetadata.generateNfo) return;
+    const writeMusicMetadata = async (albumDirectory: string, artistOutputDirectory: string): Promise<string[]> => {
+      if (!settings.libraryMetadata.downloadMusicMetadata && !settings.libraryMetadata.generateNfo) return [];
       const importedMetadata = settings.libraryMetadata.downloadMusicMetadata ? {
         artist: metadata.artist,
         album: metadata.album,
@@ -425,16 +444,22 @@ export async function processAudioCd(
       const assets = settings.libraryMetadata.automaticImport && settings.libraryMetadata.downloadMusicMetadata && metadata.releaseId
         ? [{ kind: "album" as const, url: `https://coverartarchive.org/release/${encodeURIComponent(metadata.releaseId)}/front-500` }]
         : [];
-      await writeMetadataBundle(albumDirectory, "album", document, assets, settings.libraryMetadata, {
+      const paths: string[] = [];
+      const albumBundle = await writeMetadataBundle(albumDirectory, "album", document, assets, settings.libraryMetadata, {
         nfoFileName: "album.nfo"
       });
+      if (albumBundle.nfoPath) paths.push(albumBundle.nfoPath);
+      paths.push(...albumBundle.artworkPaths);
       if (settings.libraryMetadata.downloadMusicMetadata || settings.libraryMetadata.generateNfo) {
-        await writeMetadataBundle(artistOutputDirectory, "artist", {
+        const artistBundle = await writeMetadataBundle(artistOutputDirectory, "artist", {
           title: metadata.artist,
           artist: metadata.artist,
           provider: metadata.source
         }, [], settings.libraryMetadata, { nfoFileName: "artist.nfo" });
+        if (artistBundle.nfoPath) paths.push(artistBundle.nfoPath);
+        paths.push(...artistBundle.artworkPaths);
       }
+      return paths;
     };
     if (routeToLidarr) {
       jobs.step(context, { id: "library-import", status: "publishing", message: "Sending named and tagged tracks to Lidarr for categorization" });
@@ -457,8 +482,9 @@ export async function processAudioCd(
       await rm(importPath, { recursive: true, force: true });
       if (result.albumPath) jobs.update(context, { outputPath: result.albumPath });
       if (result.albumPath) {
+        let metadataPaths: string[] = [];
         try {
-          await writeMusicMetadata(result.albumPath, dirname(result.albumPath));
+          metadataPaths = await writeMusicMetadata(result.albumPath, dirname(result.albumPath));
         } catch (error) {
           log("warn", "metadata", "Music album metadata or artwork could not be fully written after Lidarr import", {
             jobId: id,
@@ -466,11 +492,17 @@ export async function processAudioCd(
             error: error instanceof Error ? error.message : "unknown metadata write failure"
           });
         }
+        const libraryRoot = outputPath(settings, "music");
+        await applyAudioPermissions(dirname(result.albumPath), libraryRoot, false);
+        await applyAudioPermissions(result.albumPath, libraryRoot);
+        for (const path of metadataPaths) await applyAudioPermissions(path, libraryRoot, false);
+        await applyAudioPermissions(dirname(result.albumPath), outputPath(settings, "music"));
       }
       jobs.record(context, "library-import", "info", `Library provider imported and categorized ${result.imported} named FLAC tracks`);
     } else {
+      let metadataPaths: string[] = [];
       try {
-        await writeMusicMetadata(finalPath, artistDirectory);
+        metadataPaths = await writeMusicMetadata(finalPath, artistDirectory);
       } catch (error) {
         log("warn", "metadata", "Music album metadata or artwork could not be fully written", {
           jobId: id,
@@ -478,6 +510,9 @@ export async function processAudioCd(
           error: error instanceof Error ? error.message : "unknown metadata write failure"
         });
       }
+      await applyAudioPermissions(artistDirectory, outputDir, false);
+      await applyAudioPermissions(finalPath, outputDir);
+      for (const path of metadataPaths) await applyAudioPermissions(path, outputDir, false);
     }
     successful = true;
   } catch (error) {

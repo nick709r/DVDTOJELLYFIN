@@ -15,6 +15,7 @@ import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
 import { createMovieOutput } from "../../movie-output.js";
+import { applyPublishedPermissions } from "../../published-media-permissions.js";
 import { artworkAssets, artworkFromMetadata, downloadArtwork, libraryTemplate, metadataDocument, renderLibraryTemplate, writeMetadataBundle, writeNfo } from "../../library-metadata.js";
 import {
   assessTvDisc,
@@ -205,8 +206,11 @@ async function processMappedTvEpisodes(
       "Series Name": seriesName,
       Year: typeof importedYear === "string" || typeof importedYear === "number" ? importedYear : undefined
     });
-    const seriesDir = join(outputPath(settings, "tv"), seriesFolder);
+    const tvLibraryRoot = outputPath(settings, "tv");
+    const seriesDir = join(tvLibraryRoot, seriesFolder);
     const createdOutputs: string[] = [];
+    const publishedDirectories = new Set<string>();
+    const publishedSidecars = new Set<string>();
     const metadataTasks: Array<() => Promise<void>> = [];
     let totalOutputBytes = 0;
     let failureMessage: string | undefined;
@@ -214,7 +218,8 @@ async function processMappedTvEpisodes(
       await ensureWritable(settings.workDir, minimumWorkBytes);
       await ensureWritable(settings.tvRootDir, minimumOutputBytes);
       await mkdir(workDir, { recursive: true, mode: 0o750 });
-      await mkdir(seriesDir, { recursive: true, mode: 0o750 });
+      await mkdir(seriesDir, { recursive: true, mode: 0o2775 });
+      publishedDirectories.add(seriesDir);
       if (metadataSettings.downloadSeriesMetadata || metadataSettings.generateNfo) {
         metadataTasks.push(async () => {
           try {
@@ -222,9 +227,11 @@ async function processMappedTvEpisodes(
             recovery.providerId ?? undefined, metadataSettings.downloadSeriesMetadata ? importedMetadata : {});
           const artwork = artworkAssets(recovery.artworkReferences).filter((asset) =>
             asset.kind !== "season-poster" && asset.kind !== "episode-image");
-          await writeMetadataBundle(seriesDir, "series", seriesMetadata,
+          const written = await writeMetadataBundle(seriesDir, "series", seriesMetadata,
             metadataSettings.automaticImport && metadataSettings.downloadSeriesMetadata ? artwork : [],
             metadataSettings, { nfoFileName: "tvshow.nfo" });
+          if (written.nfoPath) publishedSidecars.add(written.nfoPath);
+          for (const path of written.artworkPaths) publishedSidecars.add(path);
           } catch (error) {
             log("warn", "metadata", "TV series metadata or artwork could not be fully written", {
               jobId: job.id,
@@ -295,12 +302,14 @@ async function processMappedTvEpisodes(
       });
       for (const [index, { item, mapping, baseName, seasonNumber, seasonName, seasonDir, targetPath }] of prepared.entries()) {
         job.throwIfCancelled();
-        await mkdir(seasonDir, { recursive: true, mode: 0o750 });
+        await mkdir(seasonDir, { recursive: true, mode: 0o2775 });
+        publishedDirectories.add(seasonDir);
         if (metadataSettings.automaticImport && metadataSettings.downloadSeriesMetadata) {
           metadataTasks.push(async () => {
             try {
             const seasonArtwork = artworkAssets(recovery.artworkReferences).filter((asset) => asset.kind === "season-poster");
-            await downloadArtwork(seasonDir, seasonArtwork, metadataSettings);
+            const artworkPaths = await downloadArtwork(seasonDir, seasonArtwork, metadataSettings);
+            for (const path of artworkPaths) publishedSidecars.add(path);
             } catch (error) {
               log("warn", "metadata", "TV season artwork could not be fully written", {
                 jobId: job.id, seasonNumber, error: error instanceof Error ? error.message : "unknown artwork failure"
@@ -311,12 +320,13 @@ async function processMappedTvEpisodes(
         if (metadataSettings.generateNfo) {
           metadataTasks.push(async () => {
             try {
-            await writeNfo(seasonDir, "season.nfo", "season", {
+            const nfoPath = await writeNfo(seasonDir, "season.nfo", "season", {
               title: seasonName,
               season: seasonNumber,
               provider: recovery.metadataProvider,
               providerId: recovery.providerId
             }, metadataSettings);
+            if (nfoPath) publishedSidecars.add(nfoPath);
             } catch (error) {
               log("warn", "metadata", "TV season NFO could not be written", {
                 jobId: job.id, seasonNumber, error: error instanceof Error ? error.message : "unknown write failure"
@@ -357,7 +367,7 @@ async function processMappedTvEpisodes(
               left.seasonNumber - right.seasonNumber || left.episodeNumber - right.episodeNumber)[0];
             const episodeMetadata = metadataDocument(firstEpisode?.title ?? baseName,
               recovery.metadataProvider, recovery.providerId ?? undefined, importedMetadata);
-            await writeNfo(seasonDir, `${baseName}.nfo`, "episode", {
+            const nfoPath = await writeNfo(seasonDir, `${baseName}.nfo`, "episode", {
               ...episodeMetadata,
               ...(firstEpisode ? {
                 season: firstEpisode.seasonNumber,
@@ -366,6 +376,7 @@ async function processMappedTvEpisodes(
                 ...(firstEpisode.notes ? { overview: firstEpisode.notes } : {})
               } : {})
             }, metadataSettings);
+            if (nfoPath) publishedSidecars.add(nfoPath);
             } catch (error) {
               log("warn", "metadata", "TV episode NFO could not be written", {
                 jobId: job.id, trackId: item.id, error: error instanceof Error ? error.message : "unknown write failure"
@@ -386,6 +397,12 @@ async function processMappedTvEpisodes(
           `Published ${baseName}.${settings.format} for disc track ${item.id}`);
       }
       for (const writeMetadata of metadataTasks) await writeMetadata();
+      for (const directory of publishedDirectories) {
+        await applyPublishedPermissions(directory, tvLibraryRoot, false);
+      }
+      for (const path of [...createdOutputs, ...publishedSidecars]) {
+        await applyPublishedPermissions(path, tvLibraryRoot, false);
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "TV episode processing failed";
       const cleanupFailures: string[] = [];
@@ -1405,6 +1422,7 @@ async function processMappedTvEpisodes(
           error: error instanceof Error ? error.message : "unknown metadata write failure"
         });
       }
+      await applyPublishedPermissions(movieOutput.directory, settings.moviesDir);
       jobs.update(context, {
         outputPath: targetPath,
         outputBytes: encoded.outputBytes,
