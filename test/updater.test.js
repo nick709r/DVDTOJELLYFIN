@@ -15,6 +15,7 @@ test("AutoDisc update versions compare numerically and reject invalid tags", asy
 
 test("update check selects the highest stable version tag and ignores other tags", async () => {
   const { checkForUpdate } = await import("../dist/updater.js");
+  const { version: currentVersion } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   let requestedUrl = "";
   const result = await checkForUpdate(async (input) => {
     requestedUrl = String(input);
@@ -37,6 +38,7 @@ test("update check selects the highest stable version tag and ignores other tags
       { name: "v1.24.0" },
       { name: "v1.25.0" },
       { name: "v1.26.0" },
+      { name: `v${currentVersion}` },
       { name: "v2.0.0-rc.1" },
       { name: "main" },
       { name: 2 }
@@ -44,12 +46,12 @@ test("update check selects the highest stable version tag and ignores other tags
   });
 
   assert.equal(requestedUrl, "https://api.github.com/repos/nick709r/DVDTOJELLYFIN/tags?per_page=100");
-  assert.equal(result.currentVersion, "1.26.0");
-  assert.equal(result.latestVersion, "v1.26.0");
+  assert.equal(result.currentVersion, currentVersion);
+  assert.equal(result.latestVersion, `v${currentVersion}`);
   assert.equal(result.updateAvailable, false);
   assert.equal(
     result.assetSelected,
-    "https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/v1.26.0.tar.gz"
+    `https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/v${currentVersion}.tar.gz`
   );
 });
 

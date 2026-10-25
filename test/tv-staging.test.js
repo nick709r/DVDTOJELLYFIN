@@ -15,6 +15,19 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
   const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-tv-staging-"));
   const database = new Database(":memory:");
   migrateDatabase(database, defaultSettings);
+  const outputDestinations = {
+    ...defaultSettings.outputDestinations,
+    profiles: defaultSettings.outputDestinations.profiles.map((profile) =>
+      profile.id === defaultSettings.outputDestinations.activeProfileId
+        ? {
+          ...profile,
+          jellyfin: {
+            ...profile.jellyfin,
+            paths: { ...profile.jellyfin.paths, tv: path.join(root, "published-tv") }
+          }
+        }
+        : profile)
+  };
   const repositories = createSqliteRepositories(database, {
     ...defaultSettings,
     workDir: path.join(root, "work"),
@@ -22,14 +35,16 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
     tvStagingRetentionDays: 1,
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
-    musicDir: path.join(root, "published-music")
+    musicDir: path.join(root, "published-music"),
+    outputDestinations
   });
   repositories.settings.save({
     workDir: path.join(root, "work"),
     tvStagingDir: path.join(root, "dedicated-tv-staging"),
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
-    musicDir: path.join(root, "published-music")
+    musicDir: path.join(root, "published-music"),
+    outputDestinations
   });
   await Promise.all([
     mkdir(path.join(root, "work"), { recursive: true }),

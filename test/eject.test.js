@@ -61,7 +61,7 @@ test("ejection is deferred while a managed child process remains active", async 
       return false;
     }
   });
-  await assert.rejects(service.eject("/dev/sr0"), /child processes remain active/);
+  await assert.rejects(service.eject("/dev/sr0"), /Managed child processes are still running/);
   assert.equal(waits, 3);
   assert.deepEqual(calls, []);
 });
