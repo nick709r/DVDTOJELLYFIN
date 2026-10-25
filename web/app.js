@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", metrics: null, statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, tvMetadataProviders: [], diagnosticsJobId: "", diagnosticsRefreshTimer: null, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null, tvDeleteJobId: null };
+const state = { page: "dashboard", statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, currentActiveJob: null, currentRuntimeStatus: "idle", statusEventVersion: 0, diagnosticsJobId: "", diagnosticsRefreshTimer: null, dashboardAttentionTimer: null, dashboardRequestId: 0, dashboardAttentionRequestId: 0, diagnosticsRequestId: 0, tvReviewsRequestId: 0, reviewCentreRequestId: 0, reviewJobsRequestId: 0, tvAnalysisRequestId: 0, tvMatchingRequestId: 0, chartRequestId: 0, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null, tvDeleteJobId: null };
 const loginDialog = $("#login-dialog");
 const passwordChangeDialog = $("#password-change-dialog");
 const themeToggle = $("#theme-toggle");
@@ -73,9 +73,15 @@ function renderJob(job, fallbackStatus = "idle") {
   badge.className = `badge ${status}`;
   const isMusic = job?.mediaType === "audio_cd";
   $("#job-title").textContent = job?.title || job?.discLabel || (status === "idle" ? "Waiting for a disc" : status === "completed" ? "Disc completed" : status === "failed" ? "Disc processing error" : "Checking inserted disc…");
-  $("#job-detail").textContent = job?.error || (job?.outputPath
+  const jobDetail = job?.error || (job?.outputPath
     ? job.outputPath
     : status === "idle" ? "Insert a video DVD or music CD to begin." : status === "inspecting" ? "Checking disc contents and title information." : status === "completed" ? (isMusic ? "Finished album is ready in Jellyfin Music." : "Finished movie is ready in Jellyfin Movies.") : status === "failed" ? "Check conversion history and service logs for details." : `Processing stage: ${status === "publishing" ? "moving" : status}`);
+  const classificationDetail = job?.classification
+    ? `Automatic classification: ${job.classification.detectedMediaType}. ${job.classification.mediaTypeOverridden
+      ? `Manual override active: ${job.classification.finalMediaType}.`
+      : "No manual override."}`
+    : "";
+  $("#job-detail").textContent = [jobDetail, classificationDetail].filter(Boolean).join(" · ");
   const progress = Number(job?.progress || 0);
   $("#progress-bar").style.width = `${Math.max(0, Math.min(100, progress))}%`;
   $("#progress-label").textContent = status === "idle" ? "Waiting" : `${Math.round(progress)}%`;
@@ -130,11 +136,55 @@ function renderJobList(target, jobs, allowDelete = false) {
     const type = job.mediaType === "audio_cd" ? "Music CD" : "DVD";
     const isActive = ["inspecting", "ripping", "converting", "publishing"].includes(job.status);
     const action = allowDelete && !isActive
-      ? `<button class="button danger remove-job" type="button" data-job-id="${escapeHtml(job.id)}" aria-label="Remove ${title} from history">Remove</button>`
+      ? `<button class="button danger remove-job" type="button" data-job-id="${escapeHtml(job.id)}" aria-label="Remove ${title} from history">Remove</button><button class="button danger forget-disc" type="button" data-job-id="${escapeHtml(job.id)}">Forget Disc</button>`
       : "";
-    return `<div class="list-row${action ? " with-actions" : ""}"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${action}</div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</div>`;
+    const classification = job.classification;
+    const mediaTypeOptions = [
+      ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"]
+    ];
+    if (classification && !mediaTypeOptions.some(([value]) => value === classification.finalMediaType)) {
+      mediaTypeOptions.unshift([classification.finalMediaType, `Current: ${classification.finalMediaType}`]);
+    }
+    const classificationControl = job.discFingerprint && classification
+      ? `<details class="job-media-override"><summary>${classification.mediaTypeOverridden ? "Manual classification active" : "Automatic classification"} · ${escapeHtml(classification.finalMediaType)}</summary>
+        <form class="job-media-override-form" data-fingerprint="${escapeHtml(job.discFingerprint)}">
+          <p class="hint">Automatic Classification: ${escapeHtml(classification.detectedMediaType)}${classification.mediaTypeOverridden ? ` · Active Manual Override: ${escapeHtml(classification.finalMediaType)}` : ""}</p>
+          <label>Manual override<select name="mediaType">${mediaTypeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${classification.finalMediaType === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
+          <label>Reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
+          <button class="button secondary" type="submit"${isActive ? " disabled" : ""}>Save classification</button>
+          ${isActive ? '<p class="hint">Changes are paused while this job is processing to protect its output. Save after it finishes.</p>' : ""}
+          ${classification.audit?.length ? `<ul>${classification.audit.map((record) =>
+            `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+          ).join("")}</ul>` : ""}
+        </form>
+      </details>`
+      : "";
+    return `<div class="list-row${action ? " with-actions" : ""}"><div class="list-title">${title}<span class="list-sub">${escapeHtml(type)} · ${escapeHtml(when)}</span></div><span>${escapeHtml(job.encoder || "—")}</span><span>${size}</span><span class="result ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>${action}</div><div class="list-sub extra">${duration}${job.error ? ` · ${escapeHtml(job.error)}` : ""}${classificationControl}</div>`;
   }).join("");
 }
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest(".job-media-override-form");
+  if (!form) return;
+  event.preventDefault();
+  const button = form.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    await api(`/api/v1/discs/recovery/${encodeURIComponent(form.dataset.fingerprint)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        mediaType: form.elements.mediaType.value,
+        mediaTypeReason: form.elements.mediaTypeReason.value.trim() || undefined
+      })
+    });
+    notify("Manual media classification saved and audit logged.");
+    await Promise.all([refreshHistory(), refreshDashboard()]);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({
@@ -191,11 +241,13 @@ const diskTypeLabel = (type) => DISK_TYPE_LABELS[type] || type;
 state.classification = null;
 state.diagnosticsFingerprint = null;
 
-async function renderClassification(record) {
+async function renderClassification(record, requestId = state.diagnosticsRequestId) {
   state.classification = record || null;
   const meta = await api("/api/v1/classification/audit?limit=1");
+  if (requestId !== state.diagnosticsRequestId) return;
   const form = $("#classification-form");
   const m = (await api("/api/v1/classification/metrics")).metrics;
+  if (requestId !== state.diagnosticsRequestId) return;
   const corrections = m.corrections.map((c) => `${escapeHtml(diskTypeLabel(c.from))} → ${escapeHtml(diskTypeLabel(c.to))}: ${c.count}`).join(" · ") || "none";
   $("#classification-metrics").innerHTML = diagnosticPairs([
     ["Total processed", m.totalProcessed], ["Auto accepted", m.autoAccepted], ["Reviewed", m.reviewed],
@@ -226,13 +278,14 @@ async function renderClassification(record) {
   form.classList.remove("hidden");
 }
 
-async function renderDiscRecovery(payload) {
+async function renderDiscRecovery(payload, requestId = state.diagnosticsRequestId) {
   const form = $("#disc-recovery-form");
   const recovery = payload.job?.discFingerprint
     ? await api(`/api/v1/discs/recovery/${encodeURIComponent(payload.job.discFingerprint)}`)
     : state.diagnosticsFingerprint
       ? await api(`/api/v1/discs/recovery/${encodeURIComponent(state.diagnosticsFingerprint)}`)
       : { recovery: null };
+  if (requestId !== state.diagnosticsRequestId) return;
   if (!recovery.recovery) {
     form.classList.add("hidden");
     return;
@@ -247,15 +300,20 @@ async function renderDiscRecovery(payload) {
     `<option value="${value}">${label}</option>`).join("");
   form.elements.discType.value = item.finalDiscType;
   form.elements.mediaType.value = item.finalMediaType;
+  form.elements.mediaTypeReason.value = "";
   form.elements.metadataProvider.value = item.metadataProvider;
   form.elements.providerId.value = item.providerId || "";
   form.elements.seriesName.value = item.seriesName || "";
   form.elements.seasonNumber.value = item.seasonNumber ?? "";
   form.elements.notes.value = item.notes || "";
   $("#disc-recovery-summary").textContent =
-    `Detected ${item.detectedDiscType} / ${item.detectedMediaType}; final ${item.finalDiscType} / ${item.finalMediaType}` +
+    `Automatic Classification: ${item.detectedMediaType}; Manual Override: ${item.mediaTypeOverridden ? item.finalMediaType : "None (automatic classification active)"}. ` +
+    `Detected disc: ${item.detectedDiscType}; final disc: ${item.finalDiscType}` +
     `${item.detectedConfidence === null ? "" : ` · detection confidence ${Math.round(item.detectedConfidence * 100)}%`}` +
-    `${item.discTypeOverridden || item.mediaTypeOverridden ? " (manual override active)" : " (no override)"}.`;
+    `${item.mediaTypeOverridden ? " · MANUAL MEDIA OVERRIDE ACTIVE" : ""}.` +
+    ((recovery.mediaTypeAudit || []).length
+      ? ` Last override: ${recovery.mediaTypeAudit[0].originalType} → ${recovery.mediaTypeAudit[0].newType} by ${recovery.mediaTypeAudit[0].username} at ${new Date(recovery.mediaTypeAudit[0].timestamp).toLocaleString()}${recovery.mediaTypeAudit[0].reason ? ` (${recovery.mediaTypeAudit[0].reason})` : ""}.`
+      : "");
   form.classList.remove("hidden");
 }
 
@@ -283,6 +341,7 @@ $("#disc-recovery-form").addEventListener("submit", async (event) => {
       body: JSON.stringify({
         discType: form.elements.discType.value,
         mediaType: form.elements.mediaType.value,
+        mediaTypeReason: form.elements.mediaTypeReason.value.trim() || undefined,
         metadataProvider: form.elements.metadataProvider.value,
         providerId: form.elements.providerId.value.trim() || null,
         seriesName: form.elements.seriesName.value.trim() || null,
@@ -474,27 +533,118 @@ function renderDiagnostics(payload) {
 }
 
 async function loadDiagnostics(jobId = "", liveOnly = false) {
+  const requestId = ++state.diagnosticsRequestId;
   const query = liveOnly ? "?live=1" : jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
   const payload = await api(`/api/v1/diagnostics${query}`);
+  if (requestId !== state.diagnosticsRequestId) return;
   renderDiagnostics(payload);
-  renderClassification(payload.classification).catch((error) => notify(error.message, true));
-  renderDiscRecovery(payload).catch((error) => notify(error.message, true));
+  renderClassification(payload.classification, requestId).catch((error) => {
+    if (requestId === state.diagnosticsRequestId) notify(error.message, true);
+  });
+  renderDiscRecovery(payload, requestId).catch((error) => {
+    if (requestId === state.diagnosticsRequestId) notify(error.message, true);
+  });
 }
 
 async function refreshDashboard() {
+  const requestId = ++state.dashboardRequestId;
+  const statusEventVersion = state.statusEventVersion;
   const data = await api("/api/v1/dashboard");
-  state.hasActiveJob = Boolean(data.active);
-  renderManualMusicMetadata(data.manualMusicMetadata);
-  $("#total-count").textContent = data.stats.total ?? 0;
-  $("#success-count").textContent = data.stats.successful ?? 0;
-  $("#failure-count").textContent = data.stats.failures ?? 0;
-  $("#average-duration").textContent = formatDuration(data.stats.averageSeconds);
+  if (requestId !== state.dashboardRequestId) return;
+  const statusIsCurrent = statusEventVersion === state.statusEventVersion;
+  if (statusIsCurrent) {
+    state.currentActiveJob = data.active;
+    state.currentRuntimeStatus = data.state;
+    state.hasActiveJob = Boolean(data.active);
+    renderManualMusicMetadata(data.manualMusicMetadata);
+  }
   const lastFinished = ["completed", "failed", "cancelled"].includes(data.state) ? data.recent[0] : null;
-  renderJob(data.active || lastFinished, data.state);
+  renderJob(statusIsCurrent ? data.active || lastFinished : state.currentActiveJob, state.currentRuntimeStatus);
   renderJobList($("#recent-list"), data.recent);
   renderLibraryHealth($("#library-dashboard-health"), data.libraries, false);
   await refreshChart(state.statsRange);
-  await Promise.all([loadTvSummary(), loadTvMetadataMetrics()]);
+  if (requestId !== state.dashboardRequestId) return;
+  await Promise.all([loadDashboardAttention(data), loadTvSummary(), loadTvMetadataMetrics()]);
+}
+
+async function loadDashboardAttention(dashboard) {
+  const requestId = ++state.dashboardAttentionRequestId;
+  const [{ tasks }, reviews, retryingReviews, { reviewJobs }, { plans }] = await Promise.all([
+    api("/api/v1/tv/matching"),
+    api("/api/v1/reviews?limit=250&status=active"),
+    api("/api/v1/reviews?limit=250&status=retrying"),
+    api("/api/v1/review-jobs"),
+    api("/api/v1/tv/reviews?limit=100&state=awaiting-review")
+  ]);
+  if (requestId !== state.dashboardAttentionRequestId) return;
+  const unmatchedTasks = tasks.filter((entry) => {
+    const task = entry.task || entry;
+    const assignments = task.assignments || [];
+    const fullyMatched = entry.progress?.fullyMatched ??
+      (assignments.length > 0 && assignments.every((assignment) => assignment.confirmed && assignment.selectedEpisodes?.length));
+    return task.status !== "completed" && !fullyMatched;
+  });
+  const reviewItems = [...reviews.items, ...retryingReviews.items];
+  const reviewItemsComplete = reviewItems.length === reviews.summary.active;
+  const failedItems = new Set(reviewItems
+    .filter((item) => item.category === "metadata_issue" || item.category === "processing_failure")
+    .map((item) => item.relatedJobId || item.id));
+  for (const entry of tasks) {
+    const task = entry.task || entry;
+    if (task.failure) failedItems.add(task.jobId);
+  }
+  const activeJob = state.statusEventVersion ? state.currentActiveJob : dashboard.active;
+  const manualMusicMetadata = state.statusEventVersion ? state.manualMusicMetadata : dashboard.manualMusicMetadata;
+  const activeTasks = new Set([
+    ...(activeJob?.id ? [activeJob.id] : []),
+    ...tasks.filter((entry) => (entry.task || entry).status === "processing")
+      .map((entry) => (entry.task || entry).jobId)
+  ]);
+  const pendingReviewJobs = reviewJobs.filter((job) => job.status === "pending");
+  const reviewJobIds = new Set(reviewItems.map((item) => item.relatedJobId).filter(Boolean));
+  const reviewFingerprints = new Set(reviewItems.map((item) => item.discFingerprint).filter(Boolean));
+  const additionalReviewIds = new Set();
+  for (const job of pendingReviewJobs) {
+    const key = job.originalJobId ? `job:${job.originalJobId}` : `review-job:${job.id}`;
+    if (!reviewItemsComplete || !reviewJobIds.has(job.originalJobId)) additionalReviewIds.add(key);
+  }
+  for (const plan of plans) {
+    if (!reviewItemsComplete || !reviewFingerprints.has(plan.fingerprint)) {
+      additionalReviewIds.add(`disc:${plan.fingerprint}`);
+    }
+  }
+  const waitingForReview = reviews.summary.active + additionalReviewIds.size;
+  const unmatchedCount = unmatchedTasks.length;
+  const failedCount = failedItems.size;
+  const attentionCount = waitingForReview + unmatchedCount + failedCount;
+
+  $("#dashboard-active-count").textContent = activeTasks.size;
+  $("#dashboard-review-count").textContent = waitingForReview;
+  $("#dashboard-unmatched-count").textContent = unmatchedCount;
+  $("#dashboard-failed-count").textContent = failedCount;
+  if (Array.isArray(dashboard.recent)) $("#dashboard-activity-count").textContent = dashboard.recent.length;
+  $("#dashboard-attention").classList.toggle("hidden", attentionCount === 0);
+  $("#dashboard-attention-message").textContent =
+    `${unmatchedCount} unmatched TV disc${unmatchedCount === 1 ? "" : "s"}, ` +
+    `${waitingForReview} item${waitingForReview === 1 ? "" : "s"} waiting for review, and ` +
+    `${failedCount} failed identification${failedCount === 1 ? "" : "s"}.`;
+  document.querySelectorAll("[data-attention-action]").forEach((button) => {
+    const action = button.dataset.attentionAction;
+    const visible = action === "open-review" ? waitingForReview > 0
+      : action === "review-match" ? unmatchedCount > 0 || plans.length > 0
+      : action === "fix-metadata" ? reviewItems.some((item) => item.category === "metadata_issue")
+        : action === "continue-processing" ? pendingReviewJobs.length > 0 || Boolean(manualMusicMetadata)
+          : unmatchedCount > 0;
+    button.classList.toggle("hidden", !visible);
+  });
+}
+
+function scheduleDashboardAttention(dashboard) {
+  clearTimeout(state.dashboardAttentionTimer);
+  state.dashboardAttentionTimer = setTimeout(() => {
+    if (state.page !== "dashboard") return;
+    loadDashboardAttention(dashboard).catch((error) => notify(error.message, true));
+  }, 300);
 }
 
 function renderLibraryHealth(target, libraries, allowCreate) {
@@ -605,7 +755,6 @@ async function loadTvMetadataMetrics() {
 }
 
 function renderTvMetadataProviders(providers) {
-  state.tvMetadataProviders = providers;
   const providerMarkup = providers.length ? providers.map((provider) => {
     const validation = provider.lastValidation
       ? `${provider.lastValidation.status === "success" ? "Success" : "Failure"} · ${provider.lastValidation.message} · ${new Date(provider.lastValidation.validatedAt).toLocaleString()}`
@@ -704,8 +853,10 @@ function renderIdentificationDiagnostics(d) {
 const identifyDialog = $("#identify-disc-dialog");
 const identifyState = { planId: null, taskId: null, fingerprint: null, selected: null, existing: null };
 
-function fillNumberSelect(select, from, to, value, zeroLabel = "") {
-  const options = [];
+function fillNumberSelect(select, from, to, value, zeroLabel = "", optionalLabel = "") {
+  const options = optionalLabel
+    ? [`<option value=""${value === null || value === undefined ? " selected" : ""}>${escapeHtml(optionalLabel)}</option>`]
+    : [];
   for (let number = from; number <= to; number += 1) {
     options.push(`<option value="${number}"${number === value ? " selected" : ""}>${number === 0 && zeroLabel ? zeroLabel : number}</option>`);
   }
@@ -714,11 +865,13 @@ function fillNumberSelect(select, from, to, value, zeroLabel = "") {
 
 function showIdentifySelection(selected, season, disc, discName) {
   identifyState.selected = selected;
+  $("#identify-step-series").classList.remove("active");
+  $("#identify-step-season").classList.add("active");
   $("#identify-assignment").classList.remove("hidden");
   $("#identify-selected").innerHTML = `<b>${escapeHtml(selected.title)}${selected.year ? ` (${escapeHtml(selected.year)})` : ""}</b> · ${escapeHtml(selected.providerName || selected.provider)}`;
   const maxSeason = Math.max(selected.seasonCount || 0, season || 0, 15);
   fillNumberSelect($("#identify-season"), 0, maxSeason, season ?? 1, "0 - Specials");
-  fillNumberSelect($("#identify-disc"), 1, Math.max(disc || 0, 20), disc ?? 1);
+  fillNumberSelect($("#identify-disc"), 1, Math.max(disc || 0, 20), disc, "", "Not specified");
   $("#identify-disc-name").value = discName || "";
   $("#identify-save").disabled = false;
 }
@@ -781,6 +934,8 @@ async function openIdentifyDialog({ planId = null, taskId = null, fingerprint = 
     } : null;
   }
   identifyState.existing = existing;
+  $("#identify-step-series").classList.toggle("active", !existing);
+  $("#identify-step-season").classList.toggle("active", Boolean(existing));
   $("#identify-disc-context").textContent = taskId
     ? `Disc fingerprint ${identifyState.fingerprint}. Identification will continue processing from the staged video without reinserting or re-ripping the disc.`
     : `Disc fingerprint ${identifyState.fingerprint}. The identification is remembered and applied automatically whenever this disc is inserted again.`;
@@ -831,7 +986,7 @@ $("#identify-disc-form").addEventListener("submit", async (event) => {
       provider: selected.provider,
       providerId: selected.seriesId || null,
       seasonNumber: Number($("#identify-season").value),
-      discNumber: Number($("#identify-disc").value),
+      discNumber: $("#identify-disc").value ? Number($("#identify-disc").value) : null,
       discName: $("#identify-disc-name").value.trim() || null,
       ...(selected.year ? { year: selected.year } : {}),
       ...(selected.posterUrl ? { posterUrl: selected.posterUrl } : {}),
@@ -852,7 +1007,6 @@ $("#identify-disc-form").addEventListener("submit", async (event) => {
     notify(identifyState.taskId
       ? `Identified ${selected.title}; processing is continuing from staged files.`
       : `Saved: ${selected.title} season ${body.seasonNumber} disc ${body.discNumber}. This disc will be recognised automatically next time.`);
-    if (identifyState.taskId) await loadTvMatchingTasks();
     if (state.page === "tv-reviews") await loadTvReviews();
     if (state.page === "diagnostics") await loadDiagnostics($("#diagnostics-job").value);
   } catch (error) {
@@ -936,16 +1090,17 @@ function renderTvRecoveryEditor(plan, recovery) {
   const provider = recovery?.metadataProvider || "manual";
   return `<details class="tv-recovery-editor">
     <summary>Manual classification, metadata & episode recovery</summary>
-    <p class="hint">Detected: ${escapeHtml(recovery?.detectedDiscType || "DVD")} / ${escapeHtml(recovery?.detectedMediaType || "TV series")} · Final: ${escapeHtml(discType)} / ${escapeHtml(mediaType)}${recovery?.mediaTypeOverridden || recovery?.discTypeOverridden ? " (manual override active)" : " (no override)"}</p>
+    <p class="hint">Automatic Classification: ${escapeHtml(recovery?.detectedMediaType || "TV series")} · Manual Override: ${escapeHtml(recovery?.mediaTypeOverridden ? mediaType : "None")}${recovery?.mediaTypeOverridden ? " (active)" : ""}. Physical disc: ${escapeHtml(recovery?.detectedDiscType || "DVD")} → ${escapeHtml(discType)}</p>
     <form class="tv-recovery-form" data-plan-id="${escapeHtml(plan.id)}">
       <div class="tv-recovery-fields">
         <label>Disc type<select name="discType">${[
           ["cd", "CD"], ["dvd", "DVD"], ["bluray", "Blu-ray"], ["uhd_bluray", "UHD Blu-ray"], ["data_disc", "Data Disc"], ["unknown", "Unknown"]
         ].map(([value, label]) => `<option value="${value}"${discType === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
         <label>Media type<select name="mediaType">${[
-          ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music Album"], ["audiobook", "Audiobook"],
+          ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"], ["audiobook", "Audiobook"],
           ["music_video", "Music Video"], ["concert", "Concert"], ["documentary", "Documentary"], ["mixed_content", "Mixed Content"], ["other", "Other"]
         ].map(([value, label]) => `<option value="${value}"${mediaType === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+        <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
         <label>Metadata provider<select name="metadataProvider">${[
           ["tvdb", "TVDB"], ["tmdb", "TMDB"], ["imdb", "IMDb"], ["anidb", "AniDB"], ["manual", "Manual Entry"]
         ].map(([value, label]) => `<option value="${value}"${provider === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
@@ -983,6 +1138,9 @@ function renderTvPlanCard(plan, includeActions = false, recovery = null, include
     return `<div class="tv-assignment ${assignment.confidenceBand}">
       <div><b>${escapeHtml(assignment.itemTitle || assignment.itemId)}</b><span class="list-sub">${escapeHtml(episodes)}</span></div>
       <span class="confidence-pill ${assignment.confidenceBand}">${Math.round(assignment.confidence * 100)}% · ${escapeHtml(confidenceLabel(assignment.confidenceBand))}</span>
+      <span class="tv-assignment-source">${escapeHtml(tvAssignmentSource(
+        assignment.assignmentMethod || (assignment.episodes.length ? "runtime-matching" : undefined), recovery
+      ))}</span>
       <p class="tv-reasoning">${assignment.explanation.map(escapeHtml).join(" · ") || "No explanation recorded."}</p>
       ${assignment.alternatives.length ? `<details><summary>${assignment.alternatives.length} alternative suggestion(s)</summary><ul>${assignment.alternatives.map((option) => `<li>${escapeHtml(option.episodes.map((episode) => `S${episode.seasonNumber}E${episode.episodeNumber}${episode.title ? ` · ${episode.title}` : ""}`).join(" + "))} · ${Math.round(option.confidence * 100)}%</li>`).join("")}</ul></details>` : ""}
       ${editable ? `<div class="tv-actions">
@@ -1011,12 +1169,14 @@ function renderTvPlanCard(plan, includeActions = false, recovery = null, include
 }
 
 async function loadTvAnalysis() {
+  const requestId = ++state.tvAnalysisRequestId;
   const confidence = $("#tv-analysis-confidence").value;
   const planState = $("#tv-analysis-state").value;
   const query = new URLSearchParams({ limit: "100" });
   if (confidence) query.set("confidence", confidence);
   if (planState) query.set("state", planState);
   const data = await api(`/api/v1/tv/analysis?${query}`);
+  if (requestId !== state.tvAnalysisRequestId) return;
   $("#tv-analysis-list").innerHTML = data.plans.length
     ? data.plans.map((plan) => `<div class="tv-list-row">${renderTvPlanCard(plan).replace(/^<article class="tv-plan-card">|<\/article>$/g, "")}</div>`).join("")
     : '<div class="empty-state">No TV reports match these filters.</div>';
@@ -1037,7 +1197,9 @@ async function showTvPlan(planId, target = "#tv-analysis-detail") {
 }
 
 async function loadTvMatching() {
+  const requestId = ++state.tvMatchingRequestId;
   const { plans } = await api("/api/v1/tv/analysis?limit=100");
+  if (requestId !== state.tvMatchingRequestId) return;
   const items = plans.flatMap((plan) => plan.assignments.map((assignment) => ({ plan, assignment })));
   $("#tv-matching-list").innerHTML = items.length
     ? items.map(({ plan, assignment }) => renderTvPlanCard({
@@ -1047,50 +1209,266 @@ async function loadTvMatching() {
     : '<div class="empty-state">No TV episode suggestions are available yet.</div>';
 }
 
+const tvEpisodeGuides = new Map();
+
+function tvEpisodeGuideKey(recovery) {
+  return `${recovery.metadataProvider}:${recovery.providerId}:${recovery.seasonNumber}`;
+}
+
+async function loadTvEpisodeGuides(entries) {
+  await Promise.all(entries.map(async ({ task, recovery }) => {
+    if (!recovery?.seriesName || recovery.seasonNumber === null || recovery.seasonNumber === undefined ||
+      !recovery.providerId || !["tvdb", "tmdb", "imdb"].includes(recovery.metadataProvider)) return;
+    const key = tvEpisodeGuideKey(recovery);
+    if (tvEpisodeGuides.has(key)) return;
+    try {
+      const { episodes } = await api("/api/v1/tv/metadata/episodes/lookup", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: recovery.metadataProvider,
+          providerId: recovery.providerId,
+          seasonNumber: recovery.seasonNumber
+        })
+      });
+      tvEpisodeGuides.set(key, { episodes, error: "" });
+    } catch (error) {
+      tvEpisodeGuides.set(key, { episodes: [], error: error.message });
+    }
+  }));
+}
+
+function tvEpisodeOptions(task, recovery, assignment) {
+  const episodes = new Map();
+  const guide = recovery ? tvEpisodeGuides.get(tvEpisodeGuideKey(recovery)) : null;
+  for (const episode of guide?.episodes || []) {
+    if (episode.seasonNumber === recovery.seasonNumber) episodes.set(episode.episodeNumber, episode);
+  }
+  for (const candidate of assignment.episodeCandidates || []) {
+    for (const episode of candidate.episodes || []) {
+      if (episode.seasonNumber === recovery?.seasonNumber) episodes.set(episode.episodeNumber, episode);
+    }
+  }
+  for (let episodeNumber = 0; episodeNumber <= 100; episodeNumber += 1) {
+    if (!episodes.has(episodeNumber)) episodes.set(episodeNumber, {
+      seriesId: recovery?.providerId || recovery?.seriesName || task.fingerprint,
+      seasonNumber: recovery?.seasonNumber ?? 0,
+      episodeNumber,
+      title: ""
+    });
+  }
+  return [...episodes.values()].sort((left, right) => left.episodeNumber - right.episodeNumber);
+}
+
+function tvEpisodeOptionLabel(episode) {
+  const code = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(episode.episodeNumber).padStart(2, "0")}`;
+  return `${code}${episode.title ? ` - ${episode.title}` : ""}`;
+}
+
+function tvMatchingStatus(progress, task) {
+  if (progress.fullyMatched || task.status === "processing") return { label: task.status === "processing" ? "Publishing" : "Fully matched", className: "fully-matched" };
+  if (progress.matchedCount) return { label: "Partially matched", className: "partially-matched" };
+  return task.status === "awaiting-identification"
+    ? { label: "Identification required", className: "unidentified" }
+    : { label: "Needs review", className: "unidentified" };
+}
+
+function tvAssignmentSource(method, recovery, manual = false) {
+  if (manual) return "Manual Assignment";
+  if (method === "provider-disc-mapping") {
+    return recovery?.metadataProvider === "tvdb" ? "TVDB Disc Mapping" : "Provider Disc Mapping";
+  }
+  if (method === "sequential-disc-assignment") return "Sequential Assignment";
+  if (method === "runtime-matching") return "Runtime Ranking";
+  if (method === "exact-fingerprint-history") return "Fingerprint History";
+  if (method === "user-correction") return "User Correction History";
+  return "Unspecified";
+}
+
+function tvCandidateMatchesEpisodes(candidate, episodes) {
+  if (!candidate || candidate.episodes.length !== episodes.length) return false;
+  const signature = (episode) => `${episode.seriesId}:${episode.seasonNumber}:${episode.episodeNumber}`;
+  const left = candidate.episodes.map(signature).sort();
+  const right = episodes.map(signature).sort();
+  return left.every((value, index) => value === right[index]);
+}
+
+function tvAssignmentConfidence(confidence) {
+  if (typeof confidence !== "number" || !Number.isFinite(confidence)) return "Confidence unavailable";
+  const band = confidence >= 0.9 ? "High" : confidence >= 0.72 ? "Medium" : "Review required";
+  return `${band} confidence · ${Math.round(confidence * 100)}%`;
+}
+
 function renderTvMatchingTask(entry) {
-  const { task, recovery } = entry;
-  const series = recovery?.seriesName;
-  const runtime = task.assignments.length
-    ? Math.round(task.assignments.reduce((sum, assignment) => sum + assignment.durationSeconds, 0) /
-      task.assignments.length / 60)
-    : 0;
-  const assignments = task.assignments.map((assignment) => {
-    const suggestion = assignment.selectedEpisodes?.length
-      ? assignment.selectedEpisodes
-      : assignment.episodeCandidates[0]?.episodes || [];
-    const episodeNumbers = suggestion.map((episode) => episode.episodeNumber).join(", ");
-    const suggestionText = assignment.episodeCandidates.slice(0, 3).map((candidate) =>
-      `${candidate.episodes.map((episode) => `S${episode.seasonNumber}E${String(episode.episodeNumber).padStart(2, "0")}`).join("+")} (${Math.round(candidate.confidence * 100)}%)`
-    ).join(" · ");
-    return `<div class="tv-assignment">
-      <div><b>Track ${escapeHtml(assignment.trackId)} · ${escapeHtml(assignment.title)}</b><span>${formatDuration(assignment.durationSeconds)}</span></div>
-      <label>Episode number(s), comma-separated<input type="text" inputmode="numeric" data-track-id="${escapeHtml(assignment.trackId)}" value="${escapeHtml(episodeNumbers)}" placeholder="e.g. 1 or 1, 2"></label>
-      <small class="muted">${suggestionText ? `Suggestions: ${escapeHtml(suggestionText)}` : "No automatic episode suggestion."}</small>
-    </div>`;
+  const { task, recovery, mediaTypeAudit = [] } = entry;
+  const series = recovery?.seriesName || "";
+  const season = recovery?.seasonNumber;
+  const discNumber = recovery?.discNumber;
+  const metadata = recovery?.importedMetadata || {};
+  const yearValue = metadata.year ?? metadata.yearFirstAired ?? metadata.firstAired;
+  const year = typeof yearValue === "string" && /^\d{4}/.test(yearValue)
+    ? yearValue.slice(0, 4) : Number.isInteger(yearValue) ? String(yearValue) : "";
+  const overview = typeof metadata.overview === "string" ? metadata.overview : "";
+  const poster = recovery?.artworkReferences?.find((asset) => asset.kind === "poster" || asset.kind === "season-poster")?.url;
+  const progress = entry.progress || {
+    matchedCount: task.assignments.filter((assignment) => assignment.confirmed && assignment.selectedEpisodes?.length).length,
+    totalCount: task.assignments.length,
+    unmatchedCount: task.assignments.length,
+    fullyMatched: false
+  };
+  const status = tvMatchingStatus(progress, task);
+  const confidence = recovery?.detectedConfidence ?? task.diagnostics?.confidence;
+  const confidenceLabel = confidence === undefined || confidence === null
+    ? "Unavailable"
+    : `${confidence >= 0.9 ? "High" : confidence >= 0.72 ? "Medium" : "Low"} · ${Math.round(confidence * 100)}%`;
+  const totalRuntime = Math.round(task.assignments.reduce((sum, assignment) =>
+    sum + assignment.durationSeconds, 0) / 60);
+  const canMap = Boolean(series && season !== null && season !== undefined);
+  const guide = recovery ? tvEpisodeGuides.get(tvEpisodeGuideKey(recovery)) : null;
+  const trackRows = task.assignments.map((assignment) => {
+    const options = tvEpisodeOptions(task, recovery, assignment);
+    const selectedEpisodes = assignment.confirmed
+      ? assignment.selectedEpisodes || []
+      : assignment.selectedEpisodes?.length
+        ? assignment.selectedEpisodes
+        : assignment.episodeCandidates?.[0]?.episodes || [];
+    const selectedNumbers = new Set(selectedEpisodes.map((episode) => episode.episodeNumber));
+    const confirmedCandidate = assignment.confirmed
+      ? assignment.episodeCandidates?.find((candidate) =>
+        tvCandidateMatchesEpisodes(candidate, assignment.selectedEpisodes || []))
+      : null;
+    const suggestedCandidate = confirmedCandidate || assignment.episodeCandidates?.[0];
+    const selectRows = [...selectedNumbers].length ? [...selectedNumbers] : [null];
+    const selectMarkup = selectRows.map((selectedNumber) => `
+      <select data-episode-select data-track-id="${escapeHtml(assignment.trackId)}">
+        <option value="">Not matched</option>
+        ${options.map((episode) => `<option value="${episode.episodeNumber}" data-title="${escapeHtml(episode.title || "")}"${selectedNumber === episode.episodeNumber ? " selected" : ""}>${escapeHtml(tvEpisodeOptionLabel(episode))}</option>`).join("")}
+      </select>`).join("");
+    const suggestion = assignment.confirmed ? "" : selectedEpisodes.length
+      ? `<div class="tv-assignment-meta"><span>${escapeHtml(tvAssignmentSource(suggestedCandidate?.assignmentMethod || "runtime-matching", recovery))}</span><span>${escapeHtml(tvAssignmentConfidence(suggestedCandidate?.confidence))}</span><small>Suggested match · save to confirm</small></div>`
+      : "";
+    const assignmentSummary = assignment.confirmed
+      ? `<div class="tv-assignment-meta"><span>${escapeHtml(tvAssignmentSource(suggestedCandidate?.assignmentMethod, recovery, !confirmedCandidate))}</span><span>${escapeHtml(confirmedCandidate ? tvAssignmentConfidence(confirmedCandidate.confidence) : "Confirmed manually")}</span></div>`
+      : "";
+    return `<article class="tv-track-row" data-track-id="${escapeHtml(assignment.trackId)}">
+      <div class="tv-track-heading">
+        <div><span class="tv-track-number">TRACK ${escapeHtml(assignment.trackId)}</span><h4>${escapeHtml(assignment.title)}</h4></div>
+        <div class="tv-track-tech"><span>${formatDuration(assignment.durationSeconds)}</span><span data-track-resolution>${escapeHtml(assignment.resolution || "Resolution unavailable")}</span></div>
+      </div>
+      <div class="tv-track-preview">
+        <div class="tv-track-thumbnail-strip" data-thumbnail-strip><span class="tv-thumbnail-placeholder">Preview frames appear here</span></div>
+        <button class="button secondary tv-track-preview-button" type="button" data-track-id="${escapeHtml(assignment.trackId)}">Preview</button>
+      </div>
+      ${canMap ? `<div class="tv-track-mapping">
+        <label>Match to episode<input type="search" data-episode-search placeholder="Search episode title or number" autocomplete="off"></label>
+        <div class="tv-episode-select-list" data-episode-select-list>${selectMarkup}</div>
+        <div class="tv-track-map-actions"><button class="text-button tv-add-episode" type="button" data-track-id="${escapeHtml(assignment.trackId)}">+ Add another episode</button><span data-episode-preview class="tv-episode-preview">Not matched</span></div>
+        ${assignmentSummary}
+        ${suggestion}
+      </div>` : ""}
+    </article>`;
   }).join("");
-  const canMap = Boolean(series && recovery?.seasonNumber !== null && recovery?.discNumber !== null);
-  return `<article class="tv-plan-card tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
-    <div class="tv-plan-heading"><div><b>${escapeHtml(series || `${task.source.label || "Unidentified TV disc"}?`)}</b>
-      <span class="list-sub">${escapeHtml(task.assignments.length)} episodes · about ${runtime} minutes each · Source label: ${escapeHtml(task.source.label || "Unavailable")}</span></div>
-      <span class="result ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></div>
-    ${series ? `<p>Season ${escapeHtml(recovery.seasonNumber ?? "unknown")} · Disc ${escapeHtml(recovery.discNumber ?? "unknown")}${recovery.discName ? ` · ${escapeHtml(recovery.discName)}` : ""} · ${escapeHtml(recovery.metadataProvider || "manual")}</p>` : ""}
-    ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
-    <div class="tv-actions">
-      <button type="button" class="button primary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Series / Season / Disc" : "Identify"}</button>
-      ${canMap ? `<button type="button" class="button secondary tv-task-continue" data-job-id="${escapeHtml(task.jobId)}">${task.assignments.length ? "Save Mappings & Continue" : "Continue"}</button>` : ""}
-      <button type="button" class="button danger tv-task-delete" data-job-id="${escapeHtml(task.jobId)}">Delete</button>
+  const mediaTypeOptions = [
+    ["movie", "Movie"], ["tv_series", "TV Series"], ["music_album", "Music"], ["data_disc", "Data Disc"]
+  ];
+  if (recovery && !mediaTypeOptions.some(([value]) => value === recovery.finalMediaType)) {
+    mediaTypeOptions.unshift([recovery.finalMediaType, `Current: ${recovery.finalMediaType}`]);
+  }
+  const seasonText = season === null || season === undefined ? "Season not identified" : `Season ${season}`;
+  const discText = discNumber === null || discNumber === undefined ? "Disc number not specified" : `Disc ${discNumber}`;
+  return `<article class="tv-disc-review tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
+    <div class="tv-disc-summary">
+      ${poster
+        ? `<img class="tv-disc-poster" src="${escapeHtml(poster)}" alt="${escapeHtml(series ? `${series} poster` : "TV series poster")}" loading="lazy" referrerpolicy="no-referrer">`
+        : '<div class="tv-disc-poster tv-disc-poster-placeholder" aria-hidden="true">TV</div>'}
+      <div class="tv-disc-info">
+        <p class="eyebrow">STAGED TV DISC</p>
+        <h3>${escapeHtml(series || task.source.label || "Unidentified TV disc")}</h3>
+        <p class="tv-disc-season">${escapeHtml(seasonText)}${discNumber === null || discNumber === undefined ? "" : ` · ${escapeHtml(discText)}`}</p>
+        <div class="tv-disc-facts">
+          ${year ? `<span>${escapeHtml(year)}</span>` : ""}
+          <span>${task.assignments.length} tracks</span>
+          <span>${totalRuntime} min</span>
+          <span class="tv-match-confidence">Confidence ${escapeHtml(confidenceLabel)}</span>
+        </div>
+        <p class="tv-disc-identifier">Disc ID <code>${escapeHtml(task.fingerprint)}</code></p>
+        ${overview ? `<p class="tv-disc-overview">${escapeHtml(overview)}</p>` : ""}
+      </div>
+      <div class="tv-disc-progress">
+        <span class="tv-match-status ${status.className}">${escapeHtml(status.label)}</span>
+        <strong>Matched ${progress.matchedCount} / ${progress.totalCount}</strong>
+        <span>${progress.unmatchedCount} unmatched</span>
+      </div>
     </div>
-    ${canMap && assignments ? `<div class="tv-task-assignments">${assignments}</div>` : ""}
-    <details><summary>Disc diagnostics</summary><pre>${escapeHtml(JSON.stringify(task.diagnostics, null, 2))}</pre></details>
+    ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
+    <div class="tv-disc-actions">
+      <button type="button" class="button primary tv-task-open">${canMap ? "Open Matching" : "Identify Series"}</button>
+      <button type="button" class="button secondary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Identification" : "Search for Series"}</button>
+      ${progress.matchedCount > 0 && progress.unmatchedCount > 0
+        ? `<button type="button" class="button danger tv-delete-unmatched">Delete unmatched tracks</button>` : ""}
+      <button type="button" class="text-button tv-task-delete">Remove disc from review</button>
+    </div>
+    <section class="tv-disc-matching hidden" data-matching-panel>
+      ${canMap ? `<div class="tv-matching-guide">
+        <div><h4>Match each staged track</h4><p>Suggestions are not confirmed until you save. Unmatched tracks remain safely staged.</p></div>
+        ${guide?.error ? `<p class="tv-episode-guide-error">Episode guide unavailable: ${escapeHtml(guide.error)}. You can still choose episode numbers.</p>` : ""}
+      </div>
+      <div class="tv-track-list">${trackRows}</div>
+      <div class="tv-save-workflow">
+        <p>Matched <b data-matched-count>${progress.matchedCount} / ${progress.totalCount}</b> · Unmatched <b data-unmatched-count>${progress.unmatchedCount}</b></p>
+        <button type="button" class="button primary tv-task-save">${progress.fullyMatched ? "Save matches & publish" : "Save progress"}</button>
+      </div>` : `<div class="tv-matching-guide"><h4>Identify this disc to start episode matching</h4><p>The complete disc is already staged and will not be published before you review it.</p></div>`}
+      ${recovery ? `<details class="tv-classification-details"><summary>Media classification</summary>
+        <form class="tv-task-media-override" data-fingerprint="${escapeHtml(task.fingerprint)}">
+          <p class="hint">Automatic Classification: ${escapeHtml(recovery.detectedMediaType)} · Manual Override: ${escapeHtml(recovery.mediaTypeOverridden ? recovery.finalMediaType : "None")}${recovery.mediaTypeOverridden ? " (active)" : ""}</p>
+          <label>Media type<select name="mediaType">${mediaTypeOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${recovery.finalMediaType === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
+          <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
+          <button type="submit" class="button secondary">Save classification</button>
+        </form>
+      </details>` : ""}
+      ${mediaTypeAudit.length ? `<details><summary>Classification history (${mediaTypeAudit.length})</summary><ul>${mediaTypeAudit.map((record) =>
+        `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+      ).join("")}</ul></details>` : ""}
+    </section>
   </article>`;
 }
 
-async function loadTvMatchingTasks() {
-  const { tasks } = await api("/api/v1/tv/matching");
-  $("#tv-matching-queue").innerHTML = tasks.length
-    ? tasks.map(renderTvMatchingTask).join("")
-    : '<div class="empty-state">No staged TV discs are awaiting identification.</div>';
-}
+const forgetDiscDialog = $("#forget-disc-dialog");
+let forgetDiscRequestPath = null;
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".forget-disc, #forget-diagnostics-disc");
+  if (!button) return;
+  const target = button.dataset.jobId
+    ? { jobId: button.dataset.jobId }
+    : button.dataset.fingerprint
+      ? { fingerprint: button.dataset.fingerprint }
+      : { jobId: $("#diagnostics-job").value };
+  if (!target.jobId && !target.fingerprint) { notify("Select a disc to forget.", true); return; }
+  forgetDiscRequestPath = target.jobId
+    ? `/api/v1/history/${encodeURIComponent(target.jobId)}/forget`
+    : `/api/v1/discs/${encodeURIComponent(target.fingerprint)}/forget`;
+  forgetDiscDialog.showModal();
+});
+$("#forget-disc-cancel").addEventListener("click", () => {
+  forgetDiscRequestPath = null;
+  forgetDiscDialog.close();
+});
+$("#forget-disc-confirm").addEventListener("click", async () => {
+  if (!forgetDiscRequestPath) return;
+  const button = $("#forget-disc-confirm");
+  button.disabled = true;
+  try {
+    await api(forgetDiscRequestPath, { method: "POST" });
+    forgetDiscDialog.close();
+    forgetDiscRequestPath = null;
+    state.diagnosticsJobId = "";
+    notify("Disc forgotten.");
+    await Promise.all([refreshDashboard(), refreshHistory(), refreshReviewQueue(), loadDiagnostics("")]);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 const tvDeleteDialog = $("#tv-delete-dialog");
 function requestTvTaskDeletion(jobId) {
@@ -1113,7 +1491,7 @@ $("#tv-delete-confirm").addEventListener("click", async () => {
     });
     tvDeleteDialog.close();
     state.tvDeleteJobId = null;
-    await loadTvMatchingTasks();
+    await loadTvReviews();
     await refreshHistory();
     notify("Unmatched TV staging and temporary records were deleted. Published media was not affected.");
   } catch (error) {
@@ -1123,53 +1501,296 @@ $("#tv-delete-confirm").addEventListener("click", async () => {
   }
 });
 
-$("#tv-matching-queue").addEventListener("click", async (event) => {
-  const deleteButton = event.target.closest(".tv-task-delete");
-  if (deleteButton) {
-    requestTvTaskDeletion(deleteButton.dataset.jobId);
-    return;
-  }
-  const continueButton = event.target.closest(".tv-task-continue");
-  if (!continueButton) return;
-  continueButton.disabled = true;
+const tvUnmatchedDeleteDialog = $("#tv-unmatched-delete-dialog");
+let tvUnmatchedDeleteJobId = null;
+
+$("#tv-unmatched-delete-cancel").addEventListener("click", () => {
+  tvUnmatchedDeleteJobId = null;
+  tvUnmatchedDeleteDialog.close();
+});
+$("#tv-unmatched-delete-confirm").addEventListener("click", async () => {
+  if (!tvUnmatchedDeleteJobId) return;
+  const button = $("#tv-unmatched-delete-confirm");
+  button.disabled = true;
   try {
-    const taskId = continueButton.dataset.jobId;
-    const card = continueButton.closest(".tv-matching-task");
-    const assignments = [...card.querySelectorAll("[data-track-id]")].map((input) => {
-      const episodeNumbers = input.value.split(",").map((value) => value.trim()).filter(Boolean)
-        .map(Number);
-      return { trackId: input.dataset.trackId, episodeNumbers };
+    const result = await api(`/api/v1/tv/matching/${encodeURIComponent(tvUnmatchedDeleteJobId)}/unmatched`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirmed: true })
     });
-    if (assignments.some((assignment) => assignment.episodeNumbers.length === 0 ||
-      assignment.episodeNumbers.some((number) => !Number.isInteger(number) || number < 0 || number > 1000))) {
-      throw new Error("Enter valid episode numbers for each staged track; use commas for multi-episode tracks.");
-    }
-    if (assignments.length) {
-      await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
-        method: "PUT", body: JSON.stringify({ assignments })
-      });
-    }
-    await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/continue`, { method: "POST" });
-    notify("TV processing resumed from staged files.");
-    await loadTvMatchingTasks();
+    tvUnmatchedDeleteDialog.close();
+    tvUnmatchedDeleteJobId = null;
+    notify(result.continuation === "started"
+      ? "Unmatched tracks were deleted. The fully matched disc is now publishing."
+      : "Unmatched tracks were deleted. Publishing will continue when the active job finishes.");
+    await loadTvReviews();
   } catch (error) {
     notify(error.message, true);
   } finally {
-    continueButton.disabled = false;
+    button.disabled = false;
   }
 });
 
+function updateTvTrackSelection(trackRow) {
+  const selects = [...trackRow.querySelectorAll("[data-episode-select]")];
+  const selected = selects.map((select) => select.selectedOptions[0]).filter((option) => option?.value);
+  const preview = trackRow.querySelector("[data-episode-preview]");
+  preview.textContent = selected.length
+    ? selected.map((option) => option.textContent.trim()).join(" + ")
+    : "Not matched";
+  preview.classList.toggle("matched", selected.length > 0 && selected.length === selects.length);
+}
+
+function updateTvTaskProgress(card) {
+  const trackRows = [...card.querySelectorAll(".tv-track-row")];
+  const matchedCount = trackRows.filter((row) => {
+    const selects = [...row.querySelectorAll("[data-episode-select]")];
+    return selects.length > 0 && selects.every((select) => Boolean(select.value));
+  }).length;
+  const unmatchedCount = trackRows.length - matchedCount;
+  const matched = card.querySelector("[data-matched-count]");
+  const unmatched = card.querySelector("[data-unmatched-count]");
+  if (matched) matched.textContent = `${matchedCount} / ${trackRows.length}`;
+  if (unmatched) unmatched.textContent = String(unmatchedCount);
+  const save = card.querySelector(".tv-task-save");
+  if (save) save.textContent = unmatchedCount === 0 ? "Save matches & publish" : "Save progress";
+}
+
+function filterTvEpisodeOptions(trackRow) {
+  const query = trackRow.querySelector("[data-episode-search]").value.trim().toLocaleLowerCase();
+  for (const select of trackRow.querySelectorAll("[data-episode-select]")) {
+    for (const option of select.options) {
+      option.hidden = Boolean(query && option.value && !option.textContent.toLocaleLowerCase().includes(query));
+    }
+  }
+}
+
+async function saveTvTaskAssignments(button) {
+  const card = button.closest(".tv-matching-task");
+  const taskId = card.dataset.jobId;
+  button.disabled = true;
+  try {
+    const assignments = [...card.querySelectorAll(".tv-track-row")].map((row) => {
+      const selectedOptions = [...row.querySelectorAll("[data-episode-select]")]
+        .map((select) => select.selectedOptions[0])
+        .filter((option) => option?.value);
+      const episodeNumbers = selectedOptions.map((option) => Number(option.value));
+      if (new Set(episodeNumbers).size !== episodeNumbers.length) {
+        throw new Error(`Track ${row.dataset.trackId} contains the same episode more than once.`);
+      }
+      return {
+        trackId: row.dataset.trackId,
+        episodeNumbers,
+        episodeTitles: selectedOptions.map((option) => option.dataset.title || "")
+      };
+    });
+    const result = await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
+      method: "PUT",
+      body: JSON.stringify({ assignments })
+    });
+    const progress = result.progress;
+    if (result.continuation === "started") {
+      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Publishing has resumed automatically.`);
+    } else if (result.continuation === "queued") {
+      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Publishing will resume after the active job.`);
+    } else if (result.continuation === "blocked") {
+      notify("Matches were saved, but the manual media classification must be set to TV Series before publishing.", true);
+    } else {
+      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Unmatched tracks remain safely staged.`);
+    }
+    await loadTvReviews();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+const tvPreviewDialog = $("#tv-track-preview-dialog");
+const tvPreviewVideo = $("#tv-track-preview-video");
+let tvPreviewTrackRow = null;
+
+function addPreviewThumbnail(strip, dataUrl, time, label) {
+  const button = document.createElement("button");
+  button.className = "tv-preview-thumbnail";
+  button.type = "button";
+  button.dataset.seek = String(time);
+  button.setAttribute("aria-label", `Seek to ${label}`);
+  const image = document.createElement("img");
+  image.src = dataUrl;
+  image.alt = label;
+  button.append(image);
+  strip.append(button);
+}
+
+async function captureTvPreviewFrames() {
+  const status = $("#tv-track-preview-status");
+  const dialogStrip = $("#tv-track-preview-thumbnails");
+  dialogStrip.replaceChildren();
+  const duration = tvPreviewVideo.duration;
+  if (!Number.isFinite(duration) || duration <= 0 || !tvPreviewVideo.videoWidth) {
+    status.textContent = "Preview loaded, but video frames are not available.";
+    return;
+  }
+  const positions = [0.15, 0.5, 0.85];
+  try {
+    for (const position of positions) {
+      const time = Math.min(Math.max(0, duration - 0.1), duration * position);
+      if (Math.abs(tvPreviewVideo.currentTime - time) > 0.05) {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Timed out while seeking preview")), 10000);
+          tvPreviewVideo.addEventListener("seeked", () => {
+            clearTimeout(timeout);
+            resolve();
+          }, { once: true });
+          tvPreviewVideo.currentTime = time;
+        });
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = 320;
+      canvas.height = 180;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Thumbnail canvas is unavailable");
+      const scale = Math.min(canvas.width / tvPreviewVideo.videoWidth, canvas.height / tvPreviewVideo.videoHeight);
+      const width = tvPreviewVideo.videoWidth * scale;
+      const height = tvPreviewVideo.videoHeight * scale;
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(tvPreviewVideo, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.78);
+      const label = formatDuration(time);
+      addPreviewThumbnail(dialogStrip, dataUrl, time, label);
+      if (tvPreviewTrackRow) {
+        const trackStrip = tvPreviewTrackRow.querySelector("[data-thumbnail-strip]");
+        trackStrip.replaceChildren();
+        for (const thumbnail of dialogStrip.querySelectorAll(".tv-preview-thumbnail")) {
+          const copy = thumbnail.cloneNode(true);
+          trackStrip.append(copy);
+        }
+      }
+    }
+    tvPreviewVideo.currentTime = 0;
+    status.textContent = "Preview ready. Select a thumbnail to jump to that moment.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+tvPreviewVideo.addEventListener("loadedmetadata", () => {
+  if (tvPreviewTrackRow) {
+    const resolution = tvPreviewTrackRow.querySelector("[data-track-resolution]");
+    resolution.textContent = `${tvPreviewVideo.videoWidth} × ${tvPreviewVideo.videoHeight}`;
+  }
+  void captureTvPreviewFrames();
+});
+tvPreviewVideo.addEventListener("error", () => {
+  $("#tv-track-preview-status").textContent = "This staged track preview could not be played. The original remains safely staged.";
+});
+$("#tv-track-preview-close").addEventListener("click", () => {
+  tvPreviewVideo.pause();
+  tvPreviewVideo.removeAttribute("src");
+  tvPreviewVideo.load();
+  tvPreviewDialog.close();
+  tvPreviewTrackRow = null;
+});
+
+document.addEventListener("click", async (event) => {
+  const openButton = event.target.closest(".tv-task-open");
+  if (openButton) {
+    const card = openButton.closest(".tv-matching-task");
+    const panel = card.querySelector("[data-matching-panel]");
+    panel.classList.toggle("hidden");
+    openButton.textContent = panel.classList.contains("hidden") ? "Open Matching" : "Close Matching";
+    return;
+  }
+  const deleteButton = event.target.closest(".tv-task-delete");
+  if (deleteButton) {
+    requestTvTaskDeletion(deleteButton.closest(".tv-matching-task").dataset.jobId);
+    return;
+  }
+  const unmatchedButton = event.target.closest(".tv-delete-unmatched");
+  if (unmatchedButton) {
+    tvUnmatchedDeleteJobId = unmatchedButton.closest(".tv-matching-task").dataset.jobId;
+    tvUnmatchedDeleteDialog.showModal();
+    return;
+  }
+  const addEpisodeButton = event.target.closest(".tv-add-episode");
+  if (addEpisodeButton) {
+    const row = addEpisodeButton.closest(".tv-track-row");
+    const list = row.querySelector("[data-episode-select-list]");
+    if (list.children.length >= 3) {
+      notify("A staged track can map to at most three episodes.", true);
+      return;
+    }
+    const select = list.querySelector("[data-episode-select]").cloneNode(true);
+    select.value = "";
+    list.append(select);
+    updateTvTrackSelection(row);
+    updateTvTaskProgress(addEpisodeButton.closest(".tv-matching-task"));
+    return;
+  }
+  const previewButton = event.target.closest(".tv-track-preview-button");
+  if (previewButton) {
+    const row = previewButton.closest(".tv-track-row");
+    const card = previewButton.closest(".tv-matching-task");
+    tvPreviewTrackRow = row;
+    $("#tv-track-preview-title").textContent = `Track ${row.dataset.trackId} · ${row.querySelector("h4").textContent}`;
+    $("#tv-track-preview-status").textContent = "Preparing a short preview clip and thumbnail strip…";
+    $("#tv-track-preview-thumbnails").replaceChildren();
+    tvPreviewVideo.src = `/api/v1/tv/matching/${encodeURIComponent(card.dataset.jobId)}/preview/${encodeURIComponent(row.dataset.trackId)}`;
+    tvPreviewDialog.showModal();
+    tvPreviewVideo.load();
+    return;
+  }
+  const thumbnail = event.target.closest(".tv-preview-thumbnail");
+  if (thumbnail) {
+    tvPreviewVideo.currentTime = Number(thumbnail.dataset.seek);
+    return;
+  }
+  const saveButton = event.target.closest(".tv-task-save");
+  if (saveButton) await saveTvTaskAssignments(saveButton);
+});
+
+document.addEventListener("input", (event) => {
+  const search = event.target.closest("[data-episode-search]");
+  if (search) filterTvEpisodeOptions(search.closest(".tv-track-row"));
+});
+document.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-episode-select]");
+  if (!select) return;
+  const row = select.closest(".tv-track-row");
+  updateTvTrackSelection(row);
+  updateTvTaskProgress(select.closest(".tv-matching-task"));
+});
+
 async function loadTvReviews() {
+  const requestId = ++state.tvReviewsRequestId;
   const selected = $("#tv-review-filter").value;
   const query = new URLSearchParams({ limit: "100" });
   if (selected) query.set("state", selected);
-  const { plans } = await api(`/api/v1/tv/reviews?${query}`);
-  $("#tv-review-list").innerHTML = plans.length
+  const [{ plans }, { tasks }] = await Promise.all([
+    api(`/api/v1/tv/reviews?${query}`),
+    api("/api/v1/tv/matching")
+  ]);
+  await loadTvEpisodeGuides(tasks);
+  if (requestId !== state.tvReviewsRequestId) return;
+  const planCards = plans.length
     ? (await Promise.all(plans.map(async (plan) => {
-      const { recovery } = await api(`/api/v1/tv/plans/${encodeURIComponent(plan.id)}/recovery`);
-      return `${renderTvPlanCard(plan, true, recovery, true)}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`;
+      const { recovery, mediaTypeAudit = [] } = await api(`/api/v1/tv/plans/${encodeURIComponent(plan.id)}/recovery`);
+      const audit = mediaTypeAudit.length
+        ? `<details><summary>Media classification audit (${mediaTypeAudit.length})</summary><ul>${mediaTypeAudit.map((record) =>
+          `<li>${escapeHtml(record.originalType)} → ${escapeHtml(record.newType)} · ${escapeHtml(record.username)} · ${escapeHtml(new Date(record.timestamp).toLocaleString())}${record.reason ? ` · ${escapeHtml(record.reason)}` : ""}</li>`
+        ).join("")}</ul></details>`
+        : "";
+      return `${renderTvPlanCard(plan, true, recovery, true)}${audit}${plan.reviewHistory?.length ? `<p class="list-sub">Last reviewed by ${escapeHtml(plan.reviewedBy || "unknown")} · ${escapeHtml(plan.reviewedAt ? new Date(plan.reviewedAt).toLocaleString() : "")}${plan.reviewReason ? ` · ${escapeHtml(plan.reviewReason)}` : ""}</p>` : ""}`;
     }))).join("")
-    : '<div class="empty-state">No plans in this review state.</div>';
+    : "";
+  if (requestId !== state.tvReviewsRequestId) return;
+  const identificationCards = tasks.length
+    ? `<h3>TV discs requiring identification</h3>${tasks.map(renderTvMatchingTask).join("")}`
+    : "";
+  $("#tv-review-list").innerHTML = planCards || identificationCards
+    ? `${identificationCards}${planCards}`
+    : '<div class="empty-state">No plans or unknown TV discs require review.</div>';
 }
 
 const reviewCategoryLabels = {
@@ -1229,7 +1850,11 @@ function renderReviewItem(item) {
     ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
     ${item.resolutionDetails ? `<p class="list-sub">Resolution: ${escapeHtml(item.resolutionDetails)}${item.resolvedAt ? ` · ${escapeHtml(new Date(item.resolvedAt).toLocaleString())}` : ""}</p>` : ""}
     ${item.retryCount ? `<p class="list-sub">Retry attempts: ${item.retryCount}</p>` : ""}
-    <div class="tv-actions">${actions}</div>
+    <div class="tv-actions">${actions}${item.relatedJobId || item.discFingerprint
+      ? `<button class="button danger forget-disc" type="button"${item.relatedJobId
+        ? ` data-job-id="${escapeHtml(item.relatedJobId)}"`
+        : ` data-fingerprint="${escapeHtml(item.discFingerprint)}"`}>Forget Disc</button>`
+      : ""}</div>
     <div class="review-job-details" data-review-details="${escapeHtml(item.id)}"></div>
   </article>`;
 }
@@ -1262,13 +1887,16 @@ function renderReviewJob(item) {
 }
 
 async function loadReviewJobs() {
+  const requestId = ++state.reviewJobsRequestId;
   const { reviewJobs } = await api("/api/v1/review-jobs");
+  if (requestId !== state.reviewJobsRequestId) return;
   $("#review-jobs-list").innerHTML = reviewJobs.length
     ? reviewJobs.map(renderReviewJob).join("")
     : '<div class="empty-state">No extracted media is waiting for review.</div>';
 }
 
 async function loadReviewCentre() {
+  const requestId = ++state.reviewCentreRequestId;
   const query = new URLSearchParams({ limit: "250" });
   for (const [id, key] of [
     ["review-category", "category"],
@@ -1281,6 +1909,7 @@ async function loadReviewCentre() {
     if (value) query.set(key, key === "to" ? `${value}T23:59:59.999Z` : key === "from" ? `${value}T00:00:00.000Z` : value);
   }
   const { summary, items } = await api(`/api/v1/reviews?${query}`);
+  if (requestId !== state.reviewCentreRequestId) return;
   $("#review-summary").innerHTML = [
     ["Active reviews", summary.active],
     ["Critical reviews", summary.critical],
@@ -1293,6 +1922,10 @@ async function loadReviewCentre() {
     ? items.map(renderReviewItem).join("")
     : '<div class="empty-state">No review items match the selected filters.</div>';
   await loadReviewJobs();
+}
+
+async function refreshReviewQueue() {
+  await Promise.all([loadReviewCentre(), loadTvReviews()]);
 }
 
 async function loadTvValidation() {
@@ -1349,6 +1982,7 @@ async function loadStatistics() {
   const dvdStats = dashboard.mediaStats.find((item) => item.mediaType === "dvd") || { total: 0 };
   const musicStats = dashboard.mediaStats.find((item) => item.mediaType === "audio_cd") || { total: 0 };
   $("#processing-statistics").innerHTML = [
+    ["Total discs processed", dashboard.stats.total],
     ["Movies processed", dvdStats.total],
     ["Music CDs processed", musicStats.total],
     ["TV discs analyzed", tv.totalDiscsAnalyzed],
@@ -1361,7 +1995,9 @@ async function loadStatistics() {
 
 async function refreshChart(range) {
   state.statsRange = range;
+  const requestId = ++state.chartRequestId;
   const data = await api(`/api/v1/stats?range=${encodeURIComponent(range)}`);
+  if (requestId !== state.chartRequestId || range !== state.statsRange) return;
   const series = data.series || [];
   const max = Math.max(1, ...series.flatMap((entry) => [entry.successful || 0, entry.failures || 0]));
   const count = range === "30d" ? 30 : 7;
@@ -1386,7 +2022,7 @@ async function refreshChart(range) {
 async function loadSettings() {
   const data = await api("/api/v1/settings");
   const form = $("#settings-form");
-  for (const key of ["workDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
+  for (const key of ["workDir", "tvStagingDir", "opticalDevice", "format", "quality", "preset", "encoder", "logLevel", "lidarrUrl", "lidarrImportDir", "musicBrainzContactEmail"]) {
     if (data.settings[key] !== undefined) form.elements.namedItem(key).value = data.settings[key];
   }
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
@@ -1399,14 +2035,6 @@ async function loadSettings() {
   renderOutputProfiles();
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
-  const retentionDays = data.settings.tvStagingRetentionDays;
-  const retentionChoice = form.elements.namedItem("tvStagingRetentionChoice");
-  const standardRetentions = [7, 30, 90];
-  retentionChoice.value = retentionDays === null ? "never" :
-    standardRetentions.includes(retentionDays) ? String(retentionDays) : "custom";
-  form.elements.namedItem("tvStagingRetentionCustomDays").value =
-    retentionDays !== null && !standardRetentions.includes(retentionDays) ? retentionDays : "";
-  updateTvStagingRetentionFields();
   const libraryMetadata = data.settings.libraryMetadata;
   for (const key of [
     "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
@@ -1430,6 +2058,7 @@ async function loadSettings() {
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
   await refreshLibraryHealth();
+  await refreshStoragePathDiagnostics();
   updateOutputPreview();
   await refreshUpdateStatus();
   const encoders = await api("/api/v1/encoders");
@@ -1438,12 +2067,47 @@ async function loadSettings() {
     : `FFmpeg: ${encoders.encoders.nvidia ? "NVENC listed" : "NVENC unavailable"} · ${encoders.encoders.software ? "libx264 available" : "libx264 unavailable"}. Auto mode tests NVENC and falls back to software.`;
 }
 
-function updateTvStagingRetentionFields() {
-  const form = $("#settings-form");
-  const choice = form.elements.namedItem("tvStagingRetentionChoice").value;
-  const custom = choice === "custom";
-  $("#tv-staging-custom-label").classList.toggle("hidden", !custom);
-  form.elements.namedItem("tvStagingRetentionCustomDays").required = custom;
+async function refreshStoragePathDiagnostics() {
+  const data = await api("/api/v1/paths/diagnostics");
+  const paths = data.resolvedPaths;
+  const validation = data.tvStaging;
+  const pathEntries = [
+    ["Work", paths.work],
+    ["Review", paths.review],
+    ["TV Staging", paths.tvStaging],
+    ["Cache", paths.cache],
+    ["Jellyfin Output", paths.jellyfinOutput],
+    ["Sonarr Output", paths.sonarrOutput],
+    ["Radarr Output", paths.radarrOutput],
+    ["Custom Output", paths.customOutput]
+  ];
+  const active = data.activePublishingDirectories.map((directory) =>
+    `<li><strong>${escapeHtml(directory.media)} (${escapeHtml(directory.target)})</strong>: ${escapeHtml(directory.path)}</li>`
+  ).join("");
+  const validationMarkup = `<div class="library-health ${validation.valid ? "ready" : "warning"}">
+    <strong>${validation.valid ? "✅ Valid" : "❌ Invalid"}</strong>
+    <p>${escapeHtml(validation.message)}</p>
+  </div>`;
+  $("#tv-staging-validation").innerHTML = validationMarkup;
+  $("#diagnostics-tv-staging-validation").innerHTML = validationMarkup;
+  $("#tv-staging-path-source").textContent = validation.source === "work-directory"
+    ? `TV staging path is currently derived from Work Directory: ${validation.path}`
+    : `TV staging path is explicitly configured: ${validation.path}`;
+  $("#storage-active-publishing-directories").innerHTML =
+    `<h4>Active Publishing Directories</h4>${active ? `<ul>${active}</ul>` : "<p>None configured.</p>"}`;
+  $("#tv-staging-autofix-details").innerHTML = validation.recommendedPath
+    ? `<p>Current: <code>${escapeHtml(validation.path)}</code><br>Recommended: <code>${escapeHtml(validation.recommendedPath)}</code></p>${validation.changeBlockedReason ? `<p>${escapeHtml(validation.changeBlockedReason)}</p>` : ""}`
+    : "<p>No non-overlapping recommended location could be found. Choose a path outside all active publishing directories.</p>";
+  const autoFix = $("#tv-staging-autofix");
+  autoFix.classList.toggle("hidden", !validation.canAutoFix);
+  autoFix.disabled = !validation.canAutoFix;
+  $("#storage-resolved-paths").innerHTML = diagnosticPairs([
+    ["Work Directory", paths.work],
+    ["TV Staging Directory", paths.tvStaging],
+    ["Review Directory", paths.review],
+    ["Cache Directory", paths.cache]
+  ]);
+  $("#diagnostics-storage-paths").innerHTML = diagnosticPairs(pathEntries);
 }
 
 function activeOutputProfile() {
@@ -1692,7 +2356,6 @@ async function waitForUpdate() {
 }
 
 function renderMetrics(snapshot) {
-  state.metrics = snapshot;
   const cpu = snapshot.cpuPercent;
   $("#cpu-value").textContent = Number.isFinite(cpu) ? `${cpu}%` : "Measuring…";
   $("#cpu-bar").style.width = `${Number.isFinite(cpu) ? cpu : 0}%`;
@@ -1720,6 +2383,8 @@ function renderMetrics(snapshot) {
 function stopStreams() {
   clearTimeout(state.diagnosticsRefreshTimer);
   state.diagnosticsRefreshTimer = null;
+  clearTimeout(state.dashboardAttentionTimer);
+  state.dashboardAttentionTimer = null;
   state.metricsStream?.close();
   state.metricsStream = null;
   state.statusStream?.close();
@@ -1734,18 +2399,26 @@ function updateStreams() {
     const previous = state.hasActiveJob;
     const payload = JSON.parse(event.data);
     const active = payload.active;
+    state.statusEventVersion += 1;
+    state.currentActiveJob = active;
+    state.currentRuntimeStatus = payload.state;
     state.hasActiveJob = Boolean(active);
     renderManualMusicMetadata(payload.manualMusicMetadata);
     renderJob(active, payload.state);
+    if (state.page === "dashboard" && !(previous && !active)) {
+      scheduleDashboardAttention({
+        active,
+        manualMusicMetadata: payload.manualMusicMetadata
+      });
+    }
     if (previous && !active) {
       if (state.page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
       if (state.page === "history") refreshHistory().catch((error) => notify(error.message, true));
-      if (state.page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
       if (state.page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
-      if (state.page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
+      if (state.page === "tv-analysis") loadTvMatching().catch((error) => notify(error.message, true));
       if (state.page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
       if (state.page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
-      if (state.page === "statistics") loadStatistics().catch((error) => notify(error.message, true));
+      if (state.page === "tv-validation") loadStatistics().catch((error) => notify(error.message, true));
     }
     if (state.page === "diagnostics") {
       clearTimeout(state.diagnosticsRefreshTimer);
@@ -1761,45 +2434,78 @@ function updateStreams() {
   }
 }
 
-function showPage(page) {
+function showPage(page, activeNavButton = null) {
   state.page = page;
   document.querySelectorAll(".page").forEach((section) => section.classList.toggle("hidden", section.id !== `page-${page}`));
-  document.querySelectorAll("[data-page]").forEach((button) => button.classList.toggle("active", button.dataset.page === page));
+  const navButtons = [...document.querySelectorAll(".nav-link[data-page]")];
+  const currentNavButton = activeNavButton || navButtons.find((button) =>
+    button.dataset.page === page && (page !== "settings" || button.dataset.scroll === "#general-settings-card"));
+  navButtons.forEach((button) => button.classList.toggle("active", button === currentNavButton));
+  document.querySelectorAll(".nav-group").forEach((group) => {
+    const active = Boolean(currentNavButton?.closest(".nav-group") === group);
+    group.classList.toggle("active", active);
+    if (active) group.open = true;
+  });
   const pageTitles = {
     dashboard: "Dashboard",
     diagnostics: "Disc Diagnostics",
     history: "History",
-    "tv-matching": "TV Matching",
-    "tv-analysis": "TV Analysis",
-    "episode-matching": "Episode Matching",
-    "tv-reviews": "Review Centre",
-    "tv-validation": "TV Validation",
-    statistics: "Statistics",
+    "tv-analysis": "TV Identification",
+    "tv-reviews": "Review Queue",
+    "tv-validation": "Activity & Insights",
     settings: "Settings"
   };
   $("#page-title").textContent = pageTitles[page] || page;
   updateStreams();
   if (page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
-  if (page === "diagnostics") loadDiagnostics().catch((error) => notify(error.message, true));
+  if (page === "diagnostics") {
+    loadDiagnostics().catch((error) => notify(error.message, true));
+    refreshStoragePathDiagnostics().catch((error) => notify(error.message, true));
+  }
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
-  if (page === "tv-matching") loadTvMatchingTasks().catch((error) => notify(error.message, true));
-  if (page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
-  if (page === "episode-matching") loadTvMatching().catch((error) => notify(error.message, true));
+  if (page === "tv-analysis") {
+    loadTvAnalysis().catch((error) => notify(error.message, true));
+    loadTvMatching().catch((error) => notify(error.message, true));
+  }
   if (page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
   if (page === "tv-reviews") loadReviewCentre().catch((error) => notify(error.message, true));
-  if (page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
-  if (page === "statistics") loadStatistics().catch((error) => notify(error.message, true));
+  if (page === "tv-validation") {
+    loadTvValidation().catch((error) => notify(error.message, true));
+    loadStatistics().catch((error) => notify(error.message, true));
+  }
   if (page === "settings") loadSettings().catch((error) => notify(error.message, true));
 }
 
-document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page)));
+document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", (event) => {
+  if (button.tagName === "A") event.preventDefault();
+  if (button.dataset.reviewCategory) $("#review-category").value = button.dataset.reviewCategory;
+  showPage(button.dataset.page, button.classList.contains("nav-link") ? button : null);
+  if (button.dataset.scroll) {
+    requestAnimationFrame(() => document.querySelector(button.dataset.scroll)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+}));
 document.querySelectorAll(".range").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".range").forEach((item) => item.classList.toggle("active", item === button));
   refreshChart(button.dataset.range).catch((error) => notify(error.message, true));
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
-$("#refresh-tv-matching").addEventListener("click", () => loadTvMatchingTasks().catch((error) => notify(error.message, true)));
 $("#refresh-diagnostics").addEventListener("click", () => loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true)));
+$("#refresh-storage-diagnostics").addEventListener("click", () =>
+  refreshStoragePathDiagnostics().catch((error) => notify(error.message, true)));
+$("#tv-staging-autofix").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/paths/tv-staging/auto-fix", { method: "POST" });
+    $("#settings-form").elements.namedItem("tvStagingDir").value = result.settings.tvStagingDir;
+    await refreshStoragePathDiagnostics();
+    notify(`TV staging moved to ${result.settings.tvStagingDir}.`);
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#diagnostics-job").addEventListener("change", () => {
   const jobId = $("#diagnostics-job").value;
   loadDiagnostics(jobId, !jobId).catch((error) => notify(error.message, true));
@@ -1807,7 +2513,7 @@ $("#diagnostics-job").addEventListener("change", () => {
 $("#tv-analysis-confidence").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-analysis-state").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-review-filter").addEventListener("change", () => loadTvReviews().catch((error) => notify(error.message, true)));
-$("#refresh-reviews").addEventListener("click", () => loadReviewCentre().catch((error) => notify(error.message, true)));
+$("#refresh-reviews").addEventListener("click", () => refreshReviewQueue().catch((error) => notify(error.message, true)));
 $("#library-settings-health").addEventListener("click", async (event) => {
   const button = event.target.closest(".create-library");
   if (!button) return;
@@ -1863,7 +2569,7 @@ $("#review-list").addEventListener("click", async (event) => {
     const result = await api(`/api/v1/reviews/${encodeURIComponent(button.dataset.reviewId)}/${endpoint}`, { method: "POST" });
     notify(result.message || (action === "approve-process" ? "Disc approved and processing completed." :
       `Review ${action === "dismiss" ? "dismissed" : action === "retry" ? "retry requested" : "resolved"}.`));
-    await loadReviewCentre();
+    await refreshReviewQueue();
   } catch (error) {
     notify(error.message, true);
   } finally {
@@ -1908,7 +2614,7 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
       await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/clear-notification`, { method: "POST" });
       notify("Review notification cleared and temporary files removed.");
     }
-    await loadReviewCentre();
+    await refreshReviewQueue();
   } catch (error) {
     notify(error.message, true);
   } finally {
@@ -2099,6 +2805,28 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  const tvForm = event.target.closest(".tv-task-media-override");
+  if (tvForm) {
+    event.preventDefault();
+    const button = tvForm.querySelector('[type="submit"]');
+    button.disabled = true;
+    try {
+      await api(`/api/v1/discs/recovery/${encodeURIComponent(tvForm.dataset.fingerprint)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          mediaType: tvForm.elements.mediaType.value,
+          mediaTypeReason: tvForm.elements.mediaTypeReason.value.trim() || undefined
+        })
+      });
+      notify("Manual media classification saved and audit logged.");
+      await loadTvReviews();
+    } catch (error) {
+      notify(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
   const form = event.target.closest(".tv-recovery-form");
   if (!form) return;
   event.preventDefault();
@@ -2138,6 +2866,7 @@ document.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         discType: form.elements.discType.value,
         mediaType: form.elements.mediaType.value,
+        mediaTypeReason: form.elements.mediaTypeReason.value.trim() || undefined,
         metadataProvider: form.elements.metadataProvider.value,
         providerId: form.elements.providerId.value.trim() || null,
         seriesName: form.elements.seriesName.value.trim() || null,
@@ -2448,6 +3177,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
   const patch = {
     outputDestinations: state.outputDestinations,
     workDir: values.get("workDir"),
+    tvStagingDir: values.get("tvStagingDir"),
     opticalDevice: values.get("opticalDevice"),
     format: values.get("format"),
     quality: Number(values.get("quality")),
@@ -2486,11 +3216,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
     },
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
-    tvStagingRetentionDays: values.get("tvStagingRetentionChoice") === "never"
-      ? null
-      : values.get("tvStagingRetentionChoice") === "custom"
-        ? Number(values.get("tvStagingRetentionCustomDays"))
-        : Number(values.get("tvStagingRetentionChoice")),
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
     tvMetadataLookupEnabled: form.elements.namedItem("tvMetadataLookupEnabled").checked,
     tvMetadataPreferredProviderId: values.get("tvMetadataPreferredProviderId"),
@@ -2530,6 +3255,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     };
       renderOutputProfiles();
     await refreshLibraryHealth();
+    await refreshStoragePathDiagnostics();
     form.elements.namedItem("adminPassword").value = "";
     form.elements.namedItem("metadataApiKey").value = "";
     form.elements.namedItem("clearMetadataKey").checked = false;
@@ -2549,9 +3275,6 @@ $("#settings-form").addEventListener("submit", async (event) => {
     $("#settings-message").textContent = error.message;
   }
 });
-
-$("#settings-form").elements.namedItem("tvStagingRetentionChoice")
-  .addEventListener("change", updateTvStagingRetentionFields);
 
 $("#check-paths").addEventListener("click", async () => {
   const button = $("#check-paths");

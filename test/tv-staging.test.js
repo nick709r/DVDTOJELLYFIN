@@ -9,6 +9,7 @@ import { defaultSettings } from "../dist/infrastructure/database/default-setting
 import { migrateDatabase } from "../dist/infrastructure/database/migrations.js";
 import { createSqliteRepositories } from "../dist/infrastructure/database/repositories.js";
 import { DvdWorkflow } from "../dist/providers/workflows/dvd.js";
+import { recoverTemporaryFiles } from "../dist/recovery.js";
 
 test("unknown TV discs stage, resume without reacquiring the disc, and delete only staging", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-tv-staging-"));
@@ -17,12 +18,15 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
   const repositories = createSqliteRepositories(database, {
     ...defaultSettings,
     workDir: path.join(root, "work"),
+    tvStagingDir: path.join(root, "dedicated-tv-staging"),
+    tvStagingRetentionDays: 1,
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
     musicDir: path.join(root, "published-music")
   });
   repositories.settings.save({
     workDir: path.join(root, "work"),
+    tvStagingDir: path.join(root, "dedicated-tv-staging"),
     tvRootDir: path.join(root, "published-tv"),
     moviesDir: path.join(root, "published-movies"),
     musicDir: path.join(root, "published-music")
@@ -102,14 +106,35 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
 
   try {
     assert.equal(await workflow.process(context), true);
-    const task = jobs.listTvMatchingTasks()[0];
+    let task = jobs.listTvMatchingTasks()[0];
     assert.ok(task);
     assert.equal(task.status, "awaiting-identification");
+    assert.equal(task.stagingPath, path.join(root, "dedicated-tv-staging", task.jobId));
     assert.equal(Object.keys(task.files).length, 4);
-    assert.equal(jobs.getJob(task.jobId).status, "awaiting-identification");
+    assert.equal(jobs.getJob(task.jobId).status, "review");
     const stagedFile = path.join(task.stagingPath, task.files["1"]);
     assert.equal((await stat(stagedFile)).size, 2048);
     assert.match(await readFile(path.join(task.stagingPath, "metadata.json"), "utf8"), /episodeCount/);
+    database.prepare("UPDATE tv_matching_tasks SET created_at = ? WHERE job_id = ?")
+      .run("2000-01-01T00:00:00.000Z", task.jobId);
+    await workflow.pruneExpiredTvMatchingTasks();
+    assert.equal((await stat(stagedFile)).size, 2048, "legacy retention settings must not delete unmatched media");
+    const orphanId = "10000000-0000-4000-8000-000000000001";
+    const orphanPath = path.join(root, "dedicated-tv-staging", orphanId);
+    await mkdir(orphanPath, { recursive: true });
+    await writeFile(path.join(orphanPath, "recovered-track.mkv"), Buffer.alloc(2048));
+    await workflow.recoverOrphanedTvStagingDirectories();
+    assert.equal((await stat(path.join(orphanPath, "recovered-track.mkv"))).size, 2048);
+
+    repositories.tvMatchingTasks.update(task.jobId, { status: "processing" });
+    repositories.jobs.setStatus(task.jobId, "converting", "Matching episodes");
+    migrateDatabase(database, defaultSettings);
+    await recoverTemporaryFiles(repositories);
+    workflow.recoverInterruptedTvMatchingTasks();
+    task = jobs.getTvMatchingTask(task.jobId);
+    assert.equal(jobs.getJob(task.jobId).status, "failed");
+    assert.equal(task.status, "awaiting-identification");
+    assert.equal(repositories.reviewItems.list({ category: "tv_review", status: "active" }).length, 1);
 
     repositories.discRecovery.update(task.fingerprint, {
       finalMediaType: "tv_series",
@@ -133,6 +158,59 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
     assert.equal((await readdir(path.join(root, "published-tv"))).length, 0);
     assert.equal((await readdir(path.join(root, "published-movies"))).length, 0);
     assert.equal((await readdir(path.join(root, "published-music"))).length, 0);
+  } finally {
+    repositories.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("interrupted TV identification recovers to a durable queue after restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-tv-restart-"));
+  const filename = path.join(root, "state.sqlite");
+  let database = new Database(filename);
+  let repositories = createSqliteRepositories(database, defaultSettings);
+  try {
+    migrateDatabase(database, defaultSettings);
+    const jobs = new JobCoordinator(repositories, { publish() {} }, {
+      begin() {},
+      end() {},
+      register() {},
+      cancel() { return false; },
+      wasCancelled() { return false; }
+    });
+    repositories.jobs.add("recoverable-tv-job", "Unknown TV disc", "recoverable-tv-fingerprint", "dvd");
+    repositories.jobs.setStatus("recoverable-tv-job", "converting", "Continuing staged TV identification");
+    repositories.discRecovery.recordDetection("recoverable-tv-fingerprint", "dvd", "tv_series", 0.42);
+    repositories.tvMatchingTasks.create({
+      jobId: "recoverable-tv-job",
+      fingerprint: "recoverable-tv-fingerprint",
+      status: "processing",
+      stagingPath: path.join(root, "staging", "recoverable-tv-job"),
+      source: {
+        sourceId: "dvd0",
+        providerId: "source.video-dvd.makemkv",
+        mediaKind: "dvd",
+        label: "Unknown TV disc",
+        manifest: { mediaKind: "dvd", attributes: {}, items: [] }
+      },
+      diagnostics: { status: "identification-incomplete", confidence: 0.42 },
+      files: { "1": "episode01.mkv" },
+      assignments: []
+    });
+
+    new DvdWorkflow(undefined, undefined, undefined, async () => {}, jobs).recoverInterruptedTvMatchingTasks();
+    assert.equal(repositories.tvMatchingTasks.get("recoverable-tv-job").status, "awaiting-identification");
+    assert.equal(repositories.history.get("recoverable-tv-job").status, "interrupted");
+    repositories.close();
+
+    database = new Database(filename);
+    migrateDatabase(database, defaultSettings);
+    repositories = createSqliteRepositories(database, defaultSettings);
+    const recoveredTask = repositories.tvMatchingTasks.get("recoverable-tv-job");
+    assert.equal(recoveredTask.status, "awaiting-identification");
+    assert.equal(recoveredTask.diagnostics.confidence, 0.42);
+    assert.equal(repositories.discRecovery.get("recoverable-tv-fingerprint").finalMediaType, "tv_series");
+    assert.equal(repositories.history.get("recoverable-tv-job").status, "interrupted");
   } finally {
     repositories.close();
     await rm(root, { recursive: true, force: true });

@@ -1,15 +1,16 @@
 import { access, copyFile, lstat, mkdir, readdir, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { MediaWorkflow, MediaWorkflowContext } from "../../application/media-workflow-registry.js";
 import type { InspectedMediaSource } from "../../application/media-source-coordinator.js";
 import type { MediaCandidate } from "../../domain/media.js";
+import { fingerprintDisc } from "../../domain/disc-fingerprint.js";
 import type { MediaSourceCoordinator } from "../../application/media-source-coordinator.js";
 import type { DiscTitle } from "../../model.js";
 import { events, notifyStatus } from "../../events.js";
 import { getLiveDiscDiagnostics, updateDiscDiagnostics } from "../../diagnostics.js";
-import { convert } from "../../encoding.js";
+import { convert, inspectVideo } from "../../encoding.js";
 import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
@@ -27,8 +28,9 @@ import type { ReviewWorkspaceService } from "../../application/review-workspace-
 import type { JobContext, JobCoordinator } from "../../application/job-coordinator.js";
 import type { DiscRecovery, EpisodeMapping } from "../../domain/disc-recovery.js";
 import type { TvSavedIdentification } from "../../domain/tv-identification.js";
-import type { TvMatchingAssignment, TvMatchingTask } from "../../domain/tv-matching.js";
+import { tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingTask } from "../../domain/tv-matching.js";
 import { outputPath } from "../../output-destinations.js";
+import { pathsOverlap, tvStagingConflictMessage, tvStagingConflicts, tvStagingDirectory } from "../../storage-paths.js";
 import { normalizeDiscName } from "../../application/tv-name-normalization.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
@@ -37,10 +39,6 @@ const minimumOutputBytes = 1024 ** 3;
 function pathIsWithin(parent: string, child: string): boolean {
   const path = relative(resolve(parent), resolve(child));
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-
-function pathsOverlap(left: string, right: string): boolean {
-  return pathIsWithin(left, right) || pathIsWithin(right, left);
 }
 
 function evidenceNames(value: unknown): string[] {
@@ -84,28 +82,31 @@ function matchingAssignments(result: Awaited<ReturnType<TvWorkflowService["prepa
   const matches = new Map(result.matches.items.map((item) => [item.itemId, item]));
   return result.analysis.items.filter((item) => item.kind === "episode-candidate").map((item) => {
     const match = matches.get(item.itemId);
-    const candidates = [...(match?.alternatives ?? []),
+    const candidates: TvMatchingAssignment["episodeCandidates"][number][] = [
+      ...(match?.alternatives.map((candidate) => ({
+        episodes: candidate.episodes,
+        confidence: candidate.confidence,
+        assignmentMethod: "runtime-matching" as const,
+        evidence: candidate.evidence
+      })) ?? []),
       ...(match?.suggestedEpisodes.length ? [{
         episodes: match.suggestedEpisodes,
         confidence: match.confidence,
+        ...(match.assignmentMethod === undefined ? {} : { assignmentMethod: match.assignmentMethod }),
         evidence: match.evidence
-      }] : [])];
+      }] : [])
+    ];
     const byKey = new Map<string, TvMatchingAssignment["episodeCandidates"][number]>();
     for (const candidate of candidates) {
       const key = candidate.episodes.map((episode) =>
         `${episode.seriesId}:${episode.seasonNumber}:${episode.episodeNumber}`).join("|");
-      if (key && !byKey.has(key)) byKey.set(key, {
-        episodes: candidate.episodes,
-        confidence: candidate.confidence
-      });
+      if (key) byKey.set(key, candidate);
     }
     return {
       trackId: item.itemId,
       title: item.title ?? item.itemId,
       durationSeconds: item.durationSeconds ?? 0,
-      episodeCandidates: [...byKey.values()].sort((left, right) => right.confidence - left.confidence),
-      ...(match && !match.manualReviewRequired && match.suggestedEpisodes.length
-        ? { selectedEpisodes: match.suggestedEpisodes } : {})
+      episodeCandidates: [...byKey.values()].sort((left, right) => right.confidence - left.confidence)
     };
   });
 }
@@ -159,7 +160,9 @@ async function processMappedTvEpisodes(
     const settings = jobs.getSettings();
     const info = source;
     const mappingByTrack = new Map(recovery.mappings.map((mapping) => [mapping.trackId, mapping]));
-    const titleItems = info.manifest.items.filter((item) => item.kind === "title" && item.durationSeconds !== undefined);
+    const titleItems = info.manifest.items.filter((item) =>
+      item.kind === "title" && item.durationSeconds !== undefined &&
+      (!stagedFiles || Object.hasOwn(stagedFiles, item.id)));
     const unknownTrack = recovery.mappings.find((mapping) =>
       !titleItems.some((item) => item.id === mapping.trackId));
     if (unknownTrack) throw new Error(`Episode mapping references missing disc track ${unknownTrack.trackId}`);
@@ -398,23 +401,17 @@ async function processMappedTvEpisodes(
     const settings = jobs.getSettings();
     const filesystemVolumeName = source.candidate.manifest.attributes?.filesystemVolumeName;
     const volumeName = typeof filesystemVolumeName === "string" ? filesystemVolumeName : "";
-    const root = resolve(settings.workDir, "tv-staging");
-    const stagingRoot = resolve(root, "unidentified");
-    const outputRoots = [outputPath(settings, "tv"), outputPath(settings, "movies"), outputPath(settings, "music")];
-    if (outputRoots.some((output) => pathsOverlap(output, root))) {
-      throw new Error("TV staging overlaps a configured published-media directory");
-    }
+    const stagingRoot = tvStagingDirectory(settings);
+    const conflict = tvStagingConflicts(settings)[0];
+    if (conflict) throw new Error(tvStagingConflictMessage(stagingRoot, conflict));
     await this.ensureWritable(stagingRoot, 0);
-    for (const directory of [root, stagingRoot]) {
-      const info = await lstat(directory);
-      if (!info.isDirectory() || info.isSymbolicLink()) {
-        throw new Error("TV staging directories must not be symbolic links");
-      }
+    const info = await lstat(stagingRoot);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error("TV staging directory must not be a symbolic link");
     }
-    const realWorkDir = await realpath(settings.workDir);
     const realStagingRoot = await realpath(stagingRoot);
-    if (!pathIsWithin(realWorkDir, realStagingRoot)) {
-      throw new Error("TV staging directory resolves outside the configured work directory");
+    if (!pathIsWithin(stagingRoot, realStagingRoot)) {
+      throw new Error("TV staging directory resolves outside its configured location");
     }
     const stagingPath = resolve(stagingRoot, job.id);
     if (!pathIsWithin(stagingRoot, stagingPath) || basename(stagingPath) !== job.id) {
@@ -431,8 +428,9 @@ async function processMappedTvEpisodes(
     );
     if (!episodeTitles.length) throw new Error("TV staging found no episode-length titles to rip");
 
-    const tempPath = resolve(settings.workDir, job.id);
+    const tempPath = resolve(stagingPath, ".working");
     const files: Record<string, string> = {};
+    const videoDetails = new Map<string, Awaited<ReturnType<typeof inspectVideo>>>();
     let task: TvMatchingTask | undefined;
     await mkdir(stagingPath, { recursive: false, mode: 0o750 });
     try {
@@ -457,19 +455,39 @@ async function processMappedTvEpisodes(
           throw new Error(`Ripped TV title ${item.id} failed staging validation`);
         }
         const fileName = `episode${String(index + 1).padStart(2, "0")}.mkv`;
-        await moveFile(input, join(stagingPath, fileName));
+        const stagedFile = join(stagingPath, fileName);
+        await moveFile(input, stagedFile);
         files[item.id] = fileName;
+        try {
+          videoDetails.set(item.id, await inspectVideo(stagedFile, signal));
+        } catch (error) {
+          if (signal.aborted) throw error;
+          const message = error instanceof Error ? error.message : "Video details could not be read";
+          log("warn", "tv-staging", "Staged track preview metadata could not be read", {
+            jobId: job.id,
+            trackId: item.id,
+            error: message
+          });
+        }
         jobs.update(job, { progress: Math.round(((index + 1) / episodeTitles.length) * 100) });
         events.emit("status");
       }
       const suggestedAssignments = result ? matchingAssignments(result) : [];
       const byTrack = new Map(suggestedAssignments.map((assignment) => [assignment.trackId, assignment]));
-      const assignments: TvMatchingAssignment[] = episodeTitles.map((item) => byTrack.get(item.id) ?? ({
-        trackId: item.id,
-        title: item.title ?? `Track ${item.id}`,
-        durationSeconds: item.durationSeconds ?? 0,
-        episodeCandidates: []
-      }));
+      const assignments: TvMatchingAssignment[] = episodeTitles.map((item) => {
+        const assignment = byTrack.get(item.id) ?? {
+          trackId: item.id,
+          title: item.title ?? `Track ${item.id}`,
+          durationSeconds: item.durationSeconds ?? 0,
+          episodeCandidates: []
+        };
+        const details = videoDetails.get(item.id);
+        return {
+          ...assignment,
+          ...(details?.durationSeconds ? { durationSeconds: details.durationSeconds } : {}),
+          ...(details?.resolution ? { resolution: details.resolution } : {})
+        };
+      });
       const diagnostics = result
         ? result.identification as unknown as Record<string, unknown>
         : { status: "analysis-unavailable", failure: analysisFailure ?? "TV analysis did not produce a result" };
@@ -489,7 +507,7 @@ async function processMappedTvEpisodes(
       task = jobs.createTvMatchingTask({
         jobId: job.id,
         fingerprint,
-        status: result?.plan.series && result.plan.season && result.plan.discPosition
+        status: result?.plan.series && result.plan.season
           ? "awaiting-mapping" : "awaiting-identification",
         stagingPath,
         source: source.candidate,
@@ -529,37 +547,10 @@ async function processMappedTvEpisodes(
             source.candidate.label, volumeName)
         });
       }
-      const allMapped = assignments.length > 0 &&
-        assignments.every((assignment) => assignment.selectedEpisodes?.length);
-      if (result?.plan.automaticProcessingSafe && allMapped && result.plan.series) {
-        const currentRecovery = jobs.getDiscRecovery(fingerprint);
-        if (!currentRecovery?.seriesName) throw new Error("Automatically identified TV series was not saved");
-        const mappings: EpisodeMapping[] = assignments.map((assignment) => ({
-          trackId: assignment.trackId,
-          episodes: [...assignment.selectedEpisodes!]
-        }));
-        const updated = jobs.updateDiscRecovery(fingerprint, { mappings });
-        if (!updated) throw new Error("Automatically generated TV episode mappings could not be saved");
-        jobs.updateTvMatchingTask(job.id, { status: "processing" });
-        const stagedFiles = await this.resolveStagedFiles(task);
-        await processMappedTvEpisodes({
-          source: source.candidate,
-          sourceProvider: source,
-          jobs,
-          signal,
-          devicePath
-        }, job, fingerprint, updated, this.converter, this.ensureWritable, stagedFiles, async () => {
-          await this.removeStagingDirectory(task!, jobs.getSettings());
-          if (!jobs.updateTvMatchingTask(job.id, { status: "completed" })) {
-            throw new Error("TV matching task could not be marked completed");
-          }
-        });
-        return "completed";
-      }
       const runtimeMinutes = Math.round(episodeTitles.reduce((sum, item) => sum + (item.durationSeconds ?? 0), 0) /
         episodeTitles.length / 60);
-      const message = `TV disc staged for identification: ${episodeTitles.length} episode titles, about ${runtimeMinutes} minutes each.`;
-      jobs.finishForIdentification(job, message);
+      const message = `TV disc staged for review: ${episodeTitles.length} episode titles, approximately ${runtimeMinutes} minutes of content.`;
+      jobs.finishForReview(job, message);
       if (settings.autoEject || settings.automationMode === "full_auto") {
         try {
           await ejectDisc(devicePath);
@@ -575,8 +566,8 @@ async function processMappedTvEpisodes(
       if (task) {
         const identified = jobs.getDiscRecovery(fingerprint);
         jobs.updateTvMatchingTask(job.id, {
-          status: identified?.seriesName && identified.seasonNumber !== null && identified.discNumber !== null
-            ? "awaiting-mapping" : "awaiting-identification",
+          status: identified?.seriesName && identified.seasonNumber !== null
+            ? tvMatchingReviewStatus(task.assignments) : "awaiting-identification",
           failure: error instanceof Error ? error.message : "TV staging continuation failed"
         });
       } else {
@@ -596,7 +587,7 @@ async function processMappedTvEpisodes(
   }
 
   private async removeStagingDirectory(task: TvMatchingTask, settings: ReturnType<JobCoordinator["getSettings"]>): Promise<void> {
-    const stagingRoot = resolve(settings.workDir, "tv-staging", "unidentified");
+    const stagingRoot = tvStagingDirectory(settings);
     const expectedPath = resolve(stagingRoot, task.jobId);
     const samePath = (left: string, right: string): boolean =>
       process.platform === "win32"
@@ -606,10 +597,10 @@ async function processMappedTvEpisodes(
       throw new Error("TV staging path failed validation");
     }
     const outputRoots = [outputPath(settings, "tv"), outputPath(settings, "movies"), outputPath(settings, "music")];
-    if (outputRoots.some((output) => pathsOverlap(output, stagingRoot))) {
-      throw new Error("TV staging overlaps a configured published-media directory; refusing deletion");
+    const conflict = tvStagingConflicts(settings)[0];
+    if (conflict) {
+      throw new Error(`${tvStagingConflictMessage(stagingRoot, conflict)} Staged data was left untouched.`);
     }
-    const realWorkDir = await realpath(settings.workDir);
     let rootInfo: Awaited<ReturnType<typeof lstat>>;
     try {
       rootInfo = await lstat(stagingRoot);
@@ -621,8 +612,8 @@ async function processMappedTvEpisodes(
       throw new Error("TV staging root is not a regular directory");
     }
     const realStagingRoot = await realpath(stagingRoot);
-    if (!pathIsWithin(realWorkDir, realStagingRoot) || !samePath(realStagingRoot, stagingRoot)) {
-      throw new Error("TV staging root is not a safe child of the configured work directory");
+    if (!pathIsWithin(stagingRoot, realStagingRoot) || !samePath(realStagingRoot, stagingRoot)) {
+      throw new Error("TV staging root does not resolve to its configured location");
     }
     let info: Awaited<ReturnType<typeof lstat>>;
     try {
@@ -657,18 +648,10 @@ async function processMappedTvEpisodes(
   async pruneExpiredTvMatchingTasks(): Promise<void> {
     const jobs = this.matchingJobs;
     if (!jobs) return;
-    const retentionDays = jobs.getSettings().tvStagingRetentionDays;
     for (const task of jobs.listTvMatchingTasks()) {
       if (task.status === "processing" && jobs.getJob(task.jobId)?.status === "completed") {
         await this.removeStagingDirectory(task, jobs.getSettings());
         jobs.updateTvMatchingTask(task.jobId, { status: "completed", failure: null });
-      }
-    }
-    if (retentionDays === null) return;
-    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    for (const task of jobs.listTvMatchingTasks()) {
-      if (task.status !== "processing" && Date.parse(task.createdAt) <= cutoff) {
-        await this.removeTvMatchingTask(task.jobId);
       }
     }
   }
@@ -677,10 +660,10 @@ async function processMappedTvEpisodes(
     const jobs = this.matchingJobs;
     if (!jobs) return;
     const settings = jobs.getSettings();
-    const stagingRoot = resolve(settings.workDir, "tv-staging", "unidentified");
-    const outputRoots = [outputPath(settings, "tv"), outputPath(settings, "movies"), outputPath(settings, "music")];
-    if (outputRoots.some((output) => pathsOverlap(output, stagingRoot))) {
-      throw new Error("TV staging overlaps a configured published-media directory; refusing orphan cleanup");
+    const stagingRoot = tvStagingDirectory(settings);
+    const conflict = tvStagingConflicts(settings)[0];
+    if (conflict) {
+      throw new Error(`${tvStagingConflictMessage(stagingRoot, conflict)} Orphaned data was left untouched.`);
     }
     let rootInfo;
     try {
@@ -692,10 +675,9 @@ async function processMappedTvEpisodes(
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
       throw new Error("TV staging root is not a regular directory");
     }
-    const realWorkDir = await realpath(settings.workDir);
     const realStagingRoot = await realpath(stagingRoot);
-    if (!pathIsWithin(realWorkDir, realStagingRoot)) {
-      throw new Error("TV staging root resolves outside the configured work directory");
+    if (!pathIsWithin(stagingRoot, realStagingRoot)) {
+      throw new Error("TV staging root resolves outside its configured location");
     }
     for (const entry of await readdir(stagingRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink() ||
@@ -713,7 +695,10 @@ async function processMappedTvEpisodes(
       if (!pathIsWithin(realStagingRoot, realPath)) {
         throw new Error("Orphaned TV staging directory resolves outside its staging root");
       }
-      await rm(path, { recursive: true, force: false });
+      log("warn", "tv-staging", "Untracked staged TV files were retained for manual recovery", {
+        stagingPath: path,
+        jobId: entry.name
+      });
     }
   }
 
@@ -728,11 +713,25 @@ async function processMappedTvEpisodes(
       if (task.status !== "processing" && !activeJob) continue;
       const message = "TV matching was interrupted; staged media is available to continue.";
       jobs.updateTvMatchingTask(task.jobId, {
-        status: recovery?.seriesName && recovery.seasonNumber !== null && recovery.discNumber !== null
-          ? "awaiting-mapping" : "awaiting-identification",
+        status: recovery?.seriesName && recovery.seasonNumber !== null
+          ? tvMatchingReviewStatus(task.assignments) : "awaiting-identification",
         failure: message
       });
-      if (job && job.status !== "interrupted") jobs.interruptTvMatching(task.jobId, message);
+      if (job && ["inspecting", "ripping", "converting", "publishing"].includes(job.status)) {
+        jobs.interruptTvMatching(task.jobId, message);
+      }
+      if (job) {
+        jobs.createReview({
+          category: "tv_review",
+          severity: "medium",
+          title: "TV disc matching needs to continue",
+          description: message,
+          relatedJobId: job.id,
+          ...(job.discLabel ? { relatedDisc: job.discLabel } : {}),
+          discFingerprint: task.fingerprint,
+          suggestedActions: [{ type: "view-job", label: "Open TV Matching" }]
+        });
+      }
     }
   }
 
@@ -749,15 +748,15 @@ async function processMappedTvEpisodes(
     jobs.updateTvMatchingTask(task.jobId, { status: "processing", failure: null });
     try {
       const recovery = jobs.getDiscRecovery(task.fingerprint);
-      if (!recovery?.seriesName || recovery.seasonNumber === null || recovery.discNumber === null) {
-        throw new Error("Identify the series, season, and disc number before continuing");
+      if (!recovery?.seriesName || recovery.seasonNumber === null) {
+        throw new Error("Identify the series and season before continuing");
       }
       const savedIdentification: TvSavedIdentification = {
         seriesName: recovery.seriesName,
         seriesId: recovery.providerId,
         provider: recovery.metadataProvider === "manual" ? "manual" : recovery.metadataProvider,
         seasonNumber: recovery.seasonNumber,
-        discNumber: recovery.discNumber,
+        discNumber: recovery.discNumber ?? 1,
         discName: recovery.discName,
         origin: recovery.identifiedBy === "user" ? "user" : "fingerprint",
         ...(typeof recovery.importedMetadata?.year === "number" ? { year: recovery.importedMetadata.year } : {})
@@ -808,18 +807,24 @@ async function processMappedTvEpisodes(
         };
         return {
           ...current,
-          ...(previous?.selectedEpisodes ? { selectedEpisodes: previous.selectedEpisodes } : {})
+          ...(previous?.confirmed && previous.selectedEpisodes?.length
+            ? { selectedEpisodes: previous.selectedEpisodes, confirmed: true }
+            : {})
         };
       });
       jobs.updateTvMatchingTask(task.jobId, {
         assignments,
         diagnostics: result.identification as unknown as Record<string, unknown>
       });
-      const unresolved = assignments.filter((assignment) => !assignment.selectedEpisodes?.length);
+      const unresolved = assignments.filter((assignment) =>
+        assignment.confirmed !== true || !assignment.selectedEpisodes?.length);
       if (unresolved.length) {
-        jobs.updateTvMatchingTask(task.jobId, { status: "awaiting-mapping", failure: null });
-        jobs.finishForReview(context, `${unresolved.length} staged title${unresolved.length === 1 ? "" : "s"} need episode assignments before publishing.`);
-        jobs.record(context, "tv-matching", "warn", "TV identification saved; unresolved episode mappings remain staged.");
+        jobs.updateTvMatchingTask(task.jobId, {
+          status: tvMatchingReviewStatus(assignments),
+          failure: null
+        });
+        jobs.finishForReview(context, `${unresolved.length} staged title${unresolved.length === 1 ? "" : "s"} need episode review before publishing.`);
+        jobs.record(context, "tv-matching", "warn", "TV identification saved; staged content remains unpublished for episode review.");
         return;
       }
       const mappings: EpisodeMapping[] = assignments.flatMap((assignment) => assignment.selectedEpisodes?.length
@@ -844,7 +849,11 @@ async function processMappedTvEpisodes(
     } catch (error) {
       const message = error instanceof Error ? error.message : "TV matching continuation failed";
       const current = jobs.getTvMatchingTask(task.jobId);
-      if (current?.status === "processing") jobs.updateTvMatchingTask(task.jobId, { status: "awaiting-mapping", failure: message });
+      if (current?.status === "processing") jobs.updateTvMatchingTask(task.jobId, {
+        status: tvMatchingReviewStatus(current.assignments) === "ready-to-publish"
+          ? "awaiting-mapping" : tvMatchingReviewStatus(current.assignments),
+        failure: message
+      });
       jobs.fail(context, "failed", {
         code: "tv_matching_continue_failed",
         message,
@@ -893,10 +902,7 @@ async function processMappedTvEpisodes(
       });
       return false;
     }
-    const fingerprint = createHash("sha256").update(JSON.stringify({
-      label: info.label.trim().normalize("NFKC").toLocaleLowerCase(),
-      titles: titles.map((title) => [title.id, title.durationSeconds, title.name.trim().normalize("NFKC")])
-    })).digest("hex");
+    const fingerprint = fingerprintDisc(info);
     if (jobs.lastDiscFingerprint() === fingerprint) {
       log("info", "disc", "Already-processed disc is still inserted; ignoring duplicate detection event");
       setRuntimeStatus("completed");
@@ -1016,6 +1022,18 @@ async function processMappedTvEpisodes(
         reasons: tvAssessment.reasons,
         tvDetectionEnabled: tvEnabled
       });
+      setRuntimeStatus("idle");
+      notifyStatus();
+      return true;
+    }
+
+    const existingStagedTask = isTvWorkflow
+      ? jobs.listTvMatchingTasks().find((task) => task.fingerprint === fingerprint)
+      : undefined;
+    if (existingStagedTask) {
+      jobs.holdForReview(context,
+        `This disc already has staged TV content awaiting review at ${existingStagedTask.stagingPath}. The existing staged files were left untouched.`,
+        { classification: "tv", stagedTaskId: existingStagedTask.jobId });
       setRuntimeStatus("idle");
       notifyStatus();
       return true;

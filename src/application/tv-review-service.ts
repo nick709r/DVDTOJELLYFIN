@@ -31,9 +31,10 @@ export class TvReviewService {
       throw new Error("Accept and reject actions must reference exactly one episode");
     }
     if (action.type !== "assign-episodes") {
-      const candidateExists = assignment.alternatives.some((candidate) =>
-        episodeListIdentity(candidate.episodes) === episodeListIdentity(action.episodes)
-      );
+      const candidateExists = episodeListIdentity(assignment.episodes) === episodeListIdentity(action.episodes) ||
+        assignment.alternatives.some((candidate) =>
+          episodeListIdentity(candidate.episodes) === episodeListIdentity(action.episodes)
+        );
       if (!candidateExists) {
         throw new Error("Accepted or rejected episode is not a candidate in this processing plan");
       }

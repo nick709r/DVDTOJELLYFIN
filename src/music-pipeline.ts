@@ -227,6 +227,23 @@ export async function processAudioCd(
 
   try {
     recovery = jobs.recordDiscDetection(disc.fingerprint, "cd", "music_album");
+    const effectiveMediaType = recovery.mediaTypeOverridden ? recovery.finalMediaType : "music_album";
+    if (effectiveMediaType !== "music_album") {
+      const message = `The manual ${effectiveMediaType.replaceAll("_", " ")} classification does not match the audio CD workflow; publishing is held for review.`;
+      jobs.record(context, "media-classification", "warn", JSON.stringify({
+        detectedMediaType: recovery.detectedMediaType,
+        finalMediaType: effectiveMediaType,
+        mediaTypeOverridden: recovery.mediaTypeOverridden
+      }));
+      jobs.holdForReview(context, message, {
+        detectedMediaType: recovery.detectedMediaType,
+        finalMediaType: effectiveMediaType,
+        mediaTypeOverridden: recovery.mediaTypeOverridden
+      });
+      setRuntimeStatus("idle");
+      events.emit("status");
+      return true;
+    }
     events.emit("status");
     await assertWritableDirectory(settings.workDir, minimumWorkBytes);
     try {

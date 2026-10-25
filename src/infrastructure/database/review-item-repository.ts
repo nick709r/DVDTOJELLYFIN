@@ -56,6 +56,27 @@ export class SqliteReviewItemRepository implements ReviewItemRepository {
     if (!input.title.trim() || !input.description.trim()) {
       throw new Error("Review item requires a title and description");
     }
+    if (input.relatedJobId && input.category !== "folder_creation_failure") {
+      const existing = this.db.prepare(`
+        SELECT ${columns} FROM review_items
+        WHERE category = ? AND related_job_id = ? AND status IN ('active', 'retrying')
+        ORDER BY created_at DESC LIMIT 1
+      `).get(input.category, input.relatedJobId) as ReviewRow | undefined;
+      if (existing) {
+        this.db.prepare(`
+          UPDATE review_items SET status = 'active', resolved_at = NULL, resolution_details = NULL,
+            severity = ?, title = ?, description = ?, related_disc = ?, disc_fingerprint = ?,
+            related_drive = ?, error_details_json = ?, requested_path = ?, suggested_actions_json = ?
+          WHERE id = ?
+        `).run(input.severity, input.title, input.description, input.relatedDisc ?? null,
+          input.discFingerprint ?? null, input.relatedDrive ?? null,
+          input.errorDetails === undefined ? null : JSON.stringify(input.errorDetails),
+          input.requestedPath ?? null, JSON.stringify(input.suggestedActions), existing.id);
+        const refreshed = this.get(existing.id);
+        if (!refreshed) throw new Error(`Review item ${existing.id} could not be refreshed`);
+        return refreshed;
+      }
+    }
     if (input.category === "disc_read_error") {
       const existing = this.db.prepare(`
         SELECT ${columns} FROM review_items

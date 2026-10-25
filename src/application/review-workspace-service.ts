@@ -1,8 +1,9 @@
-import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ReviewJob, ReviewJobInput, ReviewResumeStage } from "../domain/review-jobs.js";
 import type { ReviewJobRepository } from "../domain/review-jobs.js";
+import { log } from "../logger.js";
 
 interface ReviewManifest {
   jobId: string;
@@ -106,8 +107,57 @@ export class ReviewWorkspaceService {
         failureReason: message,
         failureStage: "service-recovery"
       });
-      if (updated) await this.writeManifest(updated, await this.directorySize(join(updated.storagePath, "media")));
+      if (!updated) continue;
+      try {
+        const size = await this.directorySize(join(updated.storagePath, "media"));
+        await this.writeManifest(updated, size);
+      } catch (error) {
+        const reason = `Review workspace recovery needs attention: ${error instanceof Error ? error.message : "workspace is unavailable"}`;
+        this.jobs.update(job.id, { failureReason: reason, failureStage: "service-recovery" });
+        log("warn", "review-recovery", "Review job was preserved but its workspace could not be reconciled", {
+          reviewJobId: job.id,
+          error: error instanceof Error ? error.message : "unknown workspace recovery error"
+        });
+      }
     }
+  }
+
+  async recoverOrphanedWorkspaces(workDir: string): Promise<number> {
+    const root = resolve(workDir, "reviews");
+    const rootInfo = await lstat(root).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!rootInfo) return 0;
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+      throw new Error("Review workspace root is not a regular directory");
+    }
+    const realWorkDir = await realpath(workDir);
+    const realRoot = await realpath(root);
+    const rootRelative = relative(realWorkDir, realRoot);
+    if (rootRelative === ".." || rootRelative.startsWith(`..${sep}`) || isAbsolute(rootRelative)) {
+      throw new Error("Review workspace root resolves outside the configured work directory");
+    }
+    const tracked = new Set(this.jobs.list()
+      .filter((job) => /^[a-f0-9-]{36}$/i.test(job.id) && resolve(job.storagePath) === resolve(root, job.id))
+      .map((job) => job.id));
+    let removed = 0;
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() ||
+        !/^[a-f0-9-]{36}$/i.test(entry.name) || tracked.has(entry.name)) continue;
+      const path = resolve(root, entry.name);
+      const info = await lstat(path);
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      const realPath = await realpath(path);
+      const pathRelative = relative(realRoot, realPath);
+      if (pathRelative === ".." || pathRelative.startsWith(`..${sep}`) || isAbsolute(pathRelative)) {
+        throw new Error("Orphaned review workspace resolves outside the configured root");
+      }
+      await rm(path, { recursive: true, force: false });
+      removed += 1;
+    }
+    log("info", "review-recovery", "Review workspace orphan scan completed", { orphanWorkspacesRemoved: removed });
+    return removed;
   }
 
   async markPending(id: string, input: {

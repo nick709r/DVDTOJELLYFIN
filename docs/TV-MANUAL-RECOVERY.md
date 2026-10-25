@@ -5,11 +5,17 @@ metadata, and track-to-episode mappings by disc fingerprint. These user values
 take precedence over automatic classification and episode suggestions. The
 detected values remain stored and are never rewritten by an override.
 
-## Identify Disc (series, season and disc number)
+## Identify Disc (series and season; optional disc number)
 
 TV identification no longer depends on the disc label. `TvWorkflowService.prepare` works through, in order: user-saved identification, saved fingerprint mapping, optical volume label, filesystem volume name, MakeMKV disc name, DVD metadata, TVDB search, TMDB search, runtime/structure analysis and episode-count matching. Names are normalized (`fresh-off-the-boat`, `Fresh_Off_The_Boat` and `FRESH OFF THE BOAT` all become `Fresh Off The Boat`; season/disc markers are stripped) and several search variants are tried. An empty label does not stop the pipeline.
 
-If automatic matching fails, use **Identify Disc** (Review Centre header, Disc Diagnostics, or **Identify Series / Change Series / Change Season / Change Disc Number** on a TV review card). Search by title, `tvdb:ID`, `tmdb:ID` or an IMDb ID (`tt…`), choose a result, pick the season and disc number (optional disc name) and save. The mapping is stored against the disc fingerprint and is applied automatically when the disc is inserted again. Episode-to-title mapping still requires confirmation and execution stays disabled.
+If automatic matching fails, use **Identify Disc** in Review Centre or Disc Diagnostics, or select **Identify** on an unknown-TV card. Search by title, `tvdb:ID`, `tmdb:ID` or an IMDb ID (`tt…`), compare possible matches, choose a series and season, and optionally enter the disc number and name. The confirmation records provider metadata and artwork references, then resumes analysis against the staged files. Reliable episode matches are generated automatically; uncertain tracks remain staged for review rather than being published without confirmation.
+
+Unknown TV discs are visible in Review Centre with an identification-required
+status, the detection confidence when available, current task state and a
+series-search action. A task in `awaiting-identification` remains durable in
+SQLite and its extracted files remain protected in staging across restart and
+crash recovery. Reopening the task resumes identification without another rip.
 
 Identification diagnostics (volume label, filesystem name, fingerprint, queries, per-provider matches, failures, candidates, the 10 pipeline steps) appear in the review card and in Disc Diagnostics.
 
@@ -49,6 +55,31 @@ multi-episode filename. If a disc processing attempt fails, outputs created by
 that attempt are removed when possible; cleanup failures are recorded in the
 job error. Existing output files are never deleted or replaced.
 
+## Disc-centric review and partial matches
+
+Every TV disc is ripped into protected staging before review, including discs
+whose automatic suggestions are high confidence. Review Centre and **TV Disc
+Review** show the disc identity, series/season, cover art and overview when
+available, year, confidence, track count, runtime, and a searchable episode
+selector for each track. The Preview action opens a short browser-playable clip
+with a thumbnail strip; runtime and resolution are shown alongside the track.
+
+Selecting a suggestion does not confirm it until **Save progress** is clicked.
+Saving persists all selected track-to-episode mappings, including partial
+progress. Unselected tracks remain staged and the disc remains visible with a
+Partially matched status. The task and mappings survive service restarts and
+recovery. When all remaining tracks are matched, AutoDisc automatically
+resumes processing and publishing; if another job is active, it resumes when
+that job finishes. No separate Continue action is required.
+
+To publish only the confirmed portion, explicitly choose **Delete unmatched
+tracks**; this removes only unmatched staged files and then resumes publishing
+the remaining confirmed mappings. **Remove disc from review** removes the
+entire staged task. AutoDisc never applies a retention timer to unmatched TV
+content and preserves orphaned staged directories for recovery. Existing
+retention settings are retained for compatibility but no longer delete staged
+TV content automatically.
+
 ## Provider support
 
 | Provider | Series lookup | Season episode import | Credentials |
@@ -73,11 +104,45 @@ number, episode mappings (including optional air dates and notes), notes, and
 the update timestamp. Migration 20 adds imported metadata and validated
 artwork references to that recovery record. Existing databases receive the
 new columns without rewriting jobs, TV plans, or classification audit history.
+Migration 26 adds the append-only `media_type_override_audit` table. Manual
+changes retain the prior and new classifications, disc fingerprint, optional
+job ID, administrator username, timestamp and optional reason. Updating the
+recovery record and appending its audit row are one SQLite transaction.
+Migration 27 expands the persisted TV matching task states for partial matches
+and ready-to-publish work while preserving existing staged task rows.
+
+Supported manual media classifications include Movie (`movie`), TV Series
+(`tv_series`), Music (`music_album`) and Data Disc (`data_disc`). Detected
+classification is retained as the automatic value. A manual value takes
+precedence on later scans; a Data Disc or another unsupported DVD workflow
+classification is held for review instead of being sent to the movie publisher.
 
 At processing time, a manual final media classification is checked before the
 automatic TV heuristic. Saved episode mappings are used directly and do not
 pass through automatic matching. If there is no manual mapping, automatic
 suggestions still require review and are never silently used for output.
+
+## TV staging storage configuration
+
+In **Settings → Storage & Output**, the TV Staging Directory can be set
+explicitly. Leaving it blank keeps the backwards-compatible location derived
+from Work Directory: `<work>/tv-staging/unidentified`. First-start
+installations may also set `TV_STAGING_DIR`. The Review Directory is derived as
+`<work>/reviews`; metadata cache entries are stored in the SQLite database,
+and the Cache Directory display shows that database's parent directory.
+
+The validation panel compares the resolved staging path with the active
+Jellyfin, Sonarr, Radarr or Custom publishing directories and checks whether
+the directory or its nearest existing parent is writable. The Disc Diagnostics
+page displays all resolved storage and output paths. When a collision is
+reported, the error names both paths and points to Storage & Output.
+
+**Move TV staging to recommended location** chooses a path outside the active
+publishing directories, creates it if necessary and saves it as the explicit
+TV staging directory. For safety, the location cannot be changed while a job
+is active or staged TV tasks remain. Existing installations with no
+`TV_STAGING_DIR` setting continue using the historical work-directory-derived
+path. Staged files and their matching-task records remain restart-safe.
 
 ## API
 
@@ -85,12 +150,16 @@ These authenticated routes expose the recovery workflow:
 
 - `GET /api/v1/discs/recovery/:fingerprint` reads a disc recovery record.
 - `PUT /api/v1/discs/recovery/:fingerprint` saves disc/media classification,
-  provider selection, series/season metadata, mappings, and notes.
+  provider selection, series/season metadata, mappings, and notes. Include
+  optional `mediaTypeReason` (up to 500 characters) to annotate a manual
+  classification change.
+- The recovery GET response includes `mediaTypeAudit`, newest first, with the
+  original/new classification, username, timestamp, optional reason and job ID.
 - `GET /api/v1/discs/overridden?limit=100` lists records with a classification
   override.
 - `GET /api/v1/tv/plans/:id/recovery` reads recovery data for a TV review plan.
 - `PUT /api/v1/tv/plans/:id/recovery` saves classification, series metadata,
-  and mappings. A mapping has the shape
+  and mappings, and accepts the same optional `mediaTypeReason`. A mapping has the shape
   `{ "trackId": "1", "episodes": [{ "seriesId": "provider-id", "seasonNumber": 1, "episodeNumber": 1, "title": "Pilot", "airDate": "2020-01-01", "notes": "Verified" }] }`.
   Optional `importedMetadata` and `artworkReferences` fields preserve the
   confirmed provider result on the disc recovery record.
@@ -98,6 +167,15 @@ These authenticated routes expose the recovery workflow:
   and (for manual entry) `seriesName`.
 - `POST /api/v1/tv/metadata/episodes/lookup` accepts `provider`, `providerId`,
   and `seasonNumber`.
+- `GET /api/v1/tv/matching` and `GET /api/v1/tv/matching/:id` return staged
+  disc details and confirmed match counts.
+- `PUT /api/v1/tv/matching/:id/assignments` saves confirmed matches; empty
+  `episodeNumbers` leaves that track unmatched. Fully matched tasks resume
+  publishing automatically.
+- `GET /api/v1/tv/matching/:id/preview/:trackId` serves a short authenticated
+  video preview with byte-range support.
+- `DELETE /api/v1/tv/matching/:id/unmatched` deletes only explicitly confirmed
+  unmatched tracks while retaining matched files and mappings.
 
 The dashboard provides a dropdown episode assignment for keyboard/mouse
 operation and native drag-and-drop from detected tracks to mapping rows.

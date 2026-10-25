@@ -145,9 +145,50 @@ test("TV workflow creates analysis, match report, and confidence-gated processin
   assert.equal(result.plan.automaticProcessingSafe, true);
   assert.equal(result.plan.executionEnabled, false);
   assert.equal(result.plan.state, "ready");
-  assert.equal(result.metadataLookups.length, 3);
+  assert.equal(result.metadataLookups.length, 4);
+  assert.ok(result.metadataLookups.some((lookup) => lookup.entityType === "episode-disc"));
   assert.ok(result.metadataLookups.every((lookup) => lookup.durationMs >= 0));
   assert.equal(savedPlans.length, 1);
+});
+
+test("TV workflow applies provider disc order and records the automatic assignment method", async () => {
+  const candidates = [
+    ...metadataCandidates(),
+    ...[1, 2].map((episodeNumber) => ({
+      id: `dvd-episode-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode-disc",
+      title: `Episode ${episodeNumber}`,
+      confidence: 1,
+      metadata: {
+        seriesId: "series-1",
+        seasonNumber: 1,
+        episodeNumber,
+        discNumber: 1,
+        discOrder: episodeNumber,
+        title: `Episode ${episodeNumber}`
+      }
+    }))
+  ];
+  const result = await createTvService({ candidates }).prepare(tvSource(), "fingerprint-provider-disc");
+
+  assert.ok(result);
+  const providerLookup = result.metadataLookups.find((lookup) => lookup.entityType === "episode-disc");
+  assert.equal(providerLookup.candidates.length, 2);
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [1, 2]);
+  assert.deepEqual(result.matches.items.map((item) => ({
+    decision: item.decision,
+    assignmentMethod: item.assignmentMethod,
+    confidence: item.confidence,
+    alternativeCount: item.alternatives.length
+  })), [1, 2].map(() => ({
+    decision: "suggested",
+    assignmentMethod: "provider-disc-mapping",
+    confidence: 1,
+    alternativeCount: 0
+  })));
+  assert.ok(result.plan.assignments.every((item) => item.assignmentMethod === "provider-disc-mapping"));
+  assert.equal(result.plan.confidence, 1);
 });
 
 test("TV workflow keeps incomplete metadata low-confidence and requires review", async () => {
@@ -349,6 +390,7 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
     }),
     lastDiscFingerprint: () => null,
     listDiscRecoveries: () => [],
+    listTvMatchingTasks: () => [],
     recordDiscDetection: () => recovery,
     begin: () => jobContext,
     record: (...args) => jobCalls.push(["record", ...args]),
@@ -499,7 +541,7 @@ test("TV review corrections persist and are consumed by a later matching run", a
     assert.ok(first);
     const firstItem = first.matches.items.find((item) => item.itemId === "1");
     assert.ok(firstItem);
-    const episode = firstItem.alternatives[0].episodes[0];
+    const episode = firstItem.suggestedEpisodes[0] ?? firstItem.alternatives[0]?.episodes[0];
     assert.ok(episode);
     const review = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
     const rejection = review.applyCorrection({

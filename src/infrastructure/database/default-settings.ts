@@ -5,6 +5,7 @@ export const defaultSettings: AppSettings = {
   musicDir: process.env.MUSIC_DIR ?? "/srv/jellyfin/Music",
   tvRootDir: process.env.TV_DIR ?? "/srv/jellyfin/TV",
   workDir: process.env.WORK_DIR ?? "/var/cache/autodisc",
+  tvStagingDir: process.env.TV_STAGING_DIR ?? "",
   opticalDevice: process.env.OPTICAL_DEVICE ?? "/dev/sr0",
   format: "mp4",
   quality: 23,

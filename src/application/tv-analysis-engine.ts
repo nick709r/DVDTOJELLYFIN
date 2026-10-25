@@ -13,7 +13,8 @@ import type {
   TvDiscRelationship,
   TvEpisodeMetadataCandidate,
   TvSeasonMatchCandidate,
-  TvSeriesMatchCandidate
+  TvSeriesMatchCandidate,
+  TvProviderDiscEpisode
 } from "../domain/television.js";
 
 const bonusTerms = /\b(bonus|extra|featurette|behind the scenes|trailer|deleted scene|interview|making of|gallery|easter egg)\b/i;
@@ -311,17 +312,92 @@ function runtimeSimilarity(actual: number, expected: number): number {
   return Math.max(0, 1 - relativeDifference);
 }
 
+const duplicateStructureKeys = {
+  chapters: ["chapterStructure", "chapterDurations", "chapterCount", "chapters"],
+  streams: ["streamLayout", "streamCount", "audioStreamCount", "subtitleStreamCount", "videoStreamCount"],
+  video: ["videoProperties", "videoCodec", "width", "height", "frameRate", "videoBitrate"],
+  playback: ["playbackStructure", "playlistStructure", "contentFingerprint"]
+} as const;
+
+function matchingStructure(
+  left: MediaManifestItem,
+  right: MediaManifestItem,
+  keys: readonly string[]
+): boolean {
+  const leftAttributes = left.attributes ?? {};
+  const rightAttributes = right.attributes ?? {};
+  const shared = keys.filter((key) => leftAttributes[key] !== undefined && rightAttributes[key] !== undefined);
+  return shared.length > 0 && shared.every((key) =>
+    JSON.stringify(leftAttributes[key]) === JSON.stringify(rightAttributes[key])
+  );
+}
+
+function duplicateStructureMatches(left: MediaManifestItem, right: MediaManifestItem): boolean {
+  return Object.values(duplicateStructureKeys).every((keys) => matchingStructure(left, right, keys));
+}
+
+function primaryEpisodeItems(items: readonly MediaManifestItem[]): MediaManifestItem[] {
+  const primary: MediaManifestItem[] = [];
+  for (const item of items) {
+    const kind = classifyItem(item, 0).kind;
+    if ((kind !== "episode-candidate" && kind !== "unknown") ||
+      (item.durationSeconds !== undefined && item.durationSeconds < 600)) continue;
+    const duplicate = primary.some((existing) =>
+      existing.durationSeconds !== undefined && item.durationSeconds !== undefined &&
+      runtimeSimilarity(existing.durationSeconds, item.durationSeconds) >= 0.97 &&
+      duplicateStructureMatches(existing, item) &&
+      !alternateTerms.test(`${existing.title ?? ""} ${item.title ?? ""}`)
+    );
+    if (!duplicate) primary.push(item);
+  }
+  return primary;
+}
+
+function hasCompleteProviderDiscMapping(
+  input: TvAnalysisInput,
+  series: TvSeriesMatchCandidate | undefined,
+  season: TvSeasonMatchCandidate | undefined,
+  discNumber: number | undefined
+): boolean {
+  if (!series || series.confidence < 0.9 || !season || season.confidence < 0.9 ||
+    !discNumber || primaryEpisodeItems(input.manifest.items).length === 0) return false;
+  const primaryCount = primaryEpisodeItems(input.manifest.items).length;
+  const providers = new Map<string, TvProviderDiscEpisode[]>();
+  for (const mapping of input.providerDiscEpisodes ?? []) {
+    if (mapping.discNumber !== discNumber ||
+      mapping.episode.seriesId !== season.seriesId ||
+      mapping.episode.seasonNumber !== season.season.number) continue;
+    const entries = providers.get(mapping.providerId) ?? [];
+    entries.push(mapping);
+    providers.set(mapping.providerId, entries);
+  }
+  return [...providers.values()].some((entries) => {
+    const ordered = entries.slice().sort((left, right) => left.discOrder - right.discOrder);
+    return ordered.length === primaryCount &&
+      ordered.every((entry, index) => entry.discOrder === index + 1) &&
+      new Set(ordered.map((entry) =>
+        `${entry.episode.seriesId}:${entry.episode.seasonNumber}:${entry.episode.episodeNumber}`
+      )).size === ordered.length;
+  });
+}
+
 function rankEpisodes(
   item: MediaManifestItem,
   input: TvAnalysisInput,
   history: readonly HistoricalDiscAnalysis[],
   correction: EpisodeCorrection | undefined,
-  selectedSeries?: TvSeriesMatchCandidate
+  selectedSeries?: TvSeriesMatchCandidate,
+  skipMetadataRanking = false
 ): EpisodeCandidate[] {
   const signature = tvItemSignature(item);
   const historicalMatches = history.flatMap((record) => record.episodeMatches
     .filter((match) => match.itemSignature === signature)
-    .map((match) => ({ ...match, series: record.series, seasonNumber: record.seasonNumber })));
+    .map((match) => ({
+      ...match,
+      series: record.series,
+      seasonNumber: record.seasonNumber,
+      fingerprint: record.fingerprint
+    })));
   const byEpisode = new Map<string, {
     episode: TvEpisodeMetadataCandidate["episode"];
     metadata: number[];
@@ -336,7 +412,7 @@ function rankEpisodes(
     partCount?: number;
   }>();
   const metadataCandidates = input.metadata.episodeCandidates.filter((candidate) => candidate.itemId === item.id);
-  for (const candidate of metadataCandidates) {
+  for (const candidate of skipMetadataRanking ? [] : metadataCandidates) {
     if (selectedSeries && candidate.episode.seriesId !== seriesKey(selectedSeries.series) &&
       candidate.episode.seriesId !== selectedSeries.series.id) continue;
     const key = `${candidate.episode.seriesId}:${candidate.episode.seasonNumber}:${candidate.episode.episodeNumber}`;
@@ -377,7 +453,9 @@ function rankEpisodes(
       metadata: [], runtime: [], title: [], historical: [], corrected: false, evidence: new Set<string>()
     };
     entry.historical.push(checkedConfidence(match.confidence, "Historical episode"));
-    entry.evidence.add("Episode match appears in prior analysis of this item signature");
+    entry.evidence.add(match.fingerprint === input.fingerprint
+      ? "Episode match is recorded for this exact disc fingerprint and item signature"
+      : "Episode match appears in prior analysis of this item signature");
     byEpisode.set(key, entry);
   }
   if (correction) {
@@ -449,23 +527,19 @@ function detectRelationships(items: readonly TvDiscItemResult[], manifestItems: 
       const durationSimilarity = leftDuration !== undefined && rightDuration !== undefined
         ? runtimeSimilarity(leftDuration, rightDuration)
         : 0;
-      const leftContent = leftManifest.attributes?.contentFingerprint;
-      const rightContent = rightManifest.attributes?.contentFingerprint;
-      const sameContent = typeof leftContent === "string" && leftContent.length > 0 && leftContent === rightContent;
       const titleSimilarityScore = titleSimilarity(left.title ?? "", right.title ?? "");
-      if ((sameContent || (sameEpisode && durationSimilarity >= 0.97) ||
-        (titleSimilarityScore >= 0.85 && durationSimilarity >= 0.97)) &&
+      const structureMatches = duplicateStructureMatches(leftManifest, rightManifest);
+      if (durationSimilarity >= 0.97 && structureMatches &&
         !alternateTerms.test(`${left.title ?? ""} ${right.title ?? ""}`)) {
         const evidence = [
-          ...(sameContent ? ["Manifest content fingerprints match"] : []),
-          ...(sameEpisode ? ["Both items rank the same episode highest"] : []),
+          "Runtime differs by no more than 3%",
+          "Chapter structure, stream layout, video properties, and playback structure match",
           ...(titleSimilarityScore >= 0.85 ? [`Track titles are highly similar (${titleSimilarityScore.toFixed(2)})`] : []),
-          ...(durationSimilarity >= 0.97 ? ["Runtimes differ by no more than 3%"] : [])
         ];
         duplicates.push({
           itemId: right.itemId,
           relatedItemId: left.itemId,
-          confidence: sameContent ? 0.99 : sameEpisode ? 0.9 : 0.82,
+          confidence: 0.99,
           evidence: evidence.sort()
         });
       } else if ((sameEpisode || titleSimilarityScore >= 0.7) &&
@@ -589,9 +663,12 @@ export class TvAnalysisEngine {
         ? { discCount: discPosition.discCount }
         : {})
     };
+    const skipRuntimeRanking = hasCompleteProviderDiscMapping(
+        input, detectedSeries, detectedSeason, disc.discNumber
+    );
     const items: TvDiscItemResult[] = input.manifest.items.map((item) => {
-      const correction = corrections.find((candidate) => candidate.itemSignature === tvItemSignature(item));
-      const candidates = rankEpisodes(item, input, history, correction, detectedSeries);
+        const correction = corrections.find((candidate) => candidate.itemSignature === tvItemSignature(item));
+        const candidates = rankEpisodes(item, input, history, correction, detectedSeries, skipRuntimeRanking);
       const classification = classifyItem(item, candidates.length);
       return {
         itemId: item.id,
@@ -599,6 +676,8 @@ export class TvAnalysisEngine {
         ...(item.durationSeconds === undefined ? {} : { durationSeconds: item.durationSeconds }),
         ...(item.title === undefined ? {} : { title: item.title }),
         kind: classification.kind,
+        ...(item.trackNumber === undefined ? {} : { trackNumber: item.trackNumber }),
+        ...(item.attributes === undefined ? {} : { attributes: item.attributes }),
         confidence: candidates[0]?.confidence ?? (classification.kind === "bonus" || classification.kind === "commentary" ? 0.8 : 0.45),
         evidence: [...new Set([...classification.evidence, ...(candidates[0]?.evidence ?? [])])],
         candidates
