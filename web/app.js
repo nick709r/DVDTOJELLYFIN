@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { page: "dashboard", statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, currentActiveJob: null, currentRuntimeStatus: "idle", statusEventVersion: 0, diagnosticsJobId: "", diagnosticsRefreshTimer: null, dashboardAttentionTimer: null, dashboardRequestId: 0, dashboardAttentionRequestId: 0, diagnosticsRequestId: 0, tvReviewsRequestId: 0, reviewCentreRequestId: 0, reviewJobsRequestId: 0, tvAnalysisRequestId: 0, tvMatchingRequestId: 0, chartRequestId: 0, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null, tvDeleteJobId: null };
+const state = { page: "dashboard", statsRange: "7d", metricsStream: null, statusStream: null, manualMusicMetadata: null, currentActiveJob: null, currentRuntimeStatus: "idle", statusEventVersion: 0, diagnosticsJobId: "", diagnosticsRefreshTimer: null, dashboardAttentionTimer: null, dashboardRequestId: 0, dashboardAttentionRequestId: 0, diagnosticsRequestId: 0, tvReviewsRequestId: 0, reviewCentreRequestId: 0, reviewJobsRequestId: 0, tvAnalysisRequestId: 0, tvMatchingRequestId: 0, chartRequestId: 0, storageManagerRequestId: 0, storageDashboardLastLoadedAt: 0, outputDestinations: null, legacyOutputPaths: {}, directoryPickerTarget: null, tvDeleteJobId: null, reviewDeletionTarget: null, orphanCleanupReport: null, storageCleanupCategory: null };
+let capabilityReportLoaded = false;
 const loginDialog = $("#login-dialog");
 const passwordChangeDialog = $("#password-change-dialog");
 const themeToggle = $("#theme-toggle");
@@ -544,6 +545,28 @@ async function loadDiagnostics(jobId = "", liveOnly = false) {
   renderDiscRecovery(payload, requestId).catch((error) => {
     if (requestId === state.diagnosticsRequestId) notify(error.message, true);
   });
+  if (!capabilityReportLoaded) loadCapabilities().catch((error) => notify(error.message, true));
+}
+
+function renderCapabilities(report) {
+  $("#capability-platform").textContent =
+    `${report.osName} · Checked ${new Date(report.checkedAt).toLocaleString()}`;
+  $("#capability-report").innerHTML = report.checks.map((check) => {
+    const passed = check.status === "available";
+    return `<div class="${passed ? "criterion-pass" : "criterion-fail"}">
+      <b>${passed ? "✓" : "⚠"} ${escapeHtml(check.title)}</b>
+      <span>${escapeHtml(check.details)}</span>
+      ${check.status !== "available" && check.remediation.length
+        ? `<small>Steps: ${check.remediation.map((step) => escapeHtml(step)).join(" ")}</small>`
+        : ""}
+    </div>`;
+  }).join("");
+}
+
+async function loadCapabilities() {
+  const report = await api("/api/v1/capabilities");
+  renderCapabilities(report);
+  capabilityReportLoaded = true;
 }
 
 async function refreshDashboard() {
@@ -564,8 +587,174 @@ async function refreshDashboard() {
   renderLibraryHealth($("#library-dashboard-health"), data.libraries, false);
   await refreshChart(state.statsRange);
   if (requestId !== state.dashboardRequestId) return;
-  await Promise.all([loadDashboardAttention(data), loadTvSummary(), loadTvMetadataMetrics()]);
+  await Promise.all([loadDashboardAttention(data), loadTvSummary(), loadTvMetadataMetrics(), loadDashboardStorage(requestId)]);
 }
+
+function formatStorageDate(value) {
+  return value ? new Date(value).toLocaleString() : "—";
+}
+
+function renderStorageSummary(target, summary) {
+  const values = [
+    ["Total Application Storage", formatBytes(summary.totalApplicationBytes)],
+    ["Recoverable Storage", formatBytes(summary.recoverableBytes)],
+    ["Active Processing", formatBytes(summary.activeProcessingBytes)],
+    ["Published Media", "Excluded"]
+  ];
+  $(target).innerHTML = values.map(([label, value]) =>
+    `<div class="storage-summary-value"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`
+  ).join("");
+}
+
+function renderStorageBreakdown(target, categories, totalBytes) {
+  const visible = categories.filter((category) => category.bytes > 0);
+  const maxBytes = Math.max(totalBytes, ...visible.map((category) => category.bytes), 1);
+  $(target).innerHTML = visible.length
+    ? visible.map((category) => `<div class="storage-breakdown-row">
+      <span>${escapeHtml(category.name)}</span>
+      <div class="storage-breakdown-track"><i style="width:${Math.min(100, category.bytes / maxBytes * 100)}%"></i></div>
+      <b>${escapeHtml(formatBytes(category.bytes))}</b>
+    </div>`).join("")
+    : '<p class="muted">No AutoDisc storage data was found.</p>';
+}
+
+async function loadDashboardStorage(requestId) {
+  if (Date.now() - state.storageDashboardLastLoadedAt < 60_000) return;
+  state.storageDashboardLastLoadedAt = Date.now();
+  const summary = await api("/api/v1/storage/summary");
+  if (requestId !== state.dashboardRequestId) return;
+  renderStorageSummary("#dashboard-storage-summary", summary);
+  renderStorageBreakdown("#dashboard-storage-breakdown", summary.categories, summary.totalApplicationBytes);
+  const warningVisible = summary.reviewQueueWarningActive;
+  $("#dashboard-storage-warning").classList.toggle("hidden", !warningVisible);
+  if (!warningVisible) return;
+  $("#dashboard-storage-warning-message").textContent =
+    `Review Queue data is using ${formatBytes(summary.reviewQueueBytes)} (threshold ${summary.reviewQueueWarningThresholdGb} GB).`;
+  $("#dashboard-storage-warning-items").innerHTML = summary.largestReviewConsumers.map((item) =>
+    `<div><b>${escapeHtml(item.name)}</b><span>${escapeHtml(formatBytes(item.bytes))}</span></div>`
+  ).join("") || "<span>No individual review workspaces were found.</span>";
+}
+
+const storageCleanupActions = {
+  "review-queue-data": "Clean Review Queue",
+  "temporary-conversion-files": "Clean Conversion Cache",
+  "artwork-cache": "Clean Artwork Cache",
+  "metadata-cache": "Clean Metadata Cache",
+  "orphaned-data": "Clean Orphaned Data",
+  "failed-processing-jobs": "Clean Failed Jobs",
+  "temporary-logs": "Clean Temporary Logs",
+  "everything-safe": "Clean Everything Safe"
+};
+
+function renderStorageCategories(categories) {
+  $("#storage-category-list").innerHTML = categories.map((category) => {
+    const action = storageCleanupActions[category.id];
+    const cleanupButton = action && category.reclaimableBytes > 0
+      ? `<button class="button secondary" data-storage-cleanup="${escapeHtml(category.id)}">${escapeHtml(action)}</button>`
+      : `<span class="muted">${category.id === "unmatched-tv-content" || category.id === "staged-rips" ? "Protected user media" : "Nothing to reclaim"}</span>`;
+    return `<article class="storage-category">
+      <div><h3>${escapeHtml(category.name)}</h3><p>${category.itemCount} item${category.itemCount === 1 ? "" : "s"} · Last changed ${escapeHtml(formatStorageDate(category.lastModifiedAt))}</p></div>
+      <div><b>${escapeHtml(formatBytes(category.bytes))}</b><p>Storage used</p></div>
+      <div><b>${escapeHtml(formatBytes(category.reclaimableBytes))}</b><p>Reclaimable</p></div>
+      ${cleanupButton}
+    </article>`;
+  }).join("");
+}
+
+async function loadStorageManager() {
+  const requestId = ++state.storageManagerRequestId;
+  const [summary, orphanReport] = await Promise.all([
+    api("/api/v1/storage/summary"),
+    api("/api/v1/storage/orphans")
+  ]);
+  if (requestId !== state.storageManagerRequestId) return;
+  const orphans = orphanReport.items;
+  renderStorageSummary("#storage-manager-summary", summary);
+  renderStorageBreakdown("#storage-manager-breakdown", summary.categories, summary.totalApplicationBytes);
+  renderStorageCategories(summary.categories);
+  $("#storage-orphan-summary").textContent = `${orphans.length} orphaned workspaces · ${formatBytes(orphans.reduce((sum, item) => sum + item.size, 0))} potentially reclaimable.${orphanReport.errors.length ? ` ${orphanReport.errors.length} scan issue(s) need attention.` : ""}`;
+  const orphanRows = orphans.map((item) => `<div class="storage-orphan-row">
+    <div><b>${escapeHtml(item.kind)}</b><br><code>${escapeHtml(item.path)}</code></div>
+    <span>${escapeHtml(formatBytes(item.size))}</span>
+    <span>${item.ageDays === null ? "Age unknown" : `${item.ageDays} days old`}</span>
+    <span>${item.originalJobId ? `Original job ${escapeHtml(item.originalJobId)}` : "No original job found"}</span>
+  </div>`).join("");
+  $("#storage-orphan-list").innerHTML = [
+    orphanReport.errors.length ? `<div class="warning">${orphanReport.errors.map(escapeHtml).join("<br>")}</div>` : "",
+    orphanRows || '<div class="empty-state">No orphaned AutoDisc workspaces were found.</div>'
+  ].join("");
+  const largest = summary.categories.flatMap((category) => category.resources)
+    .filter((item) => item.bytes > 0)
+    .sort((first, second) => second.bytes - first.bytes)
+    .slice(0, 10);
+  $("#storage-largest-list").innerHTML = largest.length
+    ? largest.map((item) => `<div class="storage-consumer">
+      <div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.category.replaceAll("-", " "))}${item.jobId ? ` · Job ${escapeHtml(item.jobId)}` : ""}</p></div>
+      <span>${escapeHtml(item.path || "Database cache")}</span>
+      <b>${escapeHtml(formatBytes(item.bytes))}</b>
+    </div>`).join("")
+    : '<div class="empty-state">No storage consumers were found.</div>';
+}
+
+async function refreshStorageViews() {
+  state.storageDashboardLastLoadedAt = 0;
+  try {
+    if (state.page === "storage-manager") await loadStorageManager();
+    if (state.page === "dashboard") await loadDashboardStorage(state.dashboardRequestId);
+  } catch (error) {
+    notify(`Storage refresh failed: ${error.message}`, true);
+  }
+}
+
+async function showStorageCleanupPreview(category) {
+  const impact = await api(`/api/v1/storage/impact/${encodeURIComponent(category)}`);
+  state.storageCleanupCategory = category;
+  $("#storage-cleanup-title").textContent = storageCleanupActions[category] || "Confirm storage cleanup";
+  $("#storage-cleanup-summary").textContent = impact.summary;
+  $("#storage-cleanup-impact").textContent =
+    `${impact.items} item${impact.items === 1 ? "" : "s"} · ${impact.files} file${impact.files === 1 ? "" : "s"} · Estimated ${formatBytes(impact.bytes)} recoverable.`;
+  $("#storage-cleanup-confirm").disabled = impact.items === 0 && impact.files === 0 && impact.bytes === 0;
+  $("#storage-cleanup-dialog").showModal();
+}
+
+$("#storage-cleanup-cancel").addEventListener("click", () => {
+  state.storageCleanupCategory = null;
+  $("#storage-cleanup-dialog").close();
+});
+$("#storage-cleanup-confirm").addEventListener("click", async () => {
+  const category = state.storageCleanupCategory;
+  if (!category) return;
+  const button = $("#storage-cleanup-confirm");
+  button.disabled = true;
+  try {
+    const result = await api(`/api/v1/storage/cleanup/${encodeURIComponent(category)}`, {
+      method: "POST",
+      body: JSON.stringify({ confirmed: true })
+    });
+    const recovered = formatBytes(result.bytesRecovered);
+    const message = result.category === "metadata-cache"
+      ? `Cleared ${result.recordsDeleted} metadata cache records (${formatBytes(result.bytes)} of reusable cache data). SQLite's database file was retained.`
+      : `Cleanup finished: ${result.filesDeleted} files removed, ${recovered} recovered, ${result.recordsDeleted} database records removed.`;
+    $("#storage-cleanup-result").textContent = message;
+    notify(message);
+    state.storageCleanupCategory = null;
+    $("#storage-cleanup-dialog").close();
+    state.storageDashboardLastLoadedAt = 0;
+    await loadStorageManager();
+    await refreshDashboard();
+  } catch (error) {
+    $("#storage-cleanup-result").textContent = error.message;
+    notify(error.message, true);
+    await refreshStorageViews();
+  } finally {
+    button.disabled = false;
+  }
+});
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-storage-cleanup]");
+  if (!button) return;
+  showStorageCleanupPreview(button.dataset.storageCleanup).catch((error) => notify(error.message, true));
+});
 
 async function loadDashboardAttention(dashboard) {
   const requestId = ++state.dashboardAttentionRequestId;
@@ -1493,9 +1682,11 @@ $("#tv-delete-confirm").addEventListener("click", async () => {
     state.tvDeleteJobId = null;
     await loadTvReviews();
     await refreshHistory();
+    await refreshStorageViews();
     notify("Unmatched TV staging and temporary records were deleted. Published media was not affected.");
   } catch (error) {
     notify(error.message, true);
+    await refreshStorageViews();
   } finally {
     button.disabled = false;
   }
@@ -1523,8 +1714,10 @@ $("#tv-unmatched-delete-confirm").addEventListener("click", async () => {
       ? "Unmatched tracks were deleted. The fully matched disc is now publishing."
       : "Unmatched tracks were deleted. Publishing will continue when the active job finishes.");
     await loadTvReviews();
+    await refreshStorageViews();
   } catch (error) {
     notify(error.message, true);
+    await refreshStorageViews();
   } finally {
     button.disabled = false;
   }
@@ -1850,7 +2043,7 @@ function renderReviewItem(item) {
     ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
     ${item.resolutionDetails ? `<p class="list-sub">Resolution: ${escapeHtml(item.resolutionDetails)}${item.resolvedAt ? ` · ${escapeHtml(new Date(item.resolvedAt).toLocaleString())}` : ""}</p>` : ""}
     ${item.retryCount ? `<p class="list-sub">Retry attempts: ${item.retryCount}</p>` : ""}
-    <div class="tv-actions">${actions}${item.relatedJobId || item.discFingerprint
+    <div class="tv-actions">${actions}<button class="button danger review-action" data-action="delete" data-review-id="${escapeHtml(item.id)}">Delete</button>${item.relatedJobId || item.discFingerprint
       ? `<button class="button danger forget-disc" type="button"${item.relatedJobId
         ? ` data-job-id="${escapeHtml(item.relatedJobId)}"`
         : ` data-fingerprint="${escapeHtml(item.discFingerprint)}"`}>Forget Disc</button>`
@@ -1859,17 +2052,17 @@ function renderReviewItem(item) {
   </article>`;
 }
 
-function renderReviewJob(item) {
+function renderReviewJob(item, storage = {}) {
   const title = typeof item.metadata?.title === "string" && item.metadata.title
     ? item.metadata.title
     : item.discLabel || item.originalJobId;
   const actions = item.status === "pending"
     ? `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Open Review</button>
       <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">Approve &amp; Continue</button>
-      <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
+      <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete</button>
       <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
     : ["completed", "dismissed"].includes(item.status)
-      ? `<button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete Review</button>
+      ? `<button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete</button>
         <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
       : "";
   return `<article class="review-item">
@@ -1877,7 +2070,7 @@ function renderReviewJob(item) {
       <span class="list-sub">${escapeHtml(item.discType)}${item.discLabel ? ` · ${escapeHtml(item.discLabel)}` : ""} · ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div>
       <span class="review-status">${escapeHtml(item.status)}</span></div>
     <p>${escapeHtml(item.failureReason || "Processing requires review")} · Stage: ${escapeHtml(item.failureStage || "unknown")}</p>
-    <p class="list-sub">Storage used: ${escapeHtml(formatBytes(item.mediaSize))} · Resume stage: ${escapeHtml(item.resumeStage)}</p>
+    <p class="list-sub">Staged ${escapeHtml(formatBytes(storage.stagedBytes ?? item.mediaSize))} · Artwork ${escapeHtml(formatBytes(storage.artworkBytes ?? 0))} · Metadata ${escapeHtml(formatBytes(storage.metadataBytes ?? 0))} · Total ${escapeHtml(formatBytes(storage.totalBytes ?? item.mediaSize))} · Resume stage: ${escapeHtml(item.resumeStage)}</p>
     <div class="tv-actions">${actions}</div>
     ${item.status === "pending" ? `<div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
       <label>Title<input type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : title)}"></label>
@@ -1890,8 +2083,16 @@ async function loadReviewJobs() {
   const requestId = ++state.reviewJobsRequestId;
   const { reviewJobs } = await api("/api/v1/review-jobs");
   if (requestId !== state.reviewJobsRequestId) return;
+  let sizes = [];
+  try {
+    ({ items: sizes } = await api("/api/v1/storage/review-sizes"));
+  } catch (error) {
+    notify(`Review storage sizes are unavailable: ${error.message}`, true);
+  }
+  if (requestId !== state.reviewJobsRequestId) return;
+  const sizesById = new Map(sizes.map((item) => [item.reviewId, item]));
   $("#review-jobs-list").innerHTML = reviewJobs.length
-    ? reviewJobs.map(renderReviewJob).join("")
+    ? reviewJobs.map((item) => renderReviewJob(item, sizesById.get(item.id))).join("")
     : '<div class="empty-state">No extracted media is waiting for review.</div>';
 }
 
@@ -1908,8 +2109,22 @@ async function loadReviewCentre() {
     const value = $(`#${id}`).value;
     if (value) query.set(key, key === "to" ? `${value}T23:59:59.999Z` : key === "from" ? `${value}T00:00:00.000Z` : value);
   }
-  const { summary, items } = await api(`/api/v1/reviews?${query}`);
+  const [{ summary, items }, orphanReport] = await Promise.all([
+    api(`/api/v1/reviews?${query}`),
+    api("/api/v1/review-cleanup/orphans")
+  ]);
   if (requestId !== state.reviewCentreRequestId) return;
+  state.orphanCleanupReport = orphanReport;
+  $("#orphaned-data").innerHTML = orphanReport.items.length || orphanReport.errors.length
+    ? `<article class="review-item ${orphanReport.errors.length ? "medium" : "low"}">
+        <div class="review-heading"><div><span class="review-category">Temporary storage</span><h3>Orphaned data found</h3></div>
+          <span class="review-status">${orphanReport.items.length} item${orphanReport.items.length === 1 ? "" : "s"}</span></div>
+        <p>${orphanReport.files} file${orphanReport.files === 1 ? "" : "s"} · ${escapeHtml(formatBytes(orphanReport.bytes))} potentially recoverable.
+          Untracked temporary files are retained until you choose to clean them up.</p>
+        ${orphanReport.errors.length ? `<p class="hint">${escapeHtml(orphanReport.errors.join("; "))}</p>` : ""}
+        ${orphanReport.items.length ? `<button class="button danger orphan-cleanup-request" type="button">Review and clean up orphaned data</button>` : ""}
+      </article>`
+    : "";
   $("#review-summary").innerHTML = [
     ["Active reviews", summary.active],
     ["Critical reviews", summary.critical],
@@ -1927,6 +2142,71 @@ async function loadReviewCentre() {
 async function refreshReviewQueue() {
   await Promise.all([loadReviewCentre(), loadTvReviews()]);
 }
+
+async function requestReviewDeletion(type, id) {
+  const endpoint = type === "review-job" ? `/api/v1/review-jobs/${encodeURIComponent(id)}` : `/api/v1/reviews/${encodeURIComponent(id)}`;
+  const impact = await api(`${endpoint}/deletion-impact`);
+  state.reviewDeletionTarget = { type, id };
+  $("#review-delete-impact").textContent =
+    `Estimated cleanup: ${impact.files} files, ${formatBytes(impact.bytes)} recoverable, and ${impact.records} database records.`;
+  $("#review-delete-dialog").showModal();
+}
+
+$("#review-delete-cancel").addEventListener("click", () => {
+  state.reviewDeletionTarget = null;
+  $("#review-delete-dialog").close();
+});
+
+$("#review-delete-confirm").addEventListener("click", async () => {
+  const target = state.reviewDeletionTarget;
+  if (!target) return;
+  const button = $("#review-delete-confirm");
+  button.disabled = true;
+  try {
+    const endpoint = target.type === "review-job"
+      ? `/api/v1/review-jobs/${encodeURIComponent(target.id)}`
+      : `/api/v1/reviews/${encodeURIComponent(target.id)}`;
+    const result = await api(endpoint, { method: "DELETE" });
+    $("#review-delete-dialog").close();
+    state.reviewDeletionTarget = null;
+    notify(`Review item deleted. Recovered ${formatBytes(result.bytesRecovered)}.`);
+    state.storageDashboardLastLoadedAt = 0;
+    await Promise.all([refreshDashboard(), refreshHistory(), refreshReviewQueue()]);
+  } catch (error) {
+    notify(error.message, true);
+    await refreshStorageViews();
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#orphaned-data").addEventListener("click", (event) => {
+  if (!event.target.closest(".orphan-cleanup-request")) return;
+  const report = state.orphanCleanupReport;
+  if (!report?.items.length) return;
+  $("#orphan-cleanup-impact").textContent =
+    `${report.items.length} untracked directories, ${report.files} files, and ${formatBytes(report.bytes)} potentially recoverable.`;
+  $("#orphan-cleanup-dialog").showModal();
+});
+
+$("#orphan-cleanup-cancel").addEventListener("click", () => $("#orphan-cleanup-dialog").close());
+$("#orphan-cleanup-confirm").addEventListener("click", async () => {
+  const button = $("#orphan-cleanup-confirm");
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/review-cleanup/orphans", { method: "DELETE" });
+    $("#orphan-cleanup-dialog").close();
+    notify(`Orphaned data cleanup completed. Recovered ${formatBytes(result.bytesRecovered)}.`);
+    await refreshReviewQueue();
+    await refreshStorageViews();
+  } catch (error) {
+    notify(error.message, true);
+    await refreshReviewQueue();
+    await refreshStorageViews();
+  } finally {
+    button.disabled = false;
+  }
+});
 
 async function loadTvValidation() {
   const { summary, correctionCount, cases } = await api("/api/v1/tv/validation");
@@ -2035,6 +2315,13 @@ async function loadSettings() {
   renderOutputProfiles();
   form.elements.namedItem("tvDetectionEnabled").checked = data.settings.tvDetectionEnabled;
   form.elements.namedItem("tvValidationLoggingEnabled").checked = data.settings.tvValidationLoggingEnabled;
+  form.elements.namedItem("storageWarningThresholdGb").value =
+    data.settings.storageWarningThresholdGb === null ? "null" : String(data.settings.storageWarningThresholdGb);
+  form.elements.namedItem("autoWarnLargeReviewQueues").checked = data.settings.autoWarnLargeReviewQueues;
+  form.elements.namedItem("autoCleanTempLogsAfterDays").value =
+    data.settings.autoCleanTempLogsAfterDays === null ? "" : String(data.settings.autoCleanTempLogsAfterDays);
+  form.elements.namedItem("autoCleanFailedConversionsAfterDays").value =
+    data.settings.autoCleanFailedConversionsAfterDays === null ? "" : String(data.settings.autoCleanFailedConversionsAfterDays);
   const libraryMetadata = data.settings.libraryMetadata;
   for (const key of [
     "automaticImport", "downloadSeriesMetadata", "downloadEpisodeMetadata", "downloadMovieMetadata",
@@ -2453,6 +2740,7 @@ function showPage(page, activeNavButton = null) {
     "tv-analysis": "TV Identification",
     "tv-reviews": "Review Queue",
     "tv-validation": "Activity & Insights",
+    "storage-manager": "Storage Manager",
     settings: "Settings"
   };
   $("#page-title").textContent = pageTitles[page] || page;
@@ -2473,8 +2761,13 @@ function showPage(page, activeNavButton = null) {
     loadTvValidation().catch((error) => notify(error.message, true));
     loadStatistics().catch((error) => notify(error.message, true));
   }
+  if (page === "storage-manager") loadStorageManager().catch((error) => notify(error.message, true));
   if (page === "settings") loadSettings().catch((error) => notify(error.message, true));
 }
+
+$("#storage-manager-refresh").addEventListener("click", () => {
+  loadStorageManager().catch((error) => notify(error.message, true));
+});
 
 document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", (event) => {
   if (button.tagName === "A") event.preventDefault();
@@ -2490,6 +2783,10 @@ document.querySelectorAll(".range").forEach((button) => button.addEventListener(
 }));
 $("#refresh-history").addEventListener("click", () => refreshHistory().catch((error) => notify(error.message, true)));
 $("#refresh-diagnostics").addEventListener("click", () => loadDiagnostics(state.diagnosticsJobId, !state.diagnosticsJobId).catch((error) => notify(error.message, true)));
+$("#refresh-capabilities").addEventListener("click", () => {
+  capabilityReportLoaded = false;
+  loadCapabilities().catch((error) => notify(error.message, true));
+});
 $("#refresh-storage-diagnostics").addEventListener("click", () =>
   refreshStoragePathDiagnostics().catch((error) => notify(error.message, true)));
 $("#tv-staging-autofix").addEventListener("click", async (event) => {
@@ -2542,6 +2839,10 @@ $("#review-list").addEventListener("click", async (event) => {
   button.disabled = true;
   try {
     const action = button.dataset.action;
+    if (action === "delete") {
+      await requestReviewDeletion("review-item", button.dataset.reviewId);
+      return;
+    }
     if (action === "open-settings") {
       showPage("settings");
       return;
@@ -2608,11 +2909,11 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
       const result = await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/continue`, { method: "POST" });
       notify(result.message);
     } else if (action === "delete") {
-      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
-      notify("Review and preserved media deleted.");
+      await requestReviewDeletion("review-job", id);
+      return;
     } else if (action === "clear") {
-      await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/clear-notification`, { method: "POST" });
-      notify("Review notification cleared and temporary files removed.");
+      const result = await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/clear-notification`, { method: "POST" });
+      notify(result.message);
     }
     await refreshReviewQueue();
   } catch (error) {
@@ -3217,6 +3518,16 @@ $("#settings-form").addEventListener("submit", async (event) => {
     lidarrEnabled: form.elements.namedItem("lidarrEnabled").checked,
     tvDetectionEnabled: form.elements.namedItem("tvDetectionEnabled").checked,
     tvValidationLoggingEnabled: form.elements.namedItem("tvValidationLoggingEnabled").checked,
+    storageWarningThresholdGb: values.get("storageWarningThresholdGb") === "null"
+      ? null
+      : Number(values.get("storageWarningThresholdGb")),
+    autoWarnLargeReviewQueues: form.elements.namedItem("autoWarnLargeReviewQueues").checked,
+    autoCleanTempLogsAfterDays: values.get("autoCleanTempLogsAfterDays")
+      ? Number(values.get("autoCleanTempLogsAfterDays"))
+      : null,
+    autoCleanFailedConversionsAfterDays: values.get("autoCleanFailedConversionsAfterDays")
+      ? Number(values.get("autoCleanFailedConversionsAfterDays"))
+      : null,
     tvMetadataLookupEnabled: form.elements.namedItem("tvMetadataLookupEnabled").checked,
     tvMetadataPreferredProviderId: values.get("tvMetadataPreferredProviderId"),
     tvMetadataFallbackProviderId: values.get("tvMetadataFallbackProviderId"),
@@ -3265,6 +3576,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     form.querySelectorAll(".tv-metadata-provider-clear").forEach((input) => { input.checked = false; });
     await loadTvMetadataSettings();
     $("#settings-message").textContent = "Settings saved.";
+    state.storageDashboardLastLoadedAt = 0;
     notify("Settings saved. Active jobs continue with their original settings.");
     if (patch.adminPassword) {
       $("#settings-message").textContent = "Password updated. Sign in again to continue.";
@@ -3368,6 +3680,7 @@ $("#clear-tv-metadata-cache").addEventListener("click", async () => {
   try {
     const result = await api("/api/v1/tv/metadata/cache", { method: "DELETE" });
     status.textContent = `Cleared ${result.cleared} cached entries · ${new Date(result.refreshedAt).toLocaleString()}`;
+    await refreshStorageViews();
   } catch (error) {
     status.textContent = `Cache clear failed: ${error.message}`;
   } finally {

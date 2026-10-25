@@ -370,6 +370,26 @@ test("job initialization is atomic and terminal states reject later processing t
   repositories.close();
 });
 
+test("job state machine rejects backward phase transitions including publishing to ripping", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  repositories.jobs.add("backward-transition-job", "TV disc", "backward-transition-fingerprint");
+  repositories.jobs.setStatus("backward-transition-job", "ripping", "Extracting TV episodes");
+  repositories.jobs.setStatus("backward-transition-job", "converting", "Converting extracted episodes");
+  assert.throws(
+    () => repositories.jobs.setStatus("backward-transition-job", "ripping", "Unexpected reacquisition"),
+    /Rejected invalid job state transition converting -> ripping/
+  );
+  repositories.jobs.setStatus("backward-transition-job", "publishing", "Publishing an episode");
+  assert.throws(
+    () => repositories.jobs.setStatus("backward-transition-job", "ripping", "Unexpected reacquisition"),
+    /Rejected invalid job state transition publishing -> ripping/
+  );
+  assert.equal(repositories.history.get("backward-transition-job").status, "publishing");
+  repositories.close();
+});
+
 test("active Review Centre entries are deduplicated by job and category", () => {
   const db = new Database(":memory:");
   migrateDatabase(db, defaultSettings);

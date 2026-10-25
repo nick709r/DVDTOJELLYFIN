@@ -395,6 +395,12 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.23.0
+
+- Added optical-drive capability diagnostics and more resilient cross-platform ejection with fallback methods.
+- Fixed TV match continuation so jobs resume at their current processing stage instead of restarting ripping.
+- Added ownership-validated Review Queue deletion and a Storage Manager with safe cleanup, recovery estimates, and scheduled maintenance.
+
 ### Version 1.22.0
 
 - Consolidated primary navigation around the media workflow and unified review queue.

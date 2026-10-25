@@ -102,6 +102,10 @@ export interface AppSettings {
   adminPasswordHash: string;
   tvDetectionEnabled: boolean;
   tvStagingRetentionDays: number | null;
+  storageWarningThresholdGb: 50 | 100 | 250 | 500 | null;
+  autoWarnLargeReviewQueues: boolean;
+  autoCleanTempLogsAfterDays: number | null;
+  autoCleanFailedConversionsAfterDays: number | null;
   tvValidationLoggingEnabled: boolean;
   tvMetadataLookupEnabled: boolean;
   tvMetadataPreferredProviderId: string;

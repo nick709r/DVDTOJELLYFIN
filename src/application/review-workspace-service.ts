@@ -141,7 +141,7 @@ export class ReviewWorkspaceService {
     const tracked = new Set(this.jobs.list()
       .filter((job) => /^[a-f0-9-]{36}$/i.test(job.id) && resolve(job.storagePath) === resolve(root, job.id))
       .map((job) => job.id));
-    let removed = 0;
+    let retained = 0;
     for (const entry of await readdir(root, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink() ||
         !/^[a-f0-9-]{36}$/i.test(entry.name) || tracked.has(entry.name)) continue;
@@ -153,11 +153,12 @@ export class ReviewWorkspaceService {
       if (pathRelative === ".." || pathRelative.startsWith(`..${sep}`) || isAbsolute(pathRelative)) {
         throw new Error("Orphaned review workspace resolves outside the configured root");
       }
-      await rm(path, { recursive: true, force: false });
-      removed += 1;
+      retained += 1;
     }
-    log("info", "review-recovery", "Review workspace orphan scan completed", { orphanWorkspacesRemoved: removed });
-    return removed;
+    log("info", "review-recovery", "Untracked review workspaces were retained for user review", {
+      orphanWorkspacesFound: retained
+    });
+    return retained;
   }
 
   async markPending(id: string, input: {

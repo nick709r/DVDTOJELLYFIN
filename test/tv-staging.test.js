@@ -82,7 +82,14 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
       };
     }
   };
-  const workflow = new DvdWorkflow(tvWorkflow, undefined, undefined, async (directory) => {
+  let conversions = 0;
+  const workflow = new DvdWorkflow(tvWorkflow, undefined, async (_input, target, _title, _settings, onPublishing, onProgress) => {
+    conversions += 1;
+    await writeFile(target, Buffer.alloc(2048, 11));
+    onPublishing({ name: "Test encoder", codec: "libx264", hardware: false });
+    onProgress(1);
+    return { encoder: { name: "Test encoder", codec: "libx264", hardware: false }, outputBytes: 2048 };
+  }, async (directory) => {
     await mkdir(directory, { recursive: true });
   }, jobs);
   const source = {
@@ -147,15 +154,46 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
       importedMetadata: { entityType: "series", title: "Fresh Off The Boat" }
     });
     await workflow.continueTvMatching(task.jobId);
+    task = jobs.getTvMatchingTask(task.jobId);
     assert.equal(acquisitions, 4);
     assert.equal(jobs.getTvMatchingTask(task.jobId).status, "awaiting-mapping");
     assert.equal(jobs.getJob(task.jobId).status, "review");
     assert.equal(jobs.getTvMatchingTask(task.jobId).assignments.length, 4);
+    const assignments = task.assignments.map((assignment, index) => ({
+      ...assignment,
+      confirmed: true,
+      selectedEpisodes: [{
+        seriesId: "292941",
+        seasonNumber: 3,
+        episodeNumber: index + 1
+      }]
+    }));
+    repositories.tvMatchingTasks.update(task.jobId, { assignments, status: "ready-to-publish" });
+    const mappings = assignments.map((assignment) => ({
+      trackId: assignment.trackId,
+      episodes: [...assignment.selectedEpisodes]
+    }));
+    repositories.discRecovery.update(task.fingerprint, { mappings });
+    await workflow.continueTvMatching(task.jobId, "continue-action");
+    task = jobs.getTvMatchingTask(task.jobId);
+    assert.equal(acquisitions, 4);
+    assert.equal(conversions, 4);
+    assert.equal(task.status, "completed");
+    assert.equal(jobs.getJob(task.jobId).status, "completed");
+    const timeline = repositories.history.timeline(task.jobId);
+    const lastResumeIndex = timeline.map((event) =>
+      event.message === "Resuming from preserved extracted media").lastIndexOf(true);
+    const continuationStates = timeline.slice(lastResumeIndex)
+      .filter((event) => ["ripping", "converting", "publishing", "completed"].includes(event.stage))
+      .map((event) => event.stage);
+    assert.deepEqual(continuationStates, [
+      "converting", "converting", "publishing", "publishing", "publishing", "publishing", "completed"
+    ]);
     await workflow.removeTvMatchingTask(task.jobId);
     await assert.rejects(stat(task.stagingPath), { code: "ENOENT" });
     assert.equal(jobs.getTvMatchingTask(task.jobId), undefined);
     assert.equal(database.prepare("SELECT status FROM jobs WHERE id = ?").get(task.jobId).status, "deleted");
-    assert.equal((await readdir(path.join(root, "published-tv"))).length, 0);
+    assert.equal((await readdir(path.join(root, "published-tv"))).length, 1);
     assert.equal((await readdir(path.join(root, "published-movies"))).length, 0);
     assert.equal((await readdir(path.join(root, "published-music"))).length, 0);
   } finally {

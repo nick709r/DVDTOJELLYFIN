@@ -9,6 +9,12 @@ export type TvMatchingStatus =
   | "processing"
   | "completed";
 
+export type TvMatchingContinuationSource =
+  | "automatic-ready-task"
+  | "assignment-save"
+  | "continue-action"
+  | "unmatched-removal";
+
 export interface TvMatchingEpisodeCandidate {
   episodes: readonly Episode[];
   confidence: number;

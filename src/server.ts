@@ -8,9 +8,10 @@ import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { activeJob, dailyJobStats, dbPath, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
+import { activeJob, dailyJobStats, db, dbPath, deleteJob, getSettings, jobDetails, jobStats, listJobs, saveSettings } from "./db.js";
 import { events } from "./events.js";
 import { clearDiscDiagnostics, getLiveDiscDiagnostics } from "./diagnostics.js";
+import { CapabilityService } from "./capability-service.js";
 import { cancelActiveJob } from "./job-control.js";
 import { availableEncoders } from "./encoding.js";
 import { executableAvailable } from "./executable.js";
@@ -59,16 +60,40 @@ import {
   tvStagingDirectory,
   tvStagingPathSource
 } from "./storage-paths.js";
-import { tvMatchingProgress, tvMatchingReviewStatus, type TvMatchingTask } from "./domain/tv-matching.js";
+import { tvMatchingProgress, tvMatchingReviewStatus, type TvMatchingContinuationSource, type TvMatchingTask } from "./domain/tv-matching.js";
+import { ReviewQueueCleanupService } from "./application/review-queue-cleanup-service.js";
+import {
+  StorageLifecycleService,
+  type StorageCategoryId,
+  type StorageCleanupResult
+} from "./application/storage-lifecycle-service.js";
 
 export const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? getSettings().logLevel } });
+const capabilityService = new CapabilityService(getSettings);
+const reviewQueueCleanup = new ReviewQueueCleanupService(db, getSettings);
+const storageLifecycle = new StorageLifecycleService(db, getSettings, reviewQueueCleanup);
+const storageCategoryIds = new Set<StorageCategoryId>([
+  "review-queue-data", "unmatched-tv-content", "temporary-conversion-files", "artwork-cache",
+  "metadata-cache", "orphaned-data", "staged-rips", "failed-processing-jobs", "temporary-logs"
+]);
+
+function isStorageCategoryId(value: string): value is StorageCategoryId {
+  return storageCategoryIds.has(value as StorageCategoryId);
+}
+
+export async function runStorageMaintenance(): Promise<void> {
+  await storageLifecycle.runScheduledMaintenance();
+}
+
+export async function scanReviewQueueOrphans(): Promise<void> {
+  await reviewQueueCleanup.scanOrphanedData();
+}
 interface ReviewJobActions {
   continue(id: string): Promise<void>;
   updateMetadata(id: string, patch: Readonly<Record<string, unknown>>): Promise<ReviewJob>;
-  remove(id: string): Promise<void>;
 }
 interface TvMatchingActions {
-  continue(jobId: string): Promise<void>;
+  continue(jobId: string, source?: TvMatchingContinuationSource): Promise<void>;
   remove(jobId: string): Promise<void>;
 }
 let reviewJobActions: ReviewJobActions | undefined;
@@ -558,6 +583,16 @@ app.get<{ Querystring: { jobId?: string; live?: string } }>("/api/v1/diagnostics
   };
 });
 
+app.get("/api/v1/capabilities", async () => capabilityService.getCapabilityReport());
+
+export async function validateStartupCapabilities(): Promise<void> {
+  const report = await capabilityService.getCapabilityReport();
+  app.log.info({
+    platform: report.platform,
+    checks: report.checks.map(({ id, ok, status }) => ({ id, ok, status }))
+  }, "Startup capability validation completed");
+}
+
 const classificationLimit = { rateLimit: { max: 120, timeWindow: "1 minute" } };
 
 app.get<{ Querystring: { limit?: string; offset?: string } }>("/api/v1/classification/audit", { config: classificationLimit }, async (request) => {
@@ -674,6 +709,95 @@ app.get<{ Params: { id: string } }>("/api/v1/reviews/:id", async (request, reply
   return { item, job: job ?? null };
 });
 
+app.get<{ Params: { id: string } }>("/api/v1/reviews/:id/deletion-impact", async (request, reply) => {
+  try {
+    return await reviewQueueCleanup.getDeletionImpact(request.params.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Deletion impact could not be determined";
+    return reply.code(message === "Review item was not found" ? 404 : 409).send({ error: message });
+  }
+});
+
+app.delete<{ Params: { id: string } }>("/api/v1/reviews/:id", async (request, reply) => {
+  const ownership = await reviewQueueCleanup.validateOwnership(request.params.id);
+  if (!ownership.valid) {
+    const missingItem = ownership.errors.includes("Review item was not found");
+    app.log.warn({
+      reviewId: request.params.id,
+      jobId: ownership.jobId,
+      filesDeleted: 0,
+      bytesRecovered: 0,
+      recordsDeleted: 0,
+      success: false,
+      errors: ownership.errors
+    }, "Review item deletion was rejected by ownership validation");
+    return reply.code(missingItem ? 404 : 409).send({ error: ownership.errors.join("; ") });
+  }
+  try {
+    const result = await reviewQueueCleanup.deleteReviewItem(request.params.id);
+    events.emit("status");
+    return result.success
+      ? result
+      : reply.code(500).send({ error: result.errors.join("; "), ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Review item deletion failed";
+    return reply.code(message === "Review item was not found" ? 404 : 409).send({ error: message });
+  }
+});
+
+app.get("/api/v1/review-cleanup/orphans", async () => reviewQueueCleanup.scanOrphanedData());
+app.delete("/api/v1/review-cleanup/orphans", async (_request, reply) => {
+  const result = await reviewQueueCleanup.deleteOrphanedData();
+  events.emit("status");
+  return result.success
+    ? result
+    : reply.code(500).send({ error: result.errors.join("; "), ...result });
+});
+
+app.get("/api/v1/storage/summary", async () => storageLifecycle.getStorageSummary());
+app.get("/api/v1/storage/categories", async () => ({
+  categories: await storageLifecycle.getCategoryBreakdown()
+}));
+app.get<{ Querystring: { limit?: string } }>("/api/v1/storage/largest", async (request, reply) => {
+  const requested = request.query.limit === undefined ? 10 : Number(request.query.limit);
+  if (!Number.isInteger(requested) || requested < 1 || requested > 100) {
+    return reply.code(400).send({ error: "limit must be between 1 and 100" });
+  }
+  return { items: await storageLifecycle.getLargestConsumers(requested) };
+});
+app.get("/api/v1/storage/orphans", async () => storageLifecycle.getOrphanedResources());
+app.get("/api/v1/storage/review-sizes", async () => ({
+  items: await storageLifecycle.getReviewStorageBreakdown()
+}));
+app.get<{ Params: { category: string } }>("/api/v1/storage/impact/:category", async (request, reply) => {
+  const category = request.params.category;
+  if (category !== "everything-safe" && !isStorageCategoryId(category)) {
+    return reply.code(400).send({ error: "Unknown storage category" });
+  }
+  return storageLifecycle.getCleanupImpact(category);
+});
+app.post<{ Params: { category: string }; Body: unknown }>("/api/v1/storage/cleanup/:category", async (request, reply) => {
+  const category = request.params.category;
+  if (typeof request.body !== "object" || request.body === null ||
+    Array.isArray(request.body) || (request.body as Record<string, unknown>).confirmed !== true) {
+    return reply.code(400).send({ error: "Cleanup requires explicit confirmation" });
+  }
+  let result: StorageCleanupResult;
+  if (category === "everything-safe") {
+    result = await storageLifecycle.cleanupEverythingSafe();
+  } else if (isStorageCategoryId(category)) {
+    const allowed = category;
+    if (allowed === "unmatched-tv-content" || allowed === "staged-rips") {
+      return reply.code(409).send({ error: "User media is protected from bulk cleanup" });
+    }
+    result = await storageLifecycle.cleanupCategory(allowed);
+  } else {
+    return reply.code(400).send({ error: "Unknown storage category" });
+  }
+  events.emit("status");
+  return result.success ? result : reply.code(500).send({ error: result.errors.join("; "), ...result });
+});
+
 app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/approve-process", async (request, reply) => {
   const item = repositories.reviewItems.get(request.params.id);
   if (!item) return reply.code(404).send({ error: "Review item not found" });
@@ -751,7 +875,7 @@ app.post<{ Params: { id: string } }>("/api/v1/reviews/:id/retry", async (request
 
 app.get("/api/v1/review-jobs", {
   config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
-}, async () => ({ reviewJobs: repositories.reviewJobs.list() }));
+}, async () => ({ reviewJobs: repositories.reviewJobs.list().filter((item) => item.notificationActive) }));
 
 app.get<{ Params: { id: string } }>("/api/v1/review-jobs/:id", {
   config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
@@ -805,14 +929,13 @@ app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/continue", {
   return reply.code(202).send({ reviewJob: repositories.reviewJobs.get(reviewJob.id), message: "Processing resumed from preserved media; no disc is required." });
 });
 
-async function discardReviewJob(id: string, reply: FastifyReply) {
+async function clearReviewJobNotification(id: string, reply: FastifyReply) {
   const reviewJob = repositories.reviewJobs.get(id);
   if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
   if (reviewJob.status === "retrying" || reviewJob.status === "processing") {
     return reply.code(409).send({ error: "A review job cannot be cleared while processing" });
   }
-  if (!reviewJobActions) return reply.code(503).send({ error: "Review workspace service is unavailable" });
-  await reviewJobActions.remove(reviewJob.id);
+  repositories.reviewJobs.update(reviewJob.id, { notificationActive: false });
   for (const status of ["active", "retrying"] as const) {
     for (const item of repositories.reviewItems.list({ status, limit: 1000 })) {
       if (item.relatedJobId === reviewJob.originalJobId) {
@@ -821,17 +944,35 @@ async function discardReviewJob(id: string, reply: FastifyReply) {
     }
   }
   events.emit("status");
-  return { ok: true };
+  return { ok: true, message: "Review notification cleared. Preserved media and history remain available." };
 }
 
 app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/clear-notification", {
   config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
 }, async (request, reply) =>
-  discardReviewJob(request.params.id, reply));
+  clearReviewJobNotification(request.params.id, reply));
+app.get<{ Params: { id: string } }>("/api/v1/review-jobs/:id/deletion-impact", async (request, reply) => {
+  try {
+    return await reviewQueueCleanup.getReviewJobDeletionImpact(request.params.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Deletion impact could not be determined";
+    return reply.code(message === "Review job was not found" ? 404 : 409).send({ error: message });
+  }
+});
 app.delete<{ Params: { id: string } }>("/api/v1/review-jobs/:id", {
   config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
-}, async (request, reply) =>
-  discardReviewJob(request.params.id, reply));
+}, async (request, reply) => {
+  try {
+    const result = await reviewQueueCleanup.deleteReviewJob(request.params.id);
+    events.emit("status");
+    return result.success
+      ? result
+      : reply.code(500).send({ error: result.errors.join("; "), ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Review job deletion failed";
+    return reply.code(message === "Review job was not found" ? 404 : 409).send({ error: message });
+  }
+});
 
 app.get<{ Querystring: { confidence?: string; state?: string; limit?: string; offset?: string } }>(
   "/api/v1/tv/analysis", async (request, reply) => {
@@ -1501,7 +1642,7 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/assi
       continuation = "queued";
     } else if (tvMatchingActions) {
       continuation = "started";
-      void tvMatchingActions.continue(task.jobId).catch((error: unknown) => {
+      void tvMatchingActions.continue(task.jobId, "assignment-save").catch((error: unknown) => {
         request.log.error({ err: error, jobId: task.jobId }, "Automatic TV publishing continuation failed");
       });
     } else {
@@ -1525,7 +1666,7 @@ app.post<{ Params: { id: string } }>("/api/v1/tv/matching/:id/continue", async (
   }
   if (activeJob()) return reply.code(409).send({ error: "Wait until the active disc job finishes before continuing this TV task" });
   if (!tvMatchingActions) return reply.code(503).send({ error: "TV matching service is unavailable" });
-  void tvMatchingActions.continue(task.jobId).catch((error: unknown) => {
+  void tvMatchingActions.continue(task.jobId, "continue-action").catch((error: unknown) => {
     request.log.error({ err: error, jobId: task.jobId }, "TV matching continuation failed");
   });
   return reply.code(202).send({ accepted: true, jobId: task.jobId });
@@ -1579,7 +1720,7 @@ app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/u
   let continuation: "queued" | "started" = "queued";
   if (!activeJob() && tvMatchingActions) {
     continuation = "started";
-    void tvMatchingActions.continue(task.jobId).catch((error: unknown) => {
+    void tvMatchingActions.continue(task.jobId, "unmatched-removal").catch((error: unknown) => {
       request.log.error({ err: error, jobId: task.jobId }, "Automatic TV publishing continuation failed after track removal");
     });
   }
@@ -2110,6 +2251,21 @@ function createTvPathReview(path: string, failure: string): void {
 
 async function checkOpticalDevice(path: string): Promise<PathCheck> {
   try {
+    if (process.platform === "win32") {
+      const letter = path.trim().match(/^([a-z]):\\?$/i)?.[1]?.toUpperCase();
+      if (!letter) throw new Error("Optical drive must be a Windows drive letter such as D:");
+      const powershell = await executableAvailable("powershell.exe") ? "powershell.exe" :
+        await executableAvailable("pwsh.exe") ? "pwsh.exe" : null;
+      if (!powershell) throw new Error("PowerShell is required to verify Windows optical drives");
+      const result = await runProcess(powershell, [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `$ErrorActionPreference='Stop'; Get-CimInstance -ClassName Win32_CDROMDrive | Where-Object { $_.Drive -eq '${letter}:' } | ForEach-Object { $_.Drive }`
+      ], { timeoutMs: 10_000 });
+      if (!result.stdout.split(/\r?\n/).some((drive) => drive.trim().toUpperCase() === `${letter}:`)) {
+        throw new Error(`Windows did not enumerate optical drive ${letter}:`);
+      }
+      return { name: "Optical drive", path, ok: true, message: "Windows enumerated the configured optical drive" };
+    }
     if (typeof path !== "string" || !/^\/dev\/[a-zA-Z0-9._/-]+$/.test(path) ||
       path.split("/").some((segment) => segment === "." || segment === "..")) {
       throw new Error("Optical drive must be a valid /dev path");
@@ -2488,9 +2644,12 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
     patch.tvStagingDir = stagingPath;
   }
   if ("opticalDevice" in body) {
-    if (typeof body.opticalDevice !== "string" ||
-      !/^\/dev\/[a-zA-Z0-9._/-]+$/.test(body.opticalDevice) ||
-      body.opticalDevice.split("/").some((segment) => segment === "." || segment === "..")) {
+    if (typeof body.opticalDevice !== "string") return reply.code(400).send({ error: "Invalid optical device path" });
+    const validDevice = process.platform === "win32"
+      ? /^[a-z]:\\?$/i.test(body.opticalDevice)
+      : /^\/dev\/[a-zA-Z0-9._/-]+$/.test(body.opticalDevice) &&
+        !body.opticalDevice.split("/").some((segment) => segment === "." || segment === "..");
+    if (!validDevice) {
       return reply.code(400).send({ error: "Invalid optical device path" });
     }
     patch.opticalDevice = body.opticalDevice;
@@ -2537,6 +2696,33 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "TV staging retention must be Never Delete or an integer from 1 to 3650 days" });
     }
     patch.tvStagingRetentionDays = value === null ? null : Number(value);
+  }
+  if ("storageWarningThresholdGb" in body) {
+    const value = body.storageWarningThresholdGb;
+    if (value !== null && value !== 50 && value !== 100 && value !== 250 && value !== 500) {
+      return reply.code(400).send({ error: "Storage warning threshold must be disabled, 50, 100, 250, or 500 GB" });
+    }
+    patch.storageWarningThresholdGb = value;
+  }
+  if ("autoWarnLargeReviewQueues" in body) {
+    if (typeof body.autoWarnLargeReviewQueues !== "boolean") {
+      return reply.code(400).send({ error: "autoWarnLargeReviewQueues must be a boolean" });
+    }
+    patch.autoWarnLargeReviewQueues = body.autoWarnLargeReviewQueues;
+  }
+  if ("autoCleanTempLogsAfterDays" in body) {
+    const value = body.autoCleanTempLogsAfterDays;
+    if (value !== null && (!Number.isInteger(value) || Number(value) < 1 || Number(value) > 3650)) {
+      return reply.code(400).send({ error: "Temporary log retention must be disabled or between 1 and 3650 days" });
+    }
+    patch.autoCleanTempLogsAfterDays = value === null ? null : Number(value);
+  }
+  if ("autoCleanFailedConversionsAfterDays" in body) {
+    const value = body.autoCleanFailedConversionsAfterDays;
+    if (value !== null && (!Number.isInteger(value) || Number(value) < 1 || Number(value) > 3650)) {
+      return reply.code(400).send({ error: "Failed conversion retention must be disabled or between 1 and 3650 days" });
+    }
+    patch.autoCleanFailedConversionsAfterDays = value === null ? null : Number(value);
   }
   if ("tvValidationLoggingEnabled" in body) {
     if (typeof body.tvValidationLoggingEnabled !== "boolean") return reply.code(400).send({ error: "tvValidationLoggingEnabled must be a boolean" });

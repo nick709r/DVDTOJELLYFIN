@@ -9,7 +9,7 @@ import { defaultSettings } from "../dist/infrastructure/database/default-setting
 import { migrateDatabase } from "../dist/infrastructure/database/migrations.js";
 import { createSqliteRepositories } from "../dist/infrastructure/database/repositories.js";
 
-test("review workspace preserves verified media, persists review metadata, and cleans up safely", async () => {
+test("review workspace preserves verified media, persists review metadata, and retains untracked data for review", async () => {
   const root = await mkdtemp(join(tmpdir(), "dvd-review-"));
   const db = new Database(":memory:");
   migrateDatabase(db, defaultSettings);
@@ -51,7 +51,7 @@ test("review workspace preserves verified media, persists review metadata, and c
   const orphanPath = join(root, "reviews", orphanId);
   await mkdir(orphanPath);
   assert.equal(await workspaces.recoverOrphanedWorkspaces(root), 1);
-  await assert.rejects(stat(orphanPath));
+  await assert.doesNotReject(stat(orphanPath));
   await assert.doesNotReject(stat(created.job.storagePath));
 
   await workspaces.remove(jobId);

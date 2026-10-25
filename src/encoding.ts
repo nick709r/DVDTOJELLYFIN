@@ -111,13 +111,14 @@ export async function convert(
   settings: AppSettings,
   onPublishing: (encoder: EncoderResult) => void,
   onProgress: (fraction: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  jobId?: string
 ): Promise<{ encoder: EncoderResult; outputBytes: number }> {
   const duration = await mediaDuration(input, signal);
   const encoder = await selectEncoder(settings.encoder, signal);
   const temporary = join(
     dirname(target),
-    `.autodisc-${randomUUID()}${extname(target)}`
+    `.autodisc-${jobId ? `${jobId}-` : ""}${randomUUID()}${extname(target)}`
   );
   await mkdir(dirname(target), { recursive: true });
   const argsFor = (selected: EncoderResult): string[] => [

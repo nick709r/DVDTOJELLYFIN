@@ -9,7 +9,7 @@ import { migrateDatabase } from "../dist/infrastructure/database/migrations.js";
 import { createSqliteRepositories } from "../dist/infrastructure/database/repositories.js";
 import { recoverTemporaryFiles } from "../dist/recovery.js";
 
-test("startup reconciliation fails stranded interruptions and removes only unowned temporary directories", async () => {
+test("startup reconciliation fails stranded interruptions and retains untracked temporary data", async () => {
   const root = await mkdtemp(join(tmpdir(), "autodisc-recovery-"));
   const workDir = join(root, "work");
   const moviesDir = join(root, "movies");
@@ -55,9 +55,9 @@ test("startup reconciliation fails stranded interruptions and removes only unown
   assert.match(repositories.history.get(knownJobId).error, /recovery failed/i);
   assert.equal(repositories.reviewItems.list({ status: "active" }).length, 1);
   await assert.rejects(stat(join(workDir, knownJobId)));
-  await assert.rejects(stat(join(workDir, orphanId)));
+  await assert.doesNotReject(stat(join(workDir, orphanId)));
   await assert.rejects(stat(interruptedPartial));
-  await assert.rejects(stat(abandonedPartial));
+  await assert.doesNotReject(stat(abandonedPartial));
   await assert.doesNotReject(stat(join(moviesDir, "Published Movie.mkv")));
   await recoverTemporaryFiles(repositories);
   await assert.rejects(stat(join(workDir, knownJobId)));

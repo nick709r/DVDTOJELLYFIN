@@ -28,7 +28,7 @@ import type { ReviewWorkspaceService } from "../../application/review-workspace-
 import type { JobContext, JobCoordinator } from "../../application/job-coordinator.js";
 import type { DiscRecovery, EpisodeMapping } from "../../domain/disc-recovery.js";
 import type { TvSavedIdentification } from "../../domain/tv-identification.js";
-import { tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingTask } from "../../domain/tv-matching.js";
+import { tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingContinuationSource, type TvMatchingTask } from "../../domain/tv-matching.js";
 import { outputPath } from "../../output-destinations.js";
 import { pathsOverlap, tvStagingConflictMessage, tvStagingConflicts, tvStagingDirectory } from "../../storage-paths.js";
 import { normalizeDiscName } from "../../application/tv-name-normalization.js";
@@ -111,6 +111,21 @@ function matchingAssignments(result: Awaited<ReturnType<TvWorkflowService["prepa
   });
 }
 
+function logTvContinuationState(
+  jobs: JobCoordinator,
+  jobId: string,
+  requestedState: "ripping" | "converting" | "publishing",
+  source: TvMatchingContinuationSource | undefined
+): void {
+  if (!source) return;
+  log("info", "tv-matching", "TV Match Continue", {
+    jobId,
+    currentState: jobs.getJob(jobId)?.status ?? "missing",
+    requestedState,
+    source
+  });
+}
+
 async function assertWritableDirectory(path: string, reserveBytes: number): Promise<void> {
   await mkdir(path, { recursive: true });
   await access(path, constants.R_OK | constants.W_OK | constants.X_OK);
@@ -154,7 +169,8 @@ async function processMappedTvEpisodes(
     converter: typeof convert,
     ensureWritable: typeof assertWritableDirectory,
     stagedFiles?: Readonly<Record<string, string>>,
-    beforeComplete?: () => Promise<void>
+    beforeComplete?: () => Promise<void>,
+    continuationSource?: TvMatchingContinuationSource
   ): Promise<void> {
     const { source, sources, jobs, signal, devicePath } = workflow;
     const settings = jobs.getSettings();
@@ -217,8 +233,7 @@ async function processMappedTvEpisodes(
           }
         });
       }
-      for (const [index, { item, mapping }] of selected.entries()) {
-        job.throwIfCancelled();
+      const prepared = selected.map(({ item, mapping }) => {
         const baseName = episodeOutputName(seriesName, mapping,
           libraryTemplate(metadataSettings, "episodeFileTemplate"));
         const seasonNumber = mapping.episodes[0]?.seasonNumber;
@@ -228,6 +243,57 @@ async function processMappedTvEpisodes(
           Season: seasonNumber
         });
         const seasonDir = join(seriesDir, seasonName);
+        return {
+          item,
+          mapping,
+          baseName,
+          seasonNumber,
+          seasonDir,
+          targetPath: join(seasonDir, `${baseName}.${settings.format}`)
+        };
+      });
+      for (const { item, targetPath } of prepared) {
+        const collision = await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        });
+        if (collision) throw new Error(`Episode output already exists and was not overwritten: ${targetPath}`);
+      }
+      const inputs = new Map<string, string>();
+      for (const [index, { item }] of prepared.entries()) {
+        job.throwIfCancelled();
+        let input = stagedFiles?.[item.id];
+        if (stagedFiles && !input) {
+          throw new Error(`Staged video for TV disc track ${item.id} is unavailable`);
+        }
+        if (!input) {
+          if (!sources || !workflow.sourceProvider) {
+            throw new Error(`Staged video for TV disc track ${item.id} is unavailable`);
+          }
+          logTvContinuationState(jobs, job.id, "ripping", continuationSource);
+          jobs.step(job, {
+            id: `acquire-tv-${item.id}`,
+            status: "ripping",
+            message: `Ripping TV disc track ${item.id} (${index + 1} of ${prepared.length})`
+          });
+          const trackWorkDir = join(workDir, `track-${safeTitle(item.id)}`);
+          await mkdir(trackWorkDir, { recursive: true, mode: 0o750 });
+          const acquired = await sources.acquire(workflow.sourceProvider, trackWorkDir, {
+            selection: { manifestItemId: item.id }
+          }, signal);
+          input = acquired.artifacts.find((artifact) => artifact.kind === "video")?.path;
+        }
+        if (!input) throw new Error(`Source provider ${info.providerId} returned no video artifact for track ${item.id}`);
+        inputs.set(item.id, input);
+      }
+      logTvContinuationState(jobs, job.id, "converting", continuationSource);
+      jobs.step(job, {
+        id: "convert-tv-episodes",
+        status: "converting",
+        message: "Converting mapped TV episodes"
+      });
+      for (const [index, { item, mapping, baseName, seasonNumber, seasonDir, targetPath }] of prepared.entries()) {
+        job.throwIfCancelled();
         await mkdir(seasonDir, { recursive: true, mode: 0o750 });
         if (metadataSettings.automaticImport && metadataSettings.downloadSeriesMetadata) {
           metadataTasks.push(async () => {
@@ -257,31 +323,17 @@ async function processMappedTvEpisodes(
             }
           });
         }
-        const targetPath = join(seasonDir, `${baseName}.${settings.format}`);
         const collision = await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return false;
           throw error;
         });
         if (collision) throw new Error(`Episode output already exists and was not overwritten: ${targetPath}`);
 
-        jobs.step(job, {
-          id: `acquire-tv-${item.id}`,
-          status: "ripping",
-          message: `Ripping TV disc track ${item.id} (${index + 1} of ${selected.length})`
-        });
-        const trackWorkDir = join(workDir, `track-${safeTitle(item.id)}`);
-        await mkdir(trackWorkDir, { recursive: true, mode: 0o750 });
-        let input = stagedFiles?.[item.id];
-        if (!input) {
-          if (!sources || !workflow.sourceProvider) throw new Error(`Staged video for TV disc track ${item.id} is unavailable`);
-          const acquired = await sources.acquire(workflow.sourceProvider, trackWorkDir, {
-            selection: { manifestItemId: item.id }
-          }, signal);
-          input = acquired.artifacts.find((artifact) => artifact.kind === "video")?.path;
-        }
+        const input = inputs.get(item.id);
         if (!input) throw new Error(`Source provider ${info.providerId} returned no video artifact for track ${item.id}`);
         const conversionStart = Date.now();
         const encoded = await converter(input, targetPath, baseName, settings, (encoder) => {
+          logTvContinuationState(jobs, job.id, "publishing", continuationSource);
           jobs.step(job, {
             id: `publish-tv-${item.id}`,
             status: "publishing",
@@ -735,9 +787,13 @@ async function processMappedTvEpisodes(
     }
   }
 
-  async continueTvMatching(jobId: string): Promise<void> {
+  async continueTvMatching(
+    jobId: string,
+    source: TvMatchingContinuationSource = "continue-action"
+  ): Promise<void> {
     const jobs = this.matchingJobs;
     if (!jobs || !this.tvWorkflow) throw new Error("TV matching service is unavailable");
+    logTvContinuationState(jobs, jobId, "converting", source);
     const task = jobs.getTvMatchingTask(jobId);
     if (!task) throw new Error("TV matching task was not found");
     if (task.status === "processing" || task.status === "completed") {
@@ -844,7 +900,7 @@ async function processMappedTvEpisodes(
         if (!jobs.updateTvMatchingTask(task.jobId, { status: "completed", failure: null })) {
           throw new Error("TV matching task could not be marked completed");
         }
-      });
+      }, source);
       setRuntimeStatus("completed");
     } catch (error) {
       const message = error instanceof Error ? error.message : "TV matching continuation failed";

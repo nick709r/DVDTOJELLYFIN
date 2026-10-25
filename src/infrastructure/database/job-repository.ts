@@ -5,15 +5,14 @@ import type { SqliteEventRepository } from "./event-repository.js";
 import type { ClassificationAuditRepository } from "../../domain/classification.js";
 import { log } from "../../logger.js";
 
-const allowedTransitions: Record<string, readonly JobStatus[]> = {
+const allowedTransitions: Partial<Record<JobStatus, readonly JobStatus[]>> = {
   inspecting: ["ripping", "converting", "publishing", "review", "awaiting-identification", "completed", "failed", "cancelled", "interrupted", "ignored"],
   ripping: ["converting", "publishing", "review", "awaiting-identification", "completed", "failed", "cancelled", "interrupted"],
-  converting: ["ripping", "publishing", "review", "awaiting-identification", "completed", "failed", "cancelled", "interrupted"],
+  converting: ["publishing", "review", "awaiting-identification", "completed", "failed", "cancelled", "interrupted"],
   publishing: ["review", "completed", "failed", "cancelled", "interrupted"],
   review: ["converting", "failed", "cancelled", "interrupted"],
   "awaiting-identification": ["converting", "review", "failed", "cancelled", "interrupted"],
   failed: ["converting"],
-  cancelled: ["converting"],
   interrupted: ["converting", "review", "completed", "failed", "cancelled"]
 };
 
@@ -71,7 +70,7 @@ export class SqliteJobRepository implements JobRepository {
     this.db.prepare(`UPDATE jobs SET ${columns.join(", ")} WHERE id = ?`).run(...values);
   }
 
-  finish(id: string, status: "review" | "awaiting-identification" | "completed" | "failed" | "cancelled" | "interrupted" | "deleted", error: string | null, fingerprint?: string): void {
+  finish(id: string, status: "review" | "awaiting-identification" | "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void {
     const now = new Date().toISOString();
     const finish = this.db.transaction(() => {
       this.assertTransition(id, status);

@@ -11,7 +11,7 @@ const partialOutput = new RegExp(`^\\.autodisc-(${uuid})\\.(mp4|mkv)$`, "i");
 const partialAlbumDirectory = new RegExp(`^\\.autodisc-(${uuid})$`, "i");
 
 function cleanableJob(status: string | undefined): boolean {
-  return status === undefined ||
+  return status !== undefined &&
     ["completed", "failed", "cancelled", "ignored", "deleted"].includes(status);
 }
 

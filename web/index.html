@@ -28,7 +28,8 @@
         <details class="nav-group">
           <summary>Storage</summary>
           <button class="nav-link" data-page="diagnostics">Paths &amp; Diagnostics</button>
-          <button class="nav-link" data-page="settings" data-scroll="#storage-output-card">Storage &amp; Output</button>
+          <button class="nav-link" data-page="settings" data-scroll="#storage-output-card">Paths &amp; Output</button>
+          <button class="nav-link" data-page="storage-manager">Storage Manager</button>
         </details>
         <details class="nav-group">
           <summary>Settings</summary>
@@ -64,6 +65,21 @@
           <article class="card stat"><span class="muted">Failed Identifications</span><strong id="dashboard-failed-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#review-list">Fix failed items</button></article>
           <article class="card stat"><span class="muted">Recent Activity</span><strong id="dashboard-activity-count">0</strong><button class="text-button" data-page="history">View activity</button></article>
         </div>
+        <article id="dashboard-storage-warning" class="card storage-warning hidden" role="alert">
+          <div><p class="eyebrow">STORAGE ATTENTION</p><h2>Review Queue storage is above its warning threshold</h2>
+            <p id="dashboard-storage-warning-message" class="muted"></p></div>
+          <div id="dashboard-storage-warning-items" class="storage-warning-items"></div>
+          <div class="dashboard-quick-actions">
+            <button class="button secondary" data-page="storage-manager">View Storage Manager</button>
+            <button class="button danger" data-storage-cleanup="review-queue-data">Clean Now</button>
+          </div>
+        </article>
+        <article class="card dashboard-storage-card">
+          <div class="card-heading"><div><p class="eyebrow">STORAGE</p><h2>Application storage</h2></div>
+            <button class="text-button" data-page="storage-manager">Manage storage →</button></div>
+          <div id="dashboard-storage-summary" class="storage-summary-grid"></div>
+          <div id="dashboard-storage-breakdown" class="storage-breakdown"></div>
+        </article>
         <div class="dashboard-grid">
           <article class="card current-card">
             <div class="card-heading"><div><p class="eyebrow">LIVE JOB</p><h2 id="job-title">Waiting for a DVD</h2></div><span id="job-badge" class="badge idle">Idle</span></div>
@@ -109,6 +125,12 @@
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">LIBRARY</p><h2>Conversion history</h2></div><button id="refresh-history" class="button secondary">Refresh</button></div><div id="history-list"></div></article>
       </section>
       <section id="page-diagnostics" class="page hidden">
+        <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">SYSTEM ACCESS</p><h2>System Capabilities</h2></div>
+            <button id="refresh-capabilities" class="button secondary" type="button">Refresh checks</button></div>
+          <p id="capability-platform" class="hint">Checking operating system capabilities…</p>
+          <div id="capability-report" class="diagnostic-criteria" aria-live="polite"></div>
+        </article>
         <article class="card table-card">
           <div class="card-heading"><div><p class="eyebrow">LIVE INSPECTION</p><h2>Disc Diagnostics</h2></div>
             <div class="diagnostics-controls"><label for="diagnostics-job">Disc or job</label><select id="diagnostics-job"></select><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button><button id="forget-diagnostics-disc" class="button danger" type="button">Forget Disc</button></div>
@@ -192,6 +214,7 @@
             </div>
             <div id="tv-review-list"></div>
           </section>
+          <div id="orphaned-data"></div>
           <div id="review-summary" class="tv-stat-grid"></div>
           <div class="review-filters">
             <label>Category<select id="review-category"><option value="">All categories</option><option value="tv_review">TV review</option><option value="cd_review">CD review</option><option value="metadata_issue">Metadata</option><option value="processing_failure">Processing failure</option><option value="folder_creation_failure">Folder creation</option><option value="disc_read_error">Disc read error</option><option value="validation_warning">Validation warning</option><option value="configuration_issue">Configuration</option><option value="system_warning">System warning</option></select></label>
@@ -281,6 +304,22 @@
             <p class="hint">TV DVDs publish only after you save explicit series metadata and track-to-episode mappings in Review Centre.</p>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>TV Staging Directory<input name="tvStagingDir" placeholder="Leave blank to derive from Work Directory"></label>
+            <h3>Storage maintenance</h3>
+            <div class="form-row">
+              <label>Review Queue warning threshold
+                <select name="storageWarningThresholdGb">
+                  <option value="50">50 GB</option><option value="100">100 GB</option>
+                  <option value="250">250 GB</option><option value="500">500 GB</option>
+                  <option value="null">Disabled</option>
+                </select>
+              </label>
+              <label class="check-row"><input name="autoWarnLargeReviewQueues" type="checkbox"> Warn when the Review Queue exceeds the threshold</label>
+            </div>
+            <div class="form-row">
+              <label>Automatically clean temporary logs after (days)<input name="autoCleanTempLogsAfterDays" type="number" min="1" max="3650" placeholder="Disabled"></label>
+              <label>Automatically clean failed conversion temp files after (days)<input name="autoCleanFailedConversionsAfterDays" type="number" min="1" max="3650" placeholder="Disabled"></label>
+            </div>
+            <p class="hint">Automatic maintenance never deletes review items, unmatched TV content, staged rips, published media, or job history. Leave an age blank to disable that cleanup.</p>
             <p id="tv-staging-path-source" class="hint">Leave blank to use a folder under the Work Directory.</p>
             <section class="path-check-list" aria-live="polite">
               <h3>TV staging path validation</h3>
@@ -408,6 +447,31 @@
           <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>
         </form>
       </section>
+      <section id="page-storage-manager" class="page hidden">
+        <article class="card storage-overview-card">
+          <div class="card-heading"><div><p class="eyebrow">STORAGE LIFECYCLE</p><h2>Storage overview</h2></div>
+            <button class="button danger" data-storage-cleanup="everything-safe">Clean Everything Safe</button></div>
+          <div id="storage-manager-summary" class="storage-summary-grid"></div>
+          <div id="storage-manager-breakdown" class="storage-breakdown"></div>
+          <p class="hint">Published media, Jellyfin/Arr libraries, active processing files, and shared resources are protected from cleanup.</p>
+        </article>
+        <article class="card storage-categories-card">
+          <div class="card-heading"><div><p class="eyebrow">CATEGORY BREAKDOWN</p><h2>Storage categories</h2></div>
+            <button id="storage-manager-refresh" class="button secondary">Refresh</button></div>
+          <div id="storage-category-list" class="storage-category-list"></div>
+        </article>
+        <article class="card storage-orphans-card">
+          <div class="card-heading"><div><p class="eyebrow">OWNERSHIP SCAN</p><h2>Orphaned data</h2>
+            <p id="storage-orphan-summary" class="muted">Checking untracked AutoDisc workspaces…</p></div>
+            <button class="button danger" data-storage-cleanup="orphaned-data">Clean Orphaned Data</button></div>
+          <div id="storage-orphan-list"></div>
+        </article>
+        <article class="card storage-largest-card">
+          <div class="card-heading"><div><p class="eyebrow">SPACE USAGE</p><h2>Largest consumers</h2></div></div>
+          <div id="storage-largest-list"></div>
+        </article>
+        <p id="storage-cleanup-result" class="inline-info" role="status"></p>
+      </section>
     </main>
     <dialog id="login-dialog">
       <form id="login-form" method="dialog">
@@ -527,6 +591,43 @@
         <div class="metadata-actions">
           <button id="tv-unmatched-delete-cancel" class="button secondary" type="button">Keep tracks</button>
           <button id="tv-unmatched-delete-confirm" class="button danger" type="button">Delete unmatched tracks</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="review-delete-dialog">
+      <div class="delete-confirmation">
+        <h2>Delete Review Item</h2>
+        <p>This will permanently delete the review item and all associated temporary files, staged media, metadata caches, artwork, fingerprints, and processing history.</p>
+        <p>Shared provider caches, shared fingerprints, and published media are protected.</p>
+        <p><strong>This action cannot be undone.</strong></p>
+        <p id="review-delete-impact" class="hint"></p>
+        <div class="metadata-actions">
+          <button id="review-delete-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="review-delete-confirm" class="button danger" type="button">Delete Everything</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="orphan-cleanup-dialog">
+      <div class="delete-confirmation">
+        <h2>Clean Up Orphaned Data</h2>
+        <p>These temporary directories are not associated with a known job or review workspace. Their contents will be permanently deleted.</p>
+        <p id="orphan-cleanup-impact" class="hint"></p>
+        <p><strong>Published media and shared metadata caches are not included.</strong></p>
+        <div class="metadata-actions">
+          <button id="orphan-cleanup-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="orphan-cleanup-confirm" class="button danger" type="button">Delete Orphaned Data</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="storage-cleanup-dialog">
+      <div class="delete-confirmation">
+        <p class="eyebrow">STORAGE MANAGER</p><h2 id="storage-cleanup-title">Confirm storage cleanup</h2>
+        <p id="storage-cleanup-summary"></p>
+        <p id="storage-cleanup-impact" class="hint"></p>
+        <p><strong>Published media, active processing files, and job history are protected.</strong></p>
+        <div class="metadata-actions">
+          <button id="storage-cleanup-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="storage-cleanup-confirm" class="button danger" type="button">Clean Now</button>
         </div>
       </div>
     </dialog>

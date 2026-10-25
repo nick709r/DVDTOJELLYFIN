@@ -24,6 +24,16 @@ export class ProcessFailure extends Error {
   }
 }
 
+const managedProcesses = new Set<ChildProcess>();
+
+export async function waitForManagedProcesses(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (managedProcesses.size > 0 && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  return managedProcesses.size === 0;
+}
+
 export function runProcess(
   command: string,
   args: string[],
@@ -40,6 +50,7 @@ export function runProcess(
       env: process.env,
       ...(options.cwd ? { cwd: options.cwd } : {})
     });
+    managedProcesses.add(child);
     let stdout = "";
     let stderr = "";
     let pendingLine = "";
@@ -75,6 +86,7 @@ export function runProcess(
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
+      managedProcesses.delete(child);
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", onAbort);
       reject(new ProcessFailure(error.message, command, null, stderr));
@@ -82,6 +94,7 @@ export function runProcess(
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
+      managedProcesses.delete(child);
       clearTimeout(timeout);
       options.signal?.removeEventListener("abort", onAbort);
       if (pendingLine && options.onStdoutLine) options.onStdoutLine(pendingLine);

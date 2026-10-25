@@ -33,7 +33,7 @@ export interface JobRepository {
   add(id: string, label: string | null, fingerprint?: string | null, mediaKind?: string): void;
   setStatus(id: string, status: JobStatus, message: string): void;
   update(id: string, patch: Partial<Pick<Job, "title" | "outputPath" | "encoder" | "outputBytes" | "progress" | "conversionSeconds">>): void;
-  finish(id: string, status: "review" | "awaiting-identification" | "completed" | "failed" | "cancelled" | "interrupted" | "deleted", error: string | null, fingerprint?: string): void;
+  finish(id: string, status: "review" | "awaiting-identification" | "completed" | "failed" | "cancelled" | "interrupted", error: string | null, fingerprint?: string): void;
   active(): Job | null;
   addWarning(id: string, message: string): void;
 }
