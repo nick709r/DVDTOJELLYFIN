@@ -248,7 +248,11 @@
       <section id="page-settings" class="page hidden">
         <form id="settings-form" class="settings-layout">
           <article class="card settings-card update-card"><p class="eyebrow">SOFTWARE</p><h2>AutoDisc updates</h2>
-            <p id="update-version" class="inline-info">Checking installed version…</p>
+            <p id="update-version" class="inline-info">Current version: checking…</p>
+            <p id="update-target-version" class="inline-info">Target version: none</p>
+            <p id="update-download-state" class="inline-info">Download state: not started</p>
+            <p id="update-install-state" class="inline-info">Install state: not started</p>
+            <p id="update-last-error" class="inline-info hidden" role="alert"></p>
             <button id="check-updates" class="button secondary" type="button">Check for updates</button>
             <p id="update-status" class="inline-info" role="status">Updates are checked only when you click the button. A newer version is applied automatically.</p>
             <section class="release-notes" aria-live="polite">

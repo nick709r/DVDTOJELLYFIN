@@ -7,14 +7,28 @@ const repository = "nick709r/DVDTOJELLYFIN";
 const updateDirectory = process.env.AUTODISC_UPDATE_DIRECTORY ?? "/var/lib/autodisc/updater";
 const updateRequestPath = process.env.AUTODISC_UPDATE_REQUEST_PATH ?? join(updateDirectory, "request");
 const updateStatusPath = process.env.AUTODISC_UPDATE_STATUS_PATH ?? join(updateDirectory, "status");
+const updateDiagnosticsPath = process.env.AUTODISC_UPDATE_DIAGNOSTICS_PATH ?? join(updateDirectory, "diagnostics.json");
 const helperUnitPath = process.env.AUTODISC_UPDATE_UNIT_PATH ?? "/etc/systemd/system/autodisc-update.path";
 
 export type UpdateStatus = "idle" | "applying" | "success" | "failed";
+export type UpdatePhaseState = "not_started" | "in_progress" | "completed" | "failed";
+export type UpdateVerificationState = "not_started" | "pending" | "succeeded" | "failed";
 
 export interface UpdateCheck {
   currentVersion: string;
   latestVersion: string;
   updateAvailable: boolean;
+  assetSelected: string;
+}
+
+export interface UpdateDiagnostics {
+  targetVersion: string | null;
+  releaseFound: boolean | null;
+  assetSelected: string | null;
+  downloadState: UpdatePhaseState;
+  installState: UpdatePhaseState;
+  verificationState: UpdateVerificationState;
+  lastError: string | null;
 }
 
 export interface ReleaseNotes {
@@ -25,6 +39,17 @@ export interface ReleaseNotes {
 }
 
 let pending = false;
+let installedVersionPromise: Promise<string> | undefined;
+
+const emptyDiagnostics: UpdateDiagnostics = {
+  targetVersion: null,
+  releaseFound: null,
+  assetSelected: null,
+  downloadState: "not_started",
+  installState: "not_started",
+  verificationState: "not_started",
+  lastError: null
+};
 
 function versionParts(version: string): bigint[] | null {
   const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
@@ -44,13 +69,24 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-export async function getInstalledVersion(): Promise<string> {
+async function readInstalledVersion(): Promise<string> {
   const packagePath = join(dirname(fileURLToPath(import.meta.url)), "../package.json");
   const manifest = JSON.parse(await readFile(packagePath, "utf8")) as { version?: unknown };
   if (typeof manifest.version !== "string" || !versionParts(manifest.version)) {
     throw new Error("The installed AutoDisc version is invalid");
   }
   return manifest.version;
+}
+
+export function getInstalledVersion(): Promise<string> {
+  installedVersionPromise ??= readInstalledVersion();
+  return installedVersionPromise;
+}
+
+export function getUpdateAssetUrl(version: string): string {
+  const tag = version.startsWith("v") ? version : `v${version}`;
+  if (!versionParts(tag)) throw new Error("Invalid AutoDisc update version");
+  return `https://github.com/${repository}/archive/refs/tags/${encodeURIComponent(tag)}.tar.gz`;
 }
 
 export async function checkForUpdate(fetcher: typeof fetch = fetch): Promise<UpdateCheck> {
@@ -79,7 +115,8 @@ export async function checkForUpdate(fetcher: typeof fetch = fetch): Promise<Upd
   return {
     currentVersion: installedVersion,
     latestVersion,
-    updateAvailable: compareVersions(latestVersion, installedVersion) > 0
+    updateAvailable: compareVersions(latestVersion, installedVersion) > 0,
+    assetSelected: getUpdateAssetUrl(latestVersion)
   };
 }
 
@@ -154,6 +191,63 @@ export async function getReleaseNotes(
       releaseNotesMessage: `Could not load release notes from GitHub: ${error instanceof Error ? error.message : "network request failed"}`
     };
   }
+}
+
+function isUpdateDiagnostics(value: unknown): value is UpdateDiagnostics {
+  if (typeof value !== "object" || value === null) return false;
+  const diagnostics = value as Record<string, unknown>;
+  return (typeof diagnostics.targetVersion === "string" || diagnostics.targetVersion === null) &&
+    (typeof diagnostics.releaseFound === "boolean" || diagnostics.releaseFound === null) &&
+    (typeof diagnostics.assetSelected === "string" || diagnostics.assetSelected === null) &&
+    ["not_started", "in_progress", "completed", "failed"].includes(String(diagnostics.downloadState)) &&
+    ["not_started", "in_progress", "completed", "failed"].includes(String(diagnostics.installState)) &&
+    ["not_started", "pending", "succeeded", "failed"].includes(String(diagnostics.verificationState)) &&
+    (typeof diagnostics.lastError === "string" || diagnostics.lastError === null);
+}
+
+export async function getUpdateDiagnostics(): Promise<UpdateDiagnostics> {
+  try {
+    const diagnostics: unknown = JSON.parse(await readFile(updateDiagnosticsPath, "utf8"));
+    if (!isUpdateDiagnostics(diagnostics)) throw new Error("The system updater returned invalid diagnostics");
+    return diagnostics;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...emptyDiagnostics };
+    throw error;
+  }
+}
+
+async function writeUpdateDiagnostics(diagnostics: UpdateDiagnostics): Promise<void> {
+  const temporaryPath = `${updateDiagnosticsPath}.${randomUUID()}.tmp`;
+  const file = await open(temporaryPath, "wx", 0o600);
+  try {
+    await file.writeFile(`${JSON.stringify(diagnostics)}\n`, "utf8");
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  try {
+    await rename(temporaryPath, updateDiagnosticsPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch((cleanupError: NodeJS.ErrnoException) => {
+      if (cleanupError.code !== "ENOENT") throw new AggregateError([error, cleanupError], "Could not clean up update diagnostics");
+    });
+    throw error;
+  }
+}
+
+export async function verifyRunningVersion(currentVersion: string): Promise<UpdateDiagnostics> {
+  const diagnostics = await getUpdateDiagnostics();
+  if (!diagnostics.targetVersion || diagnostics.verificationState !== "pending") return diagnostics;
+
+  const targetVersion = diagnostics.targetVersion.replace(/^v/, "");
+  const verified = currentVersion === targetVersion;
+  const result: UpdateDiagnostics = {
+    ...diagnostics,
+    verificationState: verified ? "succeeded" : "failed",
+    lastError: verified ? null : `Running version ${currentVersion} does not match requested version ${diagnostics.targetVersion}`
+  };
+  await writeUpdateDiagnostics(result);
+  return result;
 }
 
 export async function queueUpdate(version: string): Promise<void> {

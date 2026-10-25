@@ -9,6 +9,7 @@ BUILD_DIR=
 UPDATE_DIR=/var/lib/autodisc/updater
 UPDATE_REQUEST=$UPDATE_DIR/request
 UPDATE_STATUS=$UPDATE_DIR/status
+UPDATE_DIAGNOSTICS=$UPDATE_DIR/diagnostics.json
 DATABASE_PATH=/var/lib/autodisc/autodisc.sqlite
 DATABASE_BACKUP=/opt/autodisc.sqlite.rollback
 WAL_BACKUP=/opt/autodisc.sqlite-wal.rollback
@@ -17,12 +18,46 @@ database_snapshot=0
 database_existed=0
 support_snapshot=0
 SERVICE=autodisc.service
+current_version=unknown
+target_version=unknown
+release_found=false
+asset_selected=
+download_state=not_started
+install_state=not_started
+verification_state=not_started
+last_error=
+failure_phase=request_validation
 
 write_status() {
   status_tmp=$(mktemp "$UPDATE_DIR/status.tmp.XXXXXX")
   printf '%s\n' "$1" > "$status_tmp"
   chmod 0644 "$status_tmp"
   mv -f "$status_tmp" "$UPDATE_STATUS"
+}
+
+write_diagnostics() {
+  node -e '
+    const fs = require("node:fs");
+    const [path, currentVersion, targetVersion, releaseFound, assetSelected, downloadState, installState, verificationState, lastError] = process.argv.slice(1);
+    const temporaryPath = `${path}.${process.pid}.tmp`;
+    const report = { currentVersion, targetVersion, releaseFound: releaseFound === "true" ? true : releaseFound === "false" ? false : null, assetSelected: assetSelected || null, downloadState, installState, verificationState, lastError: lastError || null };
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(report)}\n`, { mode: 0o644 });
+    fs.chmodSync(temporaryPath, 0o644);
+    fs.renameSync(temporaryPath, path);
+  ' "$UPDATE_DIAGNOSTICS" "$current_version" "$target_version" "$release_found" "$asset_selected" "$download_state" "$install_state" "$verification_state" "$last_error"
+  chown autodisc:autodisc "$UPDATE_DIAGNOSTICS"
+}
+
+log_event() {
+  node -e '
+    const [event, currentVersion, targetVersion, releaseFound, assetSelected, downloadState, installState, verificationState, error] = process.argv.slice(1);
+    console.log(JSON.stringify({ event, currentVersion, targetVersion, releaseFound: releaseFound === "true" ? true : releaseFound === "false" ? false : null, assetSelected: assetSelected || null, downloadState, installState, verificationState, error: error || null }));
+  ' "$1" "$current_version" "$target_version" "$release_found" "$asset_selected" "$download_state" "$install_state" "$verification_state" "$last_error"
+}
+
+record_event() {
+  write_diagnostics
+  log_event "$1"
 }
 
 rollback() {
@@ -35,7 +70,11 @@ rollback() {
     rollback_failed=1
   }
   if [ "$exit_code" -ne 0 ]; then
+    if [ "$download_state" = in_progress ]; then download_state=failed; fi
+    if [ "$install_state" = in_progress ]; then install_state=failed; fi
+    last_error="Update failed during $failure_phase (exit code $exit_code); inspect the autodisc-update.service journal"
     write_status failed || report_rollback_error "could not record failure status"
+    record_event updateFailed || report_rollback_error "could not record update failure diagnostics"
     if [ -d "$BACKUP_DIR" ]; then
       systemctl stop "$SERVICE" >/dev/null 2>&1 || report_rollback_error "could not stop AutoDisc before restoring files"
       rm -rf "$APP_DIR" || report_rollback_error "could not remove the failed application"
@@ -101,6 +140,9 @@ if ! printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0
   echo "The requested AutoDisc version is invalid." >&2
   exit 1
 fi
+target_version=$version
+current_version=$(node -p 'require("/opt/autodisc/package.json").version')
+failure_phase=release_discovery
 
 latest=$(node --input-type=module -e '
   import { readFileSync } from "node:fs";
@@ -133,17 +175,36 @@ if [ "$version" != "$latest" ]; then
   exit 1
 fi
 
+release_found=true
+asset_selected="https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/$version.tar.gz"
+record_event releaseFound
 write_status applying
+failure_phase=download
 BUILD_DIR=$(mktemp -d /opt/autodisc-update.XXXXXX)
 chown autodisc:autodisc "$BUILD_DIR"
+download_state=in_progress
+record_event downloadStarted
+setpriv --reuid=autodisc --regid=autodisc --init-groups --reset-env -- env HOME=/var/lib/autodisc sh -c '
+  set -eu
+  build_dir=$1
+  asset_url=$2
+  cd "$build_dir"
+  curl --fail --silent --show-error --location --max-time 180 \
+    "$asset_url" --output source.tar.gz
+  test -s source.tar.gz
+  tar -tzf source.tar.gz >/dev/null
+' autodisc "$BUILD_DIR" "$asset_selected"
+download_state=completed
+record_event downloadCompleted
+
+install_state=in_progress
+failure_phase=build_and_install
+record_event installStarted
 setpriv --reuid=autodisc --regid=autodisc --init-groups --reset-env -- env HOME=/var/lib/autodisc sh -c '
   set -eu
   build_dir=$1
   requested_version=$2
   cd "$build_dir"
-  curl --fail --silent --show-error --location --max-time 180 \
-    "https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/$requested_version.tar.gz" \
-    --output source.tar.gz
   tar -xzf source.tar.gz
   set -- "$build_dir"/DVDTOJELLYFIN-*
   [ -d "$1" ]
@@ -152,7 +213,7 @@ setpriv --reuid=autodisc --regid=autodisc --init-groups --reset-env -- env HOME=
   [ "$manifest_version" = "${requested_version#v}" ]
   cd "$source_dir"
   npm ci --include=dev --ignore-scripts --no-audit --no-fund
-  native_prebuild="node_modules/better-sqlite3/prebuilds/linux-$(node -p 'process.arch').node"
+  native_prebuild="node_modules/better-sqlite3/prebuilds/linux-$(node -p process.arch).node"
   if [ ! -f "$native_prebuild" ]; then
     npm rebuild better-sqlite3 --no-audit --no-fund
   fi
@@ -162,6 +223,7 @@ setpriv --reuid=autodisc --regid=autodisc --init-groups --reset-env -- env HOME=
 
 set -- "$BUILD_DIR"/DVDTOJELLYFIN-*
 SOURCE_DIR=$1
+failure_phase=file_replacement
 STAGING_DIR="/opt/autodisc.next.$$"
 install -d -o root -g root -m 0755 "$STAGING_DIR"
 for file in package.json package-lock.json tsconfig.json README.md AUTODISC-ARCHITECTURE.md; do
@@ -194,6 +256,18 @@ install -o root -g root -m 0755 "$SOURCE_DIR/scripts/autodisc-update.sh" /usr/lo
 install -o root -g root -m 0644 "$SOURCE_DIR/service/autodisc.service" /etc/systemd/system/autodisc.service
 install -o root -g root -m 0644 "$SOURCE_DIR/service/autodisc-update.service" /etc/systemd/system/autodisc-update.service
 install -o root -g root -m 0644 "$SOURCE_DIR/service/autodisc-update.path" /etc/systemd/system/autodisc-update.path
+installed_version=$(node -p 'require("/opt/autodisc/package.json").version')
+if [ "$installed_version" != "${version#v}" ] || [ ! -f "$APP_DIR/dist/index.js" ] ||
+  ! cmp -s "$SOURCE_DIR/package.json" "$APP_DIR/package.json" ||
+  ! cmp -s "$SOURCE_DIR/dist/index.js" "$APP_DIR/dist/index.js"; then
+  echo "Installed files do not match the requested AutoDisc release." >&2
+  exit 1
+fi
+install_state=completed
+record_event installCompleted
+
+failure_phase=service_restart
+record_event restartRequested
 systemctl daemon-reload
 systemctl restart autodisc-update.path
 systemctl start "$SERVICE"
@@ -209,6 +283,8 @@ if ! systemctl is-active --quiet "$SERVICE"; then
   exit 1
 fi
 
+verification_state=pending
+record_event restartCompleted
 rm -rf "$BUILD_DIR"
 BUILD_DIR=
 write_status success

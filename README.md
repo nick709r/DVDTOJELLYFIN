@@ -395,6 +395,11 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.24.0
+
+- Fixed the Linux updater helper shell parsing failure that prevented updates from reaching download and installation.
+- Added structured update diagnostics, installed-file checks, post-restart version verification, and clearer UI status reporting.
+
 ### Version 1.23.0
 
 - Added optical-drive capability diagnostics and more resilient cross-platform ejection with fallback methods.

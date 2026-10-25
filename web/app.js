@@ -2575,21 +2575,40 @@ $("#settings-form").addEventListener("change", updateOutputPreview);
 
 async function refreshUpdateStatus() {
   const data = await api("/api/v1/updates/status");
-  $("#update-version").textContent = `Installed version: ${data.currentVersion}`;
+  renderUpdateDiagnostics(data);
   const status = $("#update-status");
   const button = $("#check-updates");
   if (data.state === "applying") {
     status.textContent = "An update is being installed. AutoDisc will restart automatically; do not power off the server.";
     button.disabled = true;
-  } else if (data.state === "success") {
+  } else if (data.state === "success" && data.verificationSucceeded === true) {
     status.textContent = `AutoDisc ${data.currentVersion} was updated successfully.`;
     button.disabled = false;
   } else if (data.state === "failed") {
-    status.textContent = "The update failed. Check the updater journal for recovery details.";
+    status.textContent = data.lastError || "The update failed. Check the updater journal for recovery details.";
+    button.disabled = false;
+  } else if (data.state === "success") {
+    status.textContent = "The update helper completed, but the running version could not be verified.";
     button.disabled = false;
   } else {
     status.textContent = "Updates are checked only when you click the button. A newer version is applied automatically.";
     button.disabled = false;
+  }
+}
+
+function renderUpdateDiagnostics(data) {
+  $("#update-version").textContent = `Current version: ${data.currentVersion || "unknown"}`;
+  $("#update-target-version").textContent = `Target version: ${data.targetVersion || "none"}`;
+  const formatState = (value) => (value || "not_started").replaceAll("_", " ");
+  $("#update-download-state").textContent = `Download state: ${formatState(data.downloadState)}`;
+  $("#update-install-state").textContent = `Install state: ${formatState(data.installState)}`;
+  const error = $("#update-last-error");
+  if (data.lastError) {
+    error.textContent = `Last update error: ${data.lastError}`;
+    error.classList.remove("hidden");
+  } else {
+    error.textContent = "";
+    error.classList.add("hidden");
   }
 }
 
@@ -2622,18 +2641,18 @@ async function waitForUpdate() {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
       const data = await api("/api/v1/updates/status");
-      $("#update-version").textContent = `Installed version: ${data.currentVersion}`;
+      renderUpdateDiagnostics(data);
       if (data.state === "applying") {
         sawApplying = true;
         $("#update-status").textContent = "Installing update… AutoDisc will restart when it is complete.";
-      } else if (data.state === "success") {
+      } else if (data.state === "success" && data.verificationSucceeded === true) {
         $("#update-status").textContent = `AutoDisc ${data.currentVersion} was updated successfully.`;
         return;
       } else if (data.state === "failed") {
-        $("#update-status").textContent = "The update failed. Check the updater journal for recovery details.";
+        $("#update-status").textContent = data.lastError || "The update failed. Check the updater journal for recovery details.";
         return;
-      } else if (sawApplying) {
-        $("#update-status").textContent = "Update service restarted. Confirming the installed version…";
+      } else if (sawApplying || data.state === "success") {
+        $("#update-status").textContent = "Update service restarted. Confirming the running version…";
       }
     } catch {
       $("#update-status").textContent = "AutoDisc is restarting to apply the update…";
@@ -3367,6 +3386,13 @@ $("#check-updates").addEventListener("click", async () => {
   try {
     const check = await api("/api/v1/updates/check");
     renderReleaseNotes(check);
+    renderUpdateDiagnostics({
+      currentVersion: check.currentVersion,
+      targetVersion: check.updateAvailable ? check.latestVersion : null,
+      downloadState: "not_started",
+      installState: "not_started",
+      lastError: null
+    });
     if (!check.updateAvailable) {
       status.textContent = `AutoDisc ${check.currentVersion} is up to date.`;
       return;

@@ -22,7 +22,7 @@ import { configureLogLevel } from "./logger.js";
 import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
 import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manual-music-metadata.js";
 import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
-import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateStatus, isUpdatePending, queueUpdate, type UpdateCheck } from "./updater.js";
+import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateDiagnostics, getUpdateStatus, isUpdatePending, queueUpdate, verifyRunningVersion, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, Job, LibraryMetadataSettings, OutputFormat } from "./model.js";
 import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js";
 import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
@@ -2516,14 +2516,47 @@ app.post("/api/v1/tv/metadata/providers/refresh", async () => {
     refreshedAt: new Date().toISOString(), providers, metadata };
 });
 
-app.get("/api/v1/updates/status", async () => ({
-  currentVersion: await getInstalledVersion(),
-  state: await getUpdateStatus()
-}));
+app.get("/api/v1/updates/status", async () => {
+  const currentVersion = await getInstalledVersion();
+  let state = await getUpdateStatus();
+  let diagnostics = await getUpdateDiagnostics();
+  if (state === "success" && diagnostics.verificationState === "pending") {
+    diagnostics = await verifyRunningVersion(currentVersion);
+    const fields = {
+      event: diagnostics.verificationState === "succeeded" ? "verificationSucceeded" : "verificationFailed",
+      currentVersion,
+      targetVersion: diagnostics.targetVersion,
+      verificationSucceeded: diagnostics.verificationState === "succeeded"
+    };
+    if (diagnostics.verificationState === "succeeded") {
+      app.log.info(fields, "AutoDisc update version verification succeeded");
+    } else {
+      app.log.error({ ...fields, error: diagnostics.lastError }, "AutoDisc update version verification failed");
+    }
+  }
+  if (diagnostics.verificationState === "failed") state = "failed";
+  return {
+    currentVersion,
+    state,
+    ...diagnostics,
+    verificationSucceeded: diagnostics.verificationState === "succeeded"
+      ? true
+      : diagnostics.verificationState === "failed"
+        ? false
+        : null
+  };
+});
 
 app.get("/api/v1/updates/check", async (_request, reply) => {
   try {
     const check = await checkForUpdate();
+    app.log.info({
+      event: "releaseFound",
+      currentVersion: check.currentVersion,
+      targetVersion: check.latestVersion,
+      releaseFound: true,
+      assetSelected: check.assetSelected
+    }, "AutoDisc update release discovered");
     return { ...check, ...await getReleaseNotes(check.latestVersion) };
   } catch (error) {
     app.log.error({ err: error }, "AutoDisc update check failed");
@@ -2554,6 +2587,13 @@ app.post("/api/v1/updates/apply", async (_request, reply) => {
     app.log.error({ err: error }, "Could not queue AutoDisc update");
     return reply.code(503).send({ error: error instanceof Error ? error.message : "Could not queue AutoDisc update" });
   }
+  app.log.info({
+    event: "updateQueued",
+    currentVersion: update.currentVersion,
+    targetVersion: update.latestVersion,
+    releaseFound: true,
+    assetSelected: update.assetSelected
+  }, "AutoDisc update queued");
   return reply.code(202).send({ queued: true, version: update.latestVersion });
 });
 
