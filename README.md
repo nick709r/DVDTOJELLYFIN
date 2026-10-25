@@ -395,6 +395,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.26.0
+
+- Clean generated JavaScript before builds and prevent TypeScript from emitting output when compilation reports errors.
+
 ### Version 1.25.0
 
 - Fixed the Review Queue cleanup service method scope so TypeScript can parse the class.
