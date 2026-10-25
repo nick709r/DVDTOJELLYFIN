@@ -601,13 +601,13 @@
     <dialog id="review-delete-dialog">
       <div class="delete-confirmation">
         <h2>Delete Review Item</h2>
-        <p>This will permanently delete the review item and all associated temporary files, staged media, metadata caches, artwork, fingerprints, and processing history.</p>
-        <p>Shared provider caches, shared fingerprints, and published media are protected.</p>
+        <p>The preview lists the exact files, directories, and database records that will be removed. Only data owned by this review item is eligible for deletion.</p>
+        <p>Published media, configured library roots, provider caches, and fingerprint data shared with another job or review are protected.</p>
         <p><strong>This action cannot be undone.</strong></p>
-        <p id="review-delete-impact" class="hint"></p>
+        <div id="review-delete-impact" class="hint"></div>
         <div class="metadata-actions">
           <button id="review-delete-cancel" class="button secondary" type="button">Cancel</button>
-          <button id="review-delete-confirm" class="button danger" type="button">Delete Everything</button>
+          <button id="review-delete-confirm" class="button danger" type="button">Delete Listed Items</button>
         </div>
       </div>
     </dialog>

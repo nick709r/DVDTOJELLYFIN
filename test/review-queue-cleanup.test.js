@@ -105,20 +105,47 @@ test("deleting an unmatched TV review cleans staged season, temp conversion, art
     });
     f.db.prepare("INSERT INTO disc_recovery (fingerprint, detected_disc_type, final_disc_type, detected_media_type, final_media_type, updated_at) VALUES (?, 'dvd', 'dvd', 'tv', 'tv', ?)")
       .run(fingerprint, new Date().toISOString());
+    f.db.prepare("INSERT INTO tv_validation_evidence (id, fingerprint, captured_at, origin, evidence_json) VALUES (?, ?, ?, 'imported', '{}')")
+      .run("cleanup-evidence", fingerprint, new Date().toISOString());
     f.db.prepare("INSERT INTO tv_metadata_cache (cache_key, provider_id, entity_type, query_text, result_json, cached_at, expires_at) VALUES ('shared-cache', 'tvdb', 'series', 'query', '{}', ?, ?)")
       .run(new Date().toISOString(), new Date(Date.now() + 86400000).toISOString());
 
     const impact = await f.service.getDeletionImpact(review.id);
     assert.equal(impact.files, 5);
+    assert.deepEqual(impact.filePaths.sort(), [
+      join(jobPath, "conversion.tmp"),
+      join(reviewWorkspace, "artwork", "poster.jpg"),
+      join(reviewWorkspace, "metadata", "current.json"),
+      join(reviewWorkspace, "subtitles", "en.srt"),
+      join(taskPath, "S03E01.mkv")
+    ].sort());
+    assert.deepEqual(impact.directoryPaths.sort(), [
+      jobPath,
+      reviewWorkspace,
+      join(reviewWorkspace, "artwork"),
+      join(reviewWorkspace, "metadata"),
+      join(reviewWorkspace, "subtitles"),
+      taskPath
+    ].sort());
+    assert.equal(impact.recordCounts.reviewItems, 1);
+    assert.equal(impact.recordCounts.jobs, 1);
+    assert.equal(impact.recordCounts.reviewJobs, 1);
+    assert.equal(impact.recordCounts.tvMatchingTasks, 1);
+    assert.equal(impact.recordCounts.discRecovery, 1);
+    assert.equal(impact.recordCounts.tvValidationEvidence, 1);
+    assert.equal(impact.recordCounts.mediaTypeOverrideAudit, 0);
+    assert.equal(impact.records, Object.values(impact.recordCounts).reduce((total, count) => total + count, 0));
     const result = await f.service.deleteReviewItem(review.id);
     assert.equal(result.success, true);
     assert.equal(result.filesDeleted, 5);
     assert.equal(result.bytesRecovered, 724);
+    assert.equal(result.recordsDeleted, impact.records);
     assert.equal(f.repositories.reviewItems.get(review.id), undefined);
     assert.equal(f.repositories.history.get(ids.job), undefined);
     assert.equal(f.repositories.reviewJobs.get(ids.reviewWorkspace), undefined);
     assert.equal(f.db.prepare("SELECT COUNT(*) AS count FROM tv_matching_tasks WHERE job_id = ?").get(ids.job).count, 0);
     assert.equal(f.db.prepare("SELECT COUNT(*) AS count FROM disc_recovery WHERE fingerprint = ?").get(fingerprint).count, 0);
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS count FROM tv_validation_evidence WHERE fingerprint = ?").get(fingerprint).count, 0);
     assert.equal(f.db.prepare("SELECT COUNT(*) AS count FROM tv_metadata_cache WHERE cache_key = 'shared-cache'").get().count, 1);
     await assert.rejects(stat(taskPath));
     await assert.rejects(stat(jobPath));
@@ -142,6 +169,8 @@ test("deleting one review preserves shared fingerprint records and unrelated job
     await writeFile(join(otherPath, "keep.mkv"), Buffer.alloc(96));
     f.db.prepare("INSERT INTO tv_episode_feedback (id, fingerprint, item_signature, outcome, episodes_json, created_at) VALUES ('feedback', ?, 'signature', 'accepted', '[]', ?)")
       .run(fingerprint, new Date().toISOString());
+    const impact = await f.service.getDeletionImpact(review.id);
+    assert.equal(impact.recordCounts.tvEpisodeFeedback, 0);
     const result = await f.service.deleteReviewItem(review.id);
     assert.equal(result.success, true);
     assert.equal(f.db.prepare("SELECT COUNT(*) AS count FROM tv_episode_feedback WHERE fingerprint = ?").get(fingerprint).count, 1);

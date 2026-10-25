@@ -477,6 +477,34 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
       headers: { cookie }
     });
     assert.equal(reviewDateFilter.statusCode, 400);
+    const manuallyDeletedReview = jobs.repositories.reviewItems.create({
+      category: "system_warning",
+      severity: "low",
+      title: "Manual deletion API test",
+      description: "This review item is deleted through the ownership-checked API",
+      discFingerprint: "manual-deletion-api-test",
+      suggestedActions: []
+    });
+    const deletionImpact = await app.inject({
+      method: "GET",
+      url: `/api/v1/reviews/${manuallyDeletedReview.id}/deletion-impact`,
+      headers: { cookie }
+    });
+    assert.equal(deletionImpact.statusCode, 200);
+    assert.equal(deletionImpact.json().files, 0);
+    assert.deepEqual(deletionImpact.json().filePaths, []);
+    assert.deepEqual(deletionImpact.json().directoryPaths, []);
+    assert.equal(deletionImpact.json().recordCounts.reviewItems, 1);
+    assert.equal(deletionImpact.json().records, 1);
+    const manualDeletion = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/reviews/${manuallyDeletedReview.id}`,
+      headers: { cookie }
+    });
+    assert.equal(manualDeletion.statusCode, 200);
+    assert.equal(manualDeletion.json().success, true);
+    assert.equal(manualDeletion.json().recordsDeleted, 1);
+    assert.equal(jobs.repositories.reviewItems.get(manuallyDeletedReview.id), undefined);
 
     const authenticated = await app.inject({
       method: "GET",

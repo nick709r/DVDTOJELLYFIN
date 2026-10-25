@@ -2143,12 +2143,49 @@ async function refreshReviewQueue() {
   await Promise.all([loadReviewCentre(), loadTvReviews()]);
 }
 
+const reviewDeletionRecordLabels = {
+  reviewItems: "review_items",
+  jobs: "jobs",
+  jobEvents: "job_events",
+  reviewJobs: "review_jobs",
+  tvMatchingTasks: "tv_matching_tasks",
+  mediaTypeOverrideAudit: "media_type_override_audit",
+  discRecovery: "disc_recovery",
+  tvEpisodeFeedback: "tv_episode_feedback",
+  tvProcessingPlans: "tv_processing_plans",
+  tvValidationEvidence: "tv_validation_evidence"
+};
+
+function renderDeletionPathList(paths) {
+  return paths.length
+    ? `<ul class="deletion-impact-list">${paths.map((path) => `<li><code>${escapeHtml(path)}</code></li>`).join("")}</ul>`
+    : '<p class="list-sub">None</p>';
+}
+
+function renderReviewDeletionImpact(impact) {
+  const records = Object.entries(impact.recordCounts)
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `<li><code>${escapeHtml(reviewDeletionRecordLabels[name] || name)}</code>: ${count}</li>`)
+    .join("");
+  $("#review-delete-impact").innerHTML = `
+    <p><strong>Estimated reclaimed space: ${escapeHtml(formatBytes(impact.bytes))}</strong> ·
+      ${impact.files} files · ${impact.records} database records</p>
+    <details open>
+      <summary>Exact removal plan</summary>
+      <h3>Files (${impact.filePaths.length})</h3>
+      ${renderDeletionPathList(impact.filePaths)}
+      <h3>Directories (${impact.directoryPaths.length})</h3>
+      ${renderDeletionPathList(impact.directoryPaths)}
+      <h3>Database records (${impact.records})</h3>
+      ${records ? `<ul class="deletion-impact-list">${records}</ul>` : '<p class="list-sub">None</p>'}
+    </details>`;
+}
+
 async function requestReviewDeletion(type, id) {
   const endpoint = type === "review-job" ? `/api/v1/review-jobs/${encodeURIComponent(id)}` : `/api/v1/reviews/${encodeURIComponent(id)}`;
   const impact = await api(`${endpoint}/deletion-impact`);
   state.reviewDeletionTarget = { type, id };
-  $("#review-delete-impact").textContent =
-    `Estimated cleanup: ${impact.files} files, ${formatBytes(impact.bytes)} recoverable, and ${impact.records} database records.`;
+  renderReviewDeletionImpact(impact);
   $("#review-delete-dialog").showModal();
 }
 
@@ -2169,7 +2206,8 @@ $("#review-delete-confirm").addEventListener("click", async () => {
     const result = await api(endpoint, { method: "DELETE" });
     $("#review-delete-dialog").close();
     state.reviewDeletionTarget = null;
-    notify(`Review item deleted. Recovered ${formatBytes(result.bytesRecovered)}.`);
+    const deletedType = target.type === "review-job" ? "Review workspace" : "Review item";
+    notify(`${deletedType} deleted. Removed ${result.filesDeleted} files and ${result.recordsDeleted} database records. Reclaimed ${formatBytes(result.bytesRecovered)}.`);
     state.storageDashboardLastLoadedAt = 0;
     await Promise.all([refreshDashboard(), refreshHistory(), refreshReviewQueue()]);
   } catch (error) {

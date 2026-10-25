@@ -232,6 +232,7 @@ test("Clean Everything Safe retains active jobs, staged TV media, published outp
     const failedRipTrack = join(failedRip, "source.mkv");
     await writeFile(failedRipTrack, Buffer.alloc(128));
 
+    f.addJob(ids.task, "failed");
     f.addJob(ids.active, "ripping");
     const activeWork = join(f.workDir, ids.active);
     await mkdir(activeWork);

@@ -66,12 +66,28 @@ export interface ReviewQueueOwnership {
   errors: string[];
 }
 
+export interface ReviewDeletionRecordCounts {
+  reviewItems: number;
+  jobs: number;
+  jobEvents: number;
+  reviewJobs: number;
+  tvMatchingTasks: number;
+  mediaTypeOverrideAudit: number;
+  discRecovery: number;
+  tvEpisodeFeedback: number;
+  tvProcessingPlans: number;
+  tvValidationEvidence: number;
+}
+
 export interface ReviewDeletionImpact {
   reviewId: string;
   jobId: string | null;
   files: number;
+  filePaths: string[];
+  directoryPaths: string[];
   bytes: number;
   records: number;
+  recordCounts: ReviewDeletionRecordCounts;
   resources: string[];
   ownedPaths: string[];
   errors: string[];
@@ -172,13 +188,17 @@ export class ReviewQueueCleanupService {
     const plan = await this.planForReview(reviewId);
     const inventory = await this.inventory(plan.paths);
     if (inventory.errors.length) throw new Error(inventory.errors.join("; "));
-    const records = this.countOwnedRecords(plan);
+    const recordCounts = this.countOwnedRecordCounts(plan);
+    const records = Object.values(recordCounts).reduce((total, count) => total + count, 0);
     return {
       reviewId,
       jobId: plan.jobId,
       files: inventory.files.length,
+      filePaths: inventory.files.map(({ path }) => path).sort((a, b) => a.localeCompare(b)),
+      directoryPaths: inventory.directories.sort((a, b) => a.localeCompare(b)),
       bytes: inventory.bytes,
       records,
+      recordCounts,
       resources: [...plan.paths.map(({ path }) => path), `${records} database records`],
       ownedPaths: plan.paths.map(({ path }) => path),
       errors: inventory.errors
@@ -210,13 +230,17 @@ export class ReviewQueueCleanupService {
     const plan = await this.planForReviewJob(reviewJobId);
     const inventory = await this.inventory(plan.paths);
     if (inventory.errors.length) throw new Error(inventory.errors.join("; "));
-    const records = this.countOwnedRecords(plan);
+    const recordCounts = this.countOwnedRecordCounts(plan);
+    const records = Object.values(recordCounts).reduce((total, count) => total + count, 0);
     return {
       reviewId: reviewJobId,
       jobId: plan.jobId,
       files: inventory.files.length,
+      filePaths: inventory.files.map(({ path }) => path).sort((a, b) => a.localeCompare(b)),
+      directoryPaths: inventory.directories.sort((a, b) => a.localeCompare(b)),
       bytes: inventory.bytes,
       records,
+      recordCounts,
       resources: [...plan.paths.map(({ path }) => path), `${records} database records`],
       ownedPaths: plan.paths.map(({ path }) => path),
       errors: inventory.errors
@@ -504,51 +528,40 @@ export class ReviewQueueCleanupService {
     return otherJobs.count === 0 && otherReviews.count === 0 && otherTasks.count === 0;
   }
 
-  private fingerprintRecordCount(fingerprint: string): number {
-    return [
-      ["disc_recovery", "fingerprint"],
-      ["tv_episode_feedback", "fingerprint"],
-      ["tv_processing_plans", "fingerprint"],
-      ["tv_validation_evidence", "fingerprint"],
-      ["media_type_override_audit", "fingerprint"]
-    ].reduce((total, [table, column]) => {
-      const result = this.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`)
-        .get(fingerprint) as { count: number };
-      return total + result.count;
-    }, 0);
-  }
-
-  private countOwnedRecords(plan: CleanupPlan): number {
-    let count = 0;
-    if (plan.reviewId) {
-      const relatedReviews = plan.jobId
-        ? this.db.prepare("SELECT COUNT(*) AS count FROM review_items WHERE related_job_id = ? OR id = ?")
-          .get(plan.jobId, plan.reviewId) as { count: number }
-        : this.db.prepare("SELECT COUNT(*) AS count FROM review_items WHERE id = ?").get(plan.reviewId) as { count: number };
-      count += relatedReviews.count;
-    }
-    if (plan.jobId) {
-      for (const table of ["jobs", "job_events", "review_jobs", "tv_matching_tasks", "media_type_override_audit"]) {
-        const query = table === "jobs" ? "SELECT COUNT(*) AS count FROM jobs WHERE id = ?"
-          : table === "job_events" ? "SELECT COUNT(*) AS count FROM job_events WHERE job_id = ?"
-            : table === "review_jobs" ? "SELECT COUNT(*) AS count FROM review_jobs WHERE original_job_id = ?"
-              : table === "tv_matching_tasks" ? "SELECT COUNT(*) AS count FROM tv_matching_tasks WHERE job_id = ?"
-                : "SELECT COUNT(*) AS count FROM media_type_override_audit WHERE job_id = ?";
-        const result = this.db.prepare(query).get(plan.jobId) as { count: number };
-        count += result.count;
-      }
-    }
-    if (plan.fingerprintExclusive && plan.fingerprint) {
-      let fingerprintRecords = this.fingerprintRecordCount(plan.fingerprint);
-      if (plan.jobId) {
-        const jobSpecific = this.db.prepare(`
-          SELECT COUNT(*) AS count FROM media_type_override_audit WHERE fingerprint = ? AND job_id = ?
-        `).get(plan.fingerprint, plan.jobId) as { count: number };
-        fingerprintRecords -= jobSpecific.count;
-      }
-      count += fingerprintRecords;
-    }
-    return count;
+  private countOwnedRecordCounts(plan: CleanupPlan): ReviewDeletionRecordCounts {
+    const count = (query: string, ...params: string[]): number =>
+      (this.db.prepare(query).get(...params) as { count: number }).count;
+    const reviewItems = plan.reviewId
+      ? plan.jobId
+        ? count("SELECT COUNT(*) AS count FROM review_items WHERE related_job_id = ? OR id = ?", plan.jobId, plan.reviewId)
+        : count("SELECT COUNT(*) AS count FROM review_items WHERE id = ?", plan.reviewId)
+      : 0;
+    const jobs = plan.jobId ? count("SELECT COUNT(*) AS count FROM jobs WHERE id = ?", plan.jobId) : 0;
+    const jobEvents = plan.jobId ? count("SELECT COUNT(*) AS count FROM job_events WHERE job_id = ?", plan.jobId) : 0;
+    const reviewJobs = plan.jobId ? count("SELECT COUNT(*) AS count FROM review_jobs WHERE original_job_id = ?", plan.jobId) : 0;
+    const tvMatchingTasks = plan.jobId ? count("SELECT COUNT(*) AS count FROM tv_matching_tasks WHERE job_id = ?", plan.jobId) : 0;
+    const jobOverrides = plan.jobId
+      ? count("SELECT COUNT(*) AS count FROM media_type_override_audit WHERE job_id = ?", plan.jobId)
+      : 0;
+    const fingerprintOverrides = plan.fingerprintExclusive && plan.fingerprint
+      ? count("SELECT COUNT(*) AS count FROM media_type_override_audit WHERE fingerprint = ?", plan.fingerprint)
+        - (plan.jobId
+          ? count("SELECT COUNT(*) AS count FROM media_type_override_audit WHERE fingerprint = ? AND job_id = ?", plan.fingerprint, plan.jobId)
+          : 0)
+      : 0;
+    const fingerprint = plan.fingerprintExclusive ? plan.fingerprint : null;
+    return {
+      reviewItems,
+      jobs,
+      jobEvents,
+      reviewJobs,
+      tvMatchingTasks,
+      mediaTypeOverrideAudit: jobOverrides + fingerprintOverrides,
+      discRecovery: fingerprint ? count("SELECT COUNT(*) AS count FROM disc_recovery WHERE fingerprint = ?", fingerprint) : 0,
+      tvEpisodeFeedback: fingerprint ? count("SELECT COUNT(*) AS count FROM tv_episode_feedback WHERE fingerprint = ?", fingerprint) : 0,
+      tvProcessingPlans: fingerprint ? count("SELECT COUNT(*) AS count FROM tv_processing_plans WHERE fingerprint = ?", fingerprint) : 0,
+      tvValidationEvidence: fingerprint ? count("SELECT COUNT(*) AS count FROM tv_validation_evidence WHERE fingerprint = ?", fingerprint) : 0
+    };
   }
 
   private assertPlanStillEligible(plan: CleanupPlan): void {

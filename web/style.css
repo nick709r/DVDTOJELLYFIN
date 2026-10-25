@@ -257,3 +257,10 @@ dialog{background:#151c27;border:1px solid #343e4c;border-radius:12px;color:#edf
 .check-row{display:flex;align-items:center;gap:8px}.check-row input{width:auto}
 @media(max-width:900px){.storage-warning{grid-template-columns:1fr}.storage-category{grid-template-columns:1fr 1fr}.storage-orphan-row{grid-template-columns:1fr 1fr}.storage-consumer{grid-template-columns:1fr auto}}
 @media(max-width:600px){.storage-summary-grid{grid-template-columns:1fr 1fr}.storage-breakdown-row{grid-template-columns:1fr auto}.storage-breakdown-track{grid-column:1/-1;grid-row:2}.storage-category{grid-template-columns:1fr}.storage-orphan-row,.storage-consumer{grid-template-columns:1fr}.storage-overview-card .card-heading{align-items:flex-start;flex-direction:column}}
+#review-delete-impact{max-height:55vh;overflow:auto;text-align:left}
+#review-delete-impact details{margin-top:10px}
+#review-delete-impact summary{cursor:pointer;font-weight:700}
+#review-delete-impact h3{margin:12px 0 4px;font-size:13px}
+.deletion-impact-list{max-height:180px;overflow:auto;padding-left:20px}
+.deletion-impact-list li{margin:4px 0}
+.deletion-impact-list code{overflow-wrap:anywhere}
