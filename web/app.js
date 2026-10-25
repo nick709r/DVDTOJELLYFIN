@@ -1498,6 +1498,55 @@ function formatCompletedTvDiscDate(value) {
   }).format(date).replace(",", "");
 }
 
+function tvDiscEvidenceList(evidence, type) {
+  const entries = (evidence || []).filter((item) => item.type === type);
+  if (!entries.length) return "";
+  const heading = type === "positive" ? "Positive evidence" :
+    type === "negative" ? "Negative evidence" : "Neutral evidence";
+  return `<div class="tv-evidence-group tv-evidence-${type}">
+    <h6>${heading}</h6>
+    <ul>${entries.map((item) => `<li><span>${escapeHtml(item.message)}</span><b>${item.scoreImpact > 0 ? "+" : ""}${Number(item.scoreImpact).toFixed(1)}</b></li>`).join("")}</ul>
+  </div>`;
+}
+
+function renderTvDiscPositionEvidence(task, recovery) {
+  const candidates = task.diagnostics?.discPositionCandidates || [];
+  if (!candidates.length) return "";
+  const selectedDiscNumber = Number.isInteger(recovery?.discNumber)
+    ? recovery.discNumber
+    : task.diagnostics?.selected?.discNumber;
+  const selected = candidates.find((candidate) => candidate.discNumber === selectedDiscNumber) || candidates[0];
+  const alternatives = candidates.filter((candidate) => candidate !== selected);
+  const breakdown = selected.confidenceBreakdown;
+  const selectedEvidence = breakdown ? `
+    <div class="tv-evidence-score"><span>Base score</span><b>${Number(breakdown.baseScore).toFixed(1)}</b></div>
+    ${tvDiscEvidenceList(breakdown.evidence, "positive")}
+    ${tvDiscEvidenceList(breakdown.evidence, "negative")}
+    ${tvDiscEvidenceList(breakdown.evidence, "neutral")}
+    <div class="tv-evidence-score tv-evidence-final"><span>Final score</span><b>${Number(breakdown.finalScore).toFixed(1)}</b></div>` : "";
+  return `<details class="tv-disc-evidence">
+    <summary>TV matching evidence</summary>
+    <section class="tv-selected-evidence">
+      <h5>Disc ${escapeHtml(selected.discNumber)} · Confidence ${Math.round(selected.confidence * 100)}%</h5>
+      <h6>Why this match?</h6>
+      ${selectedEvidence}
+    </section>
+    ${alternatives.map((candidate) => {
+      const rejected = (candidate.confidenceBreakdown?.evidence || []).filter((item) => item.type === "negative");
+      const ranking = (candidate.confidenceBreakdown?.evidence || []).filter((item) =>
+        item.category === "candidate-ranking"
+      );
+      return `<section class="tv-alternative-evidence">
+        <h5>Alternative: Disc ${escapeHtml(candidate.discNumber)} · Confidence ${Math.round(candidate.confidence * 100)}%</h5>
+        <h6>Rejected because:</h6>
+        ${rejected.length
+          ? `<ul>${rejected.map((item) => `<li>${escapeHtml(item.message)} <b>${Number(item.scoreImpact).toFixed(1)}</b></li>`).join("")}</ul>`
+          : `<ul>${ranking.map((item) => `<li>${escapeHtml(item.message)}</li>`).join("")}</ul>`}
+      </section>`;
+    }).join("")}
+  </details>`;
+}
+
 function renderTvMatchingTask(entry) {
   const { task, recovery, completedDiscHistory = [], mediaTypeAudit = [] } = entry;
   const series = recovery?.seriesName || "";
@@ -1624,6 +1673,7 @@ function renderTvMatchingTask(entry) {
         <div><h4>Match each staged track</h4><p>Suggestions are not confirmed until you save. Unmatched tracks remain safely staged.</p></div>
         ${guide?.error ? `<p class="tv-episode-guide-error">Episode guide unavailable: ${escapeHtml(guide.error)}. You can still choose episode numbers.</p>` : ""}
       </div>
+      ${renderTvDiscPositionEvidence(task, recovery)}
       <div class="tv-track-list">${trackRows}</div>
       <div class="tv-save-workflow">
         <p>Matched <b data-matched-count>${progress.matchedCount} / ${progress.totalCount}</b> · Unmatched <b data-unmatched-count>${progress.unmatchedCount}</b></p>

@@ -573,6 +573,22 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     jobs.repositories.jobs.add(matchingJobId, "fresh-off-the-boat", matchingFingerprint, "dvd");
     jobs.repositories.jobs.finish(matchingJobId, "awaiting-identification", "Awaiting series identification");
     jobs.repositories.discRecovery.recordDetection(matchingFingerprint, "dvd", "tv_series");
+    const discPositionEvidence = {
+      discNumber: 1,
+      confidence: 0.92,
+      evidence: [],
+      scoreComponents: { discStructure: 1 },
+      confidenceBreakdown: {
+        baseScore: 50,
+        evidence: [{
+          category: "disc-label",
+          message: "Disc label suggests Season 3 Disc 1",
+          scoreImpact: 30,
+          type: "positive"
+        }],
+        finalScore: 92
+      }
+    };
     jobs.repositories.tvMatchingTasks.create({
       jobId: matchingJobId,
       fingerprint: matchingFingerprint,
@@ -585,7 +601,10 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         label: "fresh-off-the-boat",
         manifest: { mediaKind: "dvd", attributes: {}, items: [] }
       },
-      diagnostics: { status: "analysis-unavailable" },
+      diagnostics: {
+        status: "analysis-unavailable",
+        discPositionCandidates: [discPositionEvidence]
+      },
       files: { "1": "episode01.mp4", "2": "episode02.mp4" },
       assignments: [{
         trackId: "1",
@@ -603,7 +622,9 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     });
     const matchingQueue = await app.inject({ method: "GET", url: "/api/v1/tv/matching", headers: { cookie } });
     assert.equal(matchingQueue.statusCode, 200);
-    assert.equal(matchingQueue.json().tasks.some(({ task }) => task.jobId === matchingJobId), true);
+    const matchingTask = matchingQueue.json().tasks.find(({ task }) => task.jobId === matchingJobId)?.task;
+    assert.ok(matchingTask);
+    assert.deepEqual(matchingTask.diagnostics.discPositionCandidates, [discPositionEvidence]);
     const trackPreview = await app.inject({
       method: "GET",
       url: `/api/v1/tv/matching/${matchingJobId}/preview/1`,

@@ -729,6 +729,7 @@ export class TvWorkflowService {
       disc: seasonStructure,
       discStructureHints,
       discNumberUserConfirmed: saved?.origin === "user",
+      seasonNumberUserConfirmed: saved?.origin === "user" && saved.seasonNumber !== undefined,
       history,
       providerDiscEpisodes,
       completedDiscHistory,
@@ -853,6 +854,7 @@ export class TvWorkflowService {
         providerId: candidate.providerId,
         confidence: candidate.confidence
       })),
+      discPositionCandidates: analysis.discPositionCandidates,
       ...(discLabelSuggestion ? { discLabelSuggestion } : {}),
       selected: topDetected ? {
         title: topDetected.series.title,

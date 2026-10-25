@@ -123,6 +123,21 @@ export interface TvDiscStructureHint extends DiscAnalysisStructure {
   confidence: ConfidenceScore;
 }
 
+export type TvEvidenceType = "positive" | "negative" | "neutral";
+
+export interface TvMatchingEvidence {
+  category: string;
+  message: string;
+  scoreImpact: number;
+  type: TvEvidenceType;
+}
+
+export interface TvConfidenceBreakdown {
+  baseScore: number;
+  evidence: readonly TvMatchingEvidence[];
+  finalScore: number;
+}
+
 export interface EpisodeCorrection {
   fingerprint: string;
   itemSignature: string;
@@ -140,6 +155,7 @@ export interface TvAnalysisInput {
   metadata: TvMetadataEvidence;
   discStructureHints?: readonly TvDiscStructureHint[];
   discNumberUserConfirmed?: boolean;
+  seasonNumberUserConfirmed?: boolean;
   providerDiscEpisodes?: readonly TvProviderDiscEpisode[];
   completedDiscHistory?: readonly CompletedTvDiscHistory[];
   history?: readonly HistoricalDiscAnalysis[];
@@ -311,6 +327,7 @@ export interface TvDiscPositionCandidate {
   confidence: ConfidenceScore;
   evidence: readonly string[];
   scoreComponents: ConfidenceComponents;
+  confidenceBreakdown: TvConfidenceBreakdown;
 }
 
 export type TvDiscItemKind =

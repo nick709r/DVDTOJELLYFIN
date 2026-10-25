@@ -157,6 +157,152 @@ test("completed episode history favors provider discs covering missing episodes"
   ));
 });
 
+test("disc-position confidence exposes positive evidence and score impacts", () => {
+  const report = engine.analyze(baseInput({
+    disc: { seasonNumber: 2 },
+    discStructureHints: [{
+      source: "Optical disc volume label",
+      seasonNumber: 2,
+      discNumber: 2,
+      confidence: 0.98
+    }],
+    completedDiscHistory: [{
+      jobId: "completed-disc-1",
+      fingerprint: "older-disc",
+      metadataProvider: "metadata.test",
+      providerId: "series-1",
+      seriesName: "The Example Show",
+      seasonNumber: 2,
+      discNumber: 1,
+      mappings: [],
+      episodes: [{ seriesId: "series-1", seasonNumber: 2, episodeNumber: 1 }],
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }],
+    providerDiscEpisodes: [{
+      episode: { seriesId: "series-1", seasonNumber: 2, episodeNumber: 2 },
+      providerId: "tvdb",
+      discNumber: 2,
+      discOrder: 1,
+      confidence: 1
+    }]
+  }));
+  const candidate = report.discPositionCandidates.find((entry) => entry.discNumber === 2);
+  const evidence = candidate.confidenceBreakdown.evidence;
+
+  assert.ok(evidence.some((entry) =>
+    entry.type === "positive" && entry.category === "disc-label" &&
+    entry.message === "Disc label suggests Season 2 Disc 2"
+  ));
+  assert.ok(evidence.some((entry) =>
+    entry.type === "positive" && entry.category === "missing-episodes" &&
+    entry.message.includes("episodes not found")
+  ));
+  assert.ok(evidence.some((entry) =>
+    entry.type === "neutral" && entry.category === "metadata"
+  ));
+  const scoreTotal = candidate.confidenceBreakdown.baseScore +
+    evidence.reduce((sum, entry) => sum + entry.scoreImpact, 0);
+  assert.ok(Math.abs(scoreTotal - candidate.confidenceBreakdown.finalScore) < 1e-8);
+});
+
+test("disc-position evidence explains completed discs, overlap, label conflicts, and alternatives", () => {
+  const report = engine.analyze(baseInput({
+    disc: { seasonNumber: 2, discNumber: 1 },
+    discStructureHints: [{
+      source: "Optical disc volume label",
+      seasonNumber: 2,
+      discNumber: 2,
+      confidence: 0.98
+    }],
+    completedDiscHistory: [{
+      jobId: "completed-disc-1",
+      fingerprint: "older-disc",
+      metadataProvider: "metadata.test",
+      providerId: "series-1",
+      seriesName: "The Example Show",
+      seasonNumber: 2,
+      discNumber: 1,
+      mappings: [],
+      episodes: [
+        { seriesId: "series-1", seasonNumber: 2, episodeNumber: 1 },
+        { seriesId: "series-1", seasonNumber: 2, episodeNumber: 2 }
+      ],
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }],
+    providerDiscEpisodes: [
+      ...[1, 2].map((episodeNumber) => ({
+        episode: { seriesId: "series-1", seasonNumber: 2, episodeNumber },
+        providerId: "tvdb",
+        discNumber: 1,
+        discOrder: episodeNumber,
+        confidence: 1
+      })),
+      ...[3, 4].map((episodeNumber) => ({
+        episode: { seriesId: "series-1", seasonNumber: 2, episodeNumber },
+        providerId: "tvdb",
+        discNumber: 2,
+        discOrder: episodeNumber - 2,
+        confidence: 1
+      }))
+    ]
+  }));
+  const completedCandidate = report.discPositionCandidates.find((entry) => entry.discNumber === 1);
+  const negativeEvidence = completedCandidate.confidenceBreakdown.evidence.filter((entry) =>
+    entry.type === "negative"
+  );
+
+  assert.ok(negativeEvidence.some((entry) =>
+    entry.category === "completed-disc-history" && entry.message.includes("already completed")
+  ));
+  assert.ok(negativeEvidence.some((entry) =>
+    entry.category === "episode-overlap" && entry.message.includes("overlaps imported episodes")
+  ));
+  assert.ok(negativeEvidence.some((entry) =>
+    entry.category === "disc-label" && entry.message.includes("conflicts with disc-label")
+  ));
+  assert.ok(report.discPositionCandidates.some((candidate) =>
+    candidate.discNumber !== report.discPositionCandidates[0].discNumber &&
+    candidate.confidenceBreakdown.evidence.some((entry) => entry.category === "candidate-ranking")
+  ));
+  for (const candidate of report.discPositionCandidates) {
+    const scoreTotal = candidate.confidenceBreakdown.baseScore +
+      candidate.confidenceBreakdown.evidence.reduce((sum, entry) => sum + entry.scoreImpact, 0);
+    assert.ok(Math.abs(scoreTotal - candidate.confidenceBreakdown.finalScore) < 1e-8);
+  }
+});
+
+test("disc-position evidence reports fingerprint history and user confirmation neutrally", () => {
+  const history = [{
+    jobId: "completed-disc-1",
+    fingerprint: "disc-fingerprint",
+    metadataProvider: "metadata.test",
+    providerId: "series-1",
+    seriesName: "The Example Show",
+    seasonNumber: 2,
+    discNumber: 1,
+    mappings: [],
+    episodes: [{ seriesId: "series-1", seasonNumber: 2, episodeNumber: 1 }],
+    completedAt: "2026-10-24T12:00:00.000Z"
+  }];
+  const report = engine.analyze(baseInput({
+    completedDiscHistory: history,
+    seasonNumberUserConfirmed: true
+  }));
+  const candidate = report.discPositionCandidates.find((entry) => entry.discNumber === 1);
+
+  assert.ok(candidate.confidenceBreakdown.evidence.some((entry) =>
+    entry.category === "fingerprint" && entry.type === "neutral" &&
+    entry.message.includes("matches a previously processed disc")
+  ));
+  assert.ok(candidate.confidenceBreakdown.evidence.some((entry) =>
+    entry.category === "user-confirmation" && entry.type === "neutral"
+  ));
+  assert.equal(candidate.confidence, 1);
+  assert.ok(!candidate.confidenceBreakdown.evidence.some((entry) =>
+    entry.category === "completed-disc-history" && entry.type === "negative"
+  ));
+});
+
 test("TV analysis identifies duplicate episodes and alternate cuts", () => {
   const input = baseInput({
     manifest: {

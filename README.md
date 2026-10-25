@@ -399,6 +399,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.28.0
+
+- Added structured positive, negative, and neutral TV disc-matching evidence with score breakdowns and alternative-candidate explanations.
+
 ### Version 1.27.0
 
 - Standardized published-media permissions across movie, TV, music and review workflows, with destination-group inheritance and no world-write access.

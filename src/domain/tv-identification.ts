@@ -1,3 +1,5 @@
+import type { TvDiscPositionCandidate } from "./television.js";
+
 export type TvIdentificationStepId =
   | "user-specified"
   | "fingerprint-mapping"
@@ -66,6 +68,7 @@ export interface TvIdentificationDiagnostics {
   failures: readonly { providerId: string; query: string; message: string }[];
   seriesCandidates: readonly { title: string; year?: number; providerId: string; seriesId: string; confidence: number }[];
   seasonCandidates: readonly { seasonNumber: number; providerId: string; confidence: number }[];
+  discPositionCandidates: readonly TvDiscPositionCandidate[];
   discLabelSuggestion?: {
     seriesName?: string;
     seasonNumber?: number;

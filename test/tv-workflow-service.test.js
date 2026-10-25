@@ -285,6 +285,7 @@ test("a Disc 2 label and completed Disc 1 history override conflicting Disc 1 me
   assert.equal(result.plan.discPosition.discNumber, 2);
   assert.equal(result.identification.discLabelSuggestion.seasonNumber, 3);
   assert.equal(result.identification.discLabelSuggestion.discNumber, 2);
+  assert.deepEqual(result.identification.discPositionCandidates, result.analysis.discPositionCandidates);
   assert.ok(result.analysis.discPositionCandidates[0].evidence.some((evidence) =>
     evidence.includes("Optical disc volume label")
   ));
