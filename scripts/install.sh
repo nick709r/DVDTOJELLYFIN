@@ -138,8 +138,8 @@ install -d -o autodisc -g autodisc -m 0700 /var/lib/autodisc/.MakeMKV
 install -d -o root -g autodisc -m 1770 /var/lib/autodisc/updater
 cp "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/tsconfig.json" /opt/autodisc/
 cp "$ROOT/README.md" "$ROOT/AUTODISC-ARCHITECTURE.md" /opt/autodisc/
-rm -rf /opt/autodisc/src /opt/autodisc/web
-cp -R "$ROOT/src" "$ROOT/web" /opt/autodisc/
+rm -rf /opt/autodisc/src /opt/autodisc/web /opt/autodisc/scripts
+cp -R "$ROOT/src" "$ROOT/web" "$ROOT/scripts" /opt/autodisc/
 chown -R root:root /opt/autodisc
 
 cd /opt/autodisc

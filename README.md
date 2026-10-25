@@ -395,6 +395,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.26.1
+
+- Fixed fresh installs by copying build-time scripts into `/opt/autodisc` before running the build.
+
 ### Version 1.26.0
 
 - Clean generated JavaScript before builds and prevent TypeScript from emitting output when compilation reports errors.
