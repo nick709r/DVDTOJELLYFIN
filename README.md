@@ -395,6 +395,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.26.2
+
+- Fixed TypeScript build errors in review processing, storage lifecycle, process tracking, and the DVD TV workflow.
+
 ### Version 1.26.1
 
 - Fixed fresh installs by copying build-time scripts into `/opt/autodisc` before running the build.

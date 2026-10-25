@@ -411,7 +411,7 @@ export class ReviewQueueCleanupService {
     const taskFingerprint = jobId
       ? (this.db.prepare("SELECT fingerprint FROM tv_matching_tasks WHERE job_id = ?").get(jobId) as { fingerprint: string } | undefined)?.fingerprint
       : undefined;
-    const fingerprint = job?.disc_fingerprint ?? row.disc_fingerprint ?? taskFingerprint;
+    const fingerprint = job?.disc_fingerprint ?? row.disc_fingerprint ?? taskFingerprint ?? null;
     const fingerprintExclusive = fingerprint ? this.isFingerprintExclusive(fingerprint, jobId, row.id) : false;
     const paths: OwnedPath[] = [];
     const reviewJobIds: string[] = [];
@@ -737,7 +737,7 @@ export class ReviewQueueCleanupService {
       success,
       errors
     };
-    log(success ? "info" : "error", "review-cleanup", "Review item cleanup completed", result);
+    log(success ? "info" : "error", "review-cleanup", "Review item cleanup completed", { ...result });
     return result;
   }
 }

@@ -58,7 +58,7 @@ export class ReviewJobProcessor {
         const result = await this.metadata.resolve({
           entityType: "movie",
           query: review.discLabel || ""
-        }, controller.signal, context.id);
+        }, controller.signal);
         if (settings.metadataEnabled && !result.selected && result.providerFailures.length > 0) {
           throw new Error(`Metadata lookup failed: ${result.providerFailures.map((item) => item.message).join("; ")}`);
         }

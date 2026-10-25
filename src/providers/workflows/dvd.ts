@@ -248,6 +248,7 @@ async function processMappedTvEpisodes(
           mapping,
           baseName,
           seasonNumber,
+          seasonName,
           seasonDir,
           targetPath: join(seasonDir, `${baseName}.${settings.format}`)
         };
@@ -292,7 +293,7 @@ async function processMappedTvEpisodes(
         status: "converting",
         message: "Converting mapped TV episodes"
       });
-      for (const [index, { item, mapping, baseName, seasonNumber, seasonDir, targetPath }] of prepared.entries()) {
+      for (const [index, { item, mapping, baseName, seasonNumber, seasonName, seasonDir, targetPath }] of prepared.entries()) {
         job.throwIfCancelled();
         await mkdir(seasonDir, { recursive: true, mode: 0o750 });
         if (metadataSettings.automaticImport && metadataSettings.downloadSeriesMetadata) {
@@ -789,11 +790,11 @@ async function processMappedTvEpisodes(
 
   async continueTvMatching(
     jobId: string,
-    source: TvMatchingContinuationSource = "continue-action"
+    continuationSource: TvMatchingContinuationSource = "continue-action"
   ): Promise<void> {
     const jobs = this.matchingJobs;
     if (!jobs || !this.tvWorkflow) throw new Error("TV matching service is unavailable");
-    logTvContinuationState(jobs, jobId, "converting", source);
+    logTvContinuationState(jobs, jobId, "converting", continuationSource);
     const task = jobs.getTvMatchingTask(jobId);
     if (!task) throw new Error("TV matching task was not found");
     if (task.status === "processing" || task.status === "completed") {
@@ -900,7 +901,7 @@ async function processMappedTvEpisodes(
         if (!jobs.updateTvMatchingTask(task.jobId, { status: "completed", failure: null })) {
           throw new Error("TV matching task could not be marked completed");
         }
-      }, source);
+      }, continuationSource);
       setRuntimeStatus("completed");
     } catch (error) {
       const message = error instanceof Error ? error.message : "TV matching continuation failed";

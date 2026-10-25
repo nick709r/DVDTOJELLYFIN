@@ -86,7 +86,7 @@ export interface StorageCleanupResult extends StorageCleanupImpact {
   success: boolean;
 }
 
-export interface StorageOrphan extends OrphanedDataReport["items"][number] {
+export type StorageOrphan = OrphanedDataReport["items"][number] & {
   size: number;
   ageDays: number | null;
   originalJobId: string | null;
@@ -968,10 +968,10 @@ export class StorageLifecycleService {
     const identity = info.ino ? `${info.dev}:${info.ino}` : resolve(path).toLowerCase();
     return {
       path: resolve(path),
-      size: info.size,
+      size: Number(info.size),
       modifiedAt: info.mtime.toISOString(),
       identity,
-      links: info.nlink
+      links: Number(info.nlink)
     };
   }
 
