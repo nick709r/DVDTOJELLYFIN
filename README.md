@@ -399,6 +399,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.29.0
+
+- Added imported-episode continuity evidence to TV disc-position confidence scoring, including expected next episodes, missing episode ranges, overlap penalties, and duplicate-disc explanations.
+
 ### Version 1.28.0
 
 - Added structured positive, negative, and neutral TV disc-matching evidence with score breakdowns and alternative-candidate explanations.

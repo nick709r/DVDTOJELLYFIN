@@ -586,7 +586,15 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
           scoreImpact: 30,
           type: "positive"
         }],
-        finalScore: 92
+        finalScore: 92,
+        continuity: {
+          seasonNumber: 3,
+          highestImportedEpisodeNumber: 8,
+          expectedNextEpisodeNumber: 9,
+          expectedRemainingEpisodeRange: { start: 9, end: 22 },
+          importedEpisodeRanges: [{ start: 1, end: 8 }],
+          remainingEpisodeRanges: [{ start: 9, end: 22 }]
+        }
       }
     };
     jobs.repositories.tvMatchingTasks.create({

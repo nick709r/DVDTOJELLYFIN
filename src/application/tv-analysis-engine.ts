@@ -7,11 +7,13 @@ import type {
   HistoricalDiscAnalysis,
   Series,
   TvAnalysisInput,
+  TvEpisodeContinuity,
   TvDiscAnalysisReport,
   TvDiscItemKind,
   TvDiscItemResult,
   TvDiscPositionCandidate,
   TvDiscRelationship,
+  TvEpisodeNumberRange,
   TvEpisodeMetadataCandidate,
   TvDiscStructureHint,
   TvMatchingEvidence,
@@ -33,6 +35,78 @@ export const tvAnalysisWeights = {
 
 function normalizedText(value: string): string {
   return value.normalize("NFKD").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function episodeNumberRanges(episodeNumbers: readonly number[]): TvEpisodeNumberRange[] {
+  const ranges: TvEpisodeNumberRange[] = [];
+  const sorted = [...new Set(episodeNumbers.filter((number) =>
+    Number.isInteger(number) && number > 0
+  ))].sort((left, right) => left - right);
+  for (const episodeNumber of sorted) {
+    const current = ranges.at(-1);
+    if (current && episodeNumber === current.end + 1) current.end = episodeNumber;
+    else ranges.push({ start: episodeNumber, end: episodeNumber });
+  }
+  return ranges;
+}
+
+function episodeCode(seasonNumber: number, episodeNumber: number): string {
+  return `S${String(seasonNumber).padStart(2, "0")}E${String(episodeNumber).padStart(2, "0")}`;
+}
+
+function episodeRangeLabel(seasonNumber: number, ranges: readonly TvEpisodeNumberRange[]): string {
+  return ranges.map((range) => range.start === range.end
+    ? episodeCode(seasonNumber, range.start)
+    : `${episodeCode(seasonNumber, range.start)}-${episodeCode(seasonNumber, range.end)}`
+  ).join(", ");
+}
+
+function tvEpisodeContinuity(
+  season: TvSeasonMatchCandidate | undefined,
+  completedHistory: readonly CompletedTvDiscHistory[],
+  providerDiscEpisodes: readonly TvProviderDiscEpisode[],
+  episodeCandidates: readonly TvEpisodeMetadataCandidate[]
+): TvEpisodeContinuity | undefined {
+  const seasonNumber = season?.season.number;
+  if (!season || seasonNumber === undefined || seasonNumber === 0) return undefined;
+  const importedEpisodeNumbers = completedHistory.flatMap((record) => [
+    ...record.episodes,
+    ...record.mappings.flatMap((mapping) => mapping.episodes)
+  ]).filter((episode) =>
+    episode.seasonNumber === seasonNumber &&
+    Number.isInteger(episode.episodeNumber) &&
+    episode.episodeNumber > 0
+  ).map((episode) => episode.episodeNumber);
+  if (importedEpisodeNumbers.length === 0) return undefined;
+  const imported = new Set(importedEpisodeNumbers);
+  const catalogEpisodeNumbers = [
+    ...providerDiscEpisodes
+      .filter((mapping) => mapping.episode.seriesId === season.seriesId &&
+        mapping.episode.seasonNumber === seasonNumber)
+      .map((mapping) => mapping.episode.episodeNumber),
+    ...episodeCandidates
+      .filter((candidate) => candidate.episode.seriesId === season.seriesId &&
+        candidate.episode.seasonNumber === seasonNumber)
+      .map((candidate) => candidate.episode.episodeNumber)
+  ].filter((episodeNumber) => Number.isInteger(episodeNumber) && episodeNumber > 0);
+  const highestImportedEpisodeNumber = Math.max(...importedEpisodeNumbers);
+  const expectedNextEpisodeNumber = highestImportedEpisodeNumber + 1;
+  const latestCatalogEpisode = catalogEpisodeNumbers.length > 0
+    ? Math.max(...catalogEpisodeNumbers)
+    : undefined;
+  return {
+    seasonNumber,
+    highestImportedEpisodeNumber,
+    expectedNextEpisodeNumber,
+    expectedRemainingEpisodeRange: {
+      start: expectedNextEpisodeNumber,
+      ...(latestCatalogEpisode !== undefined && latestCatalogEpisode >= expectedNextEpisodeNumber
+        ? { end: latestCatalogEpisode }
+        : {})
+    },
+    importedEpisodeRanges: episodeNumberRanges(importedEpisodeNumbers),
+    remainingEpisodeRanges: episodeNumberRanges(catalogEpisodeNumbers.filter((number) => !imported.has(number)))
+  };
 }
 
 function words(value: string): Set<string> {
@@ -373,6 +447,12 @@ function rankDiscPositions(
     ? discHints.filter((hint) => strongestDiscHint.confidence - hint.confidence <= 0.05)
     : [];
   const hasConflictingStrongHints = new Set(strongestDiscHints.map((hint) => hint.discNumber)).size > 1;
+  const seasonContinuity = tvEpisodeContinuity(
+    selectedSeason,
+    completedHistory,
+    input.providerDiscEpisodes ?? [],
+    input.metadata.episodeCandidates
+  );
   const discPositionWeights = {
     ...tvAnalysisWeights.discPosition,
     metadata: 0.4,
@@ -387,12 +467,13 @@ function rankDiscPositions(
   const makeEvidence = (
     category: string,
     message: string,
-    scoreImpact: number
+    scoreImpact: number,
+    type?: TvMatchingEvidence["type"]
   ): TvMatchingEvidence => ({
     category,
     message,
     scoreImpact,
-    type: scoreImpactType(scoreImpact)
+    type: type ?? scoreImpactType(scoreImpact)
   });
   const ranked = [...candidates.entries()].map(([discNumber, entry]) => {
     const components: ConfidenceComponents = {
@@ -454,6 +535,13 @@ function rankDiscPositions(
         (!selectedSeason || (mapping.episode.seriesId === selectedSeason.seriesId &&
           mapping.episode.seasonNumber === selectedSeason.season.number)))
       .map((mapping) => `${mapping.episode.seriesId}:${mapping.episode.seasonNumber}:${mapping.episode.episodeNumber}`));
+    const candidateEpisodeNumbers = [...new Set((input.providerDiscEpisodes ?? [])
+      .filter((mapping) => mapping.discNumber === discNumber &&
+        (!selectedSeason || (mapping.episode.seriesId === selectedSeason.seriesId &&
+          mapping.episode.seasonNumber === selectedSeason.season.number)))
+      .map((mapping) => mapping.episode.episodeNumber)
+      .filter((episodeNumber) => Number.isInteger(episodeNumber) && episodeNumber > 0))]
+      .sort((left, right) => left - right);
     const importedEpisodes = new Set(completedHistory.flatMap((record) =>
       record.episodes.map((episode) =>
         `${episode.seriesId}:${episode.seasonNumber}:${episode.episodeNumber}`
@@ -512,6 +600,136 @@ function rankDiscPositions(
         (confidence - beforeLabelConflictPenalty) * 100
       ));
     }
+    const confidenceBeforeContinuity = confidence;
+    if (seasonContinuity) {
+      const expectedNext = seasonContinuity.expectedNextEpisodeNumber;
+      const nextEpisodeLabel = episodeCode(seasonContinuity.seasonNumber, expectedNext);
+      const expectedRange = seasonContinuity.expectedRemainingEpisodeRange;
+      const expectedRangeLabel = expectedRange.end === undefined
+        ? `${episodeCode(seasonContinuity.seasonNumber, expectedRange.start)}+`
+        : expectedRange.start === expectedRange.end
+          ? episodeCode(seasonContinuity.seasonNumber, expectedRange.start)
+          : `${episodeCode(seasonContinuity.seasonNumber, expectedRange.start)}-${episodeCode(seasonContinuity.seasonNumber, expectedRange.end)}`;
+      evidence.push(makeEvidence(
+        "episode-continuity",
+        `Expected next episode: ${nextEpisodeLabel}`,
+        0
+      ));
+      evidence.push(makeEvidence(
+        "episode-continuity",
+        `Expected remaining episode range: ${expectedRangeLabel}`,
+        0
+      ));
+      const importedRangeLabel = episodeRangeLabel(
+        seasonContinuity.seasonNumber,
+        seasonContinuity.importedEpisodeRanges
+      );
+      if (importedRangeLabel) {
+        evidence.push(makeEvidence(
+          "episode-continuity",
+          `Imported episode ranges: ${importedRangeLabel}`,
+          0
+        ));
+      }
+      const remainingRangeLabel = episodeRangeLabel(
+        seasonContinuity.seasonNumber,
+        seasonContinuity.remainingEpisodeRanges
+      );
+      if (remainingRangeLabel) {
+        evidence.push(makeEvidence(
+          "episode-continuity",
+          `Unimported episode ranges: ${remainingRangeLabel}`,
+          0
+        ));
+      }
+      const firstCandidateEpisode = candidateEpisodeNumbers[0];
+      const candidateHasMissingEpisodes = candidateEpisodeNumbers.some((episodeNumber) =>
+        !seasonContinuity.importedEpisodeRanges.some((range) =>
+          episodeNumber >= range.start && episodeNumber <= range.end
+        )
+      );
+      const overlappingEpisodeNumbers = candidateEpisodeNumbers.filter((episodeNumber) =>
+        seasonContinuity.importedEpisodeRanges.some((range) =>
+          episodeNumber >= range.start && episodeNumber <= range.end
+        )
+      );
+      const applyContinuityAdjustment = (
+        message: string,
+        adjustment: number,
+        type: TvMatchingEvidence["type"]
+      ) => {
+        const beforeAdjustment = confidence;
+        confidence = checkedConfidence(confidence + adjustment, "Episode continuity");
+        evidence.push(makeEvidence(
+          "episode-continuity",
+          message,
+          (confidence - beforeAdjustment) * 100,
+          type
+        ));
+      };
+      if (firstCandidateEpisode !== undefined &&
+        Math.abs(firstCandidateEpisode - expectedNext) <= 1) {
+        applyContinuityAdjustment(
+          `Candidate begins near expected continuation ${nextEpisodeLabel}`,
+          0.25,
+          "positive"
+        );
+      }
+      if (candidateHasMissingEpisodes) {
+        const missingRangeLabel = episodeRangeLabel(
+          seasonContinuity.seasonNumber,
+          episodeNumberRanges(candidateEpisodeNumbers.filter((episodeNumber) =>
+            !seasonContinuity.importedEpisodeRanges.some((range) =>
+              episodeNumber >= range.start && episodeNumber <= range.end
+            )
+          ))
+        );
+        applyContinuityAdjustment(
+          `Candidate covers missing episodes ${missingRangeLabel}`,
+          0.2,
+          "positive"
+        );
+      }
+      if (overlappingEpisodeNumbers.length > 0) {
+        const overlapRangeLabel = episodeRangeLabel(
+          seasonContinuity.seasonNumber,
+          episodeNumberRanges(overlappingEpisodeNumbers)
+        );
+        applyContinuityAdjustment(
+          `Candidate overlaps already imported episodes ${overlapRangeLabel}`,
+          -0.3,
+          "negative"
+        );
+      }
+      if (candidateEpisodeNumbers.length > 0 &&
+        overlappingEpisodeNumbers.length === candidateEpisodeNumbers.length) {
+        const duplicateRangeLabel = episodeRangeLabel(
+          seasonContinuity.seasonNumber,
+          episodeNumberRanges(candidateEpisodeNumbers)
+        );
+        applyContinuityAdjustment(
+          `Candidate duplicates imported episodes ${duplicateRangeLabel}`,
+          -0.2,
+          "negative"
+        );
+      }
+      if (firstCandidateEpisode !== undefined && firstCandidateEpisode < expectedNext) {
+        applyContinuityAdjustment(
+          `Candidate starts before imported episode boundary ${nextEpisodeLabel}`,
+          -0.2,
+          "negative"
+        );
+      }
+    }
+    if (exactFingerprintHistory && confidence !== confidenceBeforeContinuity) {
+      const beforeFingerprintPreservation = confidence;
+      confidence = confidenceBeforeContinuity;
+      evidence.push(makeEvidence(
+        "fingerprint-history",
+        "Exact fingerprint history preserves its pre-continuity confidence",
+        (confidence - beforeFingerprintPreservation) * 100
+      ));
+    }
     if (input.fingerprint !== undefined) {
       const fingerprintWasProcessed = relevantHistory.some((record) => record.fingerprint === input.fingerprint);
       evidence.push(makeEvidence(
@@ -537,7 +755,8 @@ function rankDiscPositions(
       confidenceBreakdown: {
         baseScore: baseConfidence * 100,
         evidence,
-        finalScore: confidence * 100
+        finalScore: confidence * 100,
+        ...(seasonContinuity ? { continuity: seasonContinuity } : {})
       }
     };
   }).sort((left, right) =>

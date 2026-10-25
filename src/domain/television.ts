@@ -132,10 +132,28 @@ export interface TvMatchingEvidence {
   type: TvEvidenceType;
 }
 
+export interface TvEpisodeNumberRange {
+  start: number;
+  end: number;
+}
+
+export interface TvEpisodeContinuity {
+  seasonNumber: number;
+  highestImportedEpisodeNumber: number;
+  expectedNextEpisodeNumber: number;
+  expectedRemainingEpisodeRange: {
+    start: number;
+    end?: number;
+  };
+  importedEpisodeRanges: readonly TvEpisodeNumberRange[];
+  remainingEpisodeRanges: readonly TvEpisodeNumberRange[];
+}
+
 export interface TvConfidenceBreakdown {
   baseScore: number;
   evidence: readonly TvMatchingEvidence[];
   finalScore: number;
+  continuity?: TvEpisodeContinuity;
 }
 
 export interface EpisodeCorrection {

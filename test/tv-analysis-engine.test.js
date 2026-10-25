@@ -51,6 +51,45 @@ function baseInput(overrides = {}) {
   };
 }
 
+function episodeNumbers(start, end) {
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function providerDiscEpisodes(discEpisodeSets, confidence = 1) {
+  return discEpisodeSets.flatMap(({ discNumber, episodes }) => episodes.map((episodeNumber, index) => ({
+    episode: { seriesId: "series-1", seasonNumber: 2, episodeNumber },
+    providerId: "tvdb",
+    discNumber,
+    discOrder: index + 1,
+    confidence
+  })));
+}
+
+function completedDisc(episodes, { fingerprint = "previous-disc", discNumber = 1 } = {}) {
+  return {
+    jobId: `completed-disc-${discNumber}`,
+    fingerprint,
+    metadataProvider: "metadata.test",
+    providerId: "series-1",
+    seriesName: "The Example Show",
+    seasonNumber: 2,
+    discNumber,
+    mappings: [],
+    episodes: episodes.map((episodeNumber) => ({
+      seriesId: "series-1",
+      seasonNumber: 2,
+      episodeNumber
+    })),
+    completedAt: "2026-10-24T12:00:00.000Z"
+  };
+}
+
+function assertConfidenceBreakdown(candidate) {
+  const { baseScore, evidence, finalScore } = candidate.confidenceBreakdown;
+  const total = baseScore + evidence.reduce((sum, entry) => sum + entry.scoreImpact, 0);
+  assert.ok(Math.abs(total - finalScore) < 1e-8);
+}
+
 test("TV analysis combines metadata, title, runtime, and disc structure with explainable confidence", () => {
   const report = engine.analyze(baseInput());
 
@@ -301,6 +340,137 @@ test("disc-position evidence reports fingerprint history and user confirmation n
   assert.ok(!candidate.confidenceBreakdown.evidence.some((entry) =>
     entry.category === "completed-disc-history" && entry.type === "negative"
   ));
+});
+
+test("completed Disc 1 history identifies Disc 2 as the expected continuation", () => {
+  const report = engine.analyze(baseInput({
+    fingerprint: "new-disc-2",
+    disc: { seasonNumber: 2, discNumber: 2 },
+    completedDiscHistory: [completedDisc(episodeNumbers(1, 8))],
+    providerDiscEpisodes: providerDiscEpisodes([
+      { discNumber: 1, episodes: episodeNumbers(1, 8) },
+      { discNumber: 2, episodes: episodeNumbers(9, 16) },
+      { discNumber: 3, episodes: episodeNumbers(17, 22) }
+    ], 0.3)
+  }));
+  const discTwo = report.discPositionCandidates.find((candidate) => candidate.discNumber === 2);
+  const continuity = discTwo.confidenceBreakdown.continuity;
+  const evidence = discTwo.confidenceBreakdown.evidence;
+
+  assert.equal(continuity.highestImportedEpisodeNumber, 8);
+  assert.equal(continuity.expectedNextEpisodeNumber, 9);
+  assert.deepEqual(continuity.expectedRemainingEpisodeRange, { start: 9, end: 22 });
+  assert.deepEqual(continuity.importedEpisodeRanges, [{ start: 1, end: 8 }]);
+  assert.deepEqual(continuity.remainingEpisodeRanges, [{ start: 9, end: 22 }]);
+  assert.ok(evidence.some((entry) => entry.message === "Expected next episode: S02E09"));
+  assert.ok(evidence.some((entry) => entry.message === "Expected remaining episode range: S02E09-S02E22"));
+  assert.ok(evidence.some((entry) =>
+    entry.type === "positive" && entry.message.includes("begins near expected continuation S02E09") &&
+    entry.scoreImpact > 0
+  ));
+  assert.ok(evidence.some((entry) =>
+    entry.type === "positive" && entry.message.includes("covers missing episodes S02E09-S02E16") &&
+    entry.scoreImpact > 0
+  ));
+  assert.ok(discTwo.confidence > report.discPositionCandidates.find((candidate) =>
+    candidate.discNumber === 1
+  ).confidence);
+  assertConfidenceBreakdown(discTwo);
+});
+
+test("partial imports make the first unimported episode the continuity boundary", () => {
+  const report = engine.analyze(baseInput({
+    fingerprint: "partial-disc",
+    disc: { seasonNumber: 2, discNumber: 2 },
+    completedDiscHistory: [completedDisc(episodeNumbers(1, 4))],
+    providerDiscEpisodes: providerDiscEpisodes([
+      { discNumber: 1, episodes: episodeNumbers(1, 4) },
+      { discNumber: 2, episodes: episodeNumbers(5, 8) },
+      { discNumber: 3, episodes: episodeNumbers(9, 12) }
+    ], 0.2)
+  }));
+  const discTwo = report.discPositionCandidates.find((candidate) => candidate.discNumber === 2);
+
+  assert.equal(discTwo.confidenceBreakdown.continuity.highestImportedEpisodeNumber, 4);
+  assert.equal(discTwo.confidenceBreakdown.continuity.expectedNextEpisodeNumber, 5);
+  assert.deepEqual(discTwo.confidenceBreakdown.continuity.expectedRemainingEpisodeRange, {
+    start: 5,
+    end: 12
+  });
+  assert.ok(discTwo.confidenceBreakdown.evidence.some((entry) =>
+    entry.type === "positive" && entry.message.includes("begins near expected continuation S02E05")
+  ));
+  assert.ok(discTwo.confidenceBreakdown.evidence.some((entry) =>
+    entry.type === "positive" && entry.message.includes("covers missing episodes S02E05-S02E08")
+  ));
+  assertConfidenceBreakdown(discTwo);
+});
+
+test("continuity preserves missing episode gaps in a partially imported season", () => {
+  const importedEpisodeNumbers = [
+    ...episodeNumbers(1, 4),
+    ...episodeNumbers(9, 12)
+  ];
+  const report = engine.analyze(baseInput({
+    fingerprint: "midseason-gap",
+    disc: { seasonNumber: 2, discNumber: 4 },
+    completedDiscHistory: [completedDisc(importedEpisodeNumbers, { discNumber: 3 })],
+    providerDiscEpisodes: providerDiscEpisodes([
+      { discNumber: 1, episodes: episodeNumbers(1, 4) },
+      { discNumber: 2, episodes: episodeNumbers(5, 8) },
+      { discNumber: 3, episodes: episodeNumbers(9, 12) },
+      { discNumber: 4, episodes: episodeNumbers(13, 20) }
+    ], 0.2)
+  }));
+  const discFour = report.discPositionCandidates.find((candidate) => candidate.discNumber === 4);
+  const continuity = discFour.confidenceBreakdown.continuity;
+
+  assert.equal(continuity.highestImportedEpisodeNumber, 12);
+  assert.equal(continuity.expectedNextEpisodeNumber, 13);
+  assert.deepEqual(continuity.expectedRemainingEpisodeRange, { start: 13, end: 20 });
+  assert.deepEqual(continuity.remainingEpisodeRanges, [
+    { start: 5, end: 8 },
+    { start: 13, end: 20 }
+  ]);
+  const discTwo = report.discPositionCandidates.find((candidate) => candidate.discNumber === 2);
+  assert.ok(discTwo.confidenceBreakdown.evidence.some((entry) =>
+    entry.type === "positive" && entry.message.includes("covers missing episodes S02E05-S02E08")
+  ));
+  assert.ok(discTwo.confidenceBreakdown.evidence.some((entry) =>
+    entry.type === "negative" && entry.message.includes("starts before imported episode boundary S02E13")
+  ));
+  assertConfidenceBreakdown(discFour);
+  assertConfidenceBreakdown(discTwo);
+});
+
+test("duplicate disc insertion exposes overlap, duplicate, and before-boundary penalties", () => {
+  const report = engine.analyze(baseInput({
+    disc: { seasonNumber: 2, discNumber: 1 },
+    completedDiscHistory: [completedDisc(episodeNumbers(1, 8), { fingerprint: "disc-fingerprint" })],
+    providerDiscEpisodes: providerDiscEpisodes([
+      { discNumber: 1, episodes: episodeNumbers(1, 8) },
+      { discNumber: 2, episodes: episodeNumbers(9, 16) }
+    ])
+  }));
+  const duplicateDisc = report.discPositionCandidates.find((candidate) => candidate.discNumber === 1);
+  const evidence = duplicateDisc.confidenceBreakdown.evidence;
+
+  assert.ok(evidence.some((entry) =>
+    entry.type === "negative" && entry.message.includes("overlaps already imported episodes S02E01-S02E08")
+  ));
+  assert.ok(evidence.some((entry) =>
+    entry.type === "negative" && entry.message.includes("duplicates imported episodes S02E01-S02E08")
+  ));
+  assert.ok(evidence.some((entry) =>
+    entry.type === "negative" && entry.message.includes("starts before imported episode boundary S02E09")
+  ));
+  const continuationDisc = report.discPositionCandidates.find((candidate) => candidate.discNumber === 2);
+  assert.ok(continuationDisc.confidenceBreakdown.evidence.some((entry) =>
+    entry.type === "positive" && entry.message.includes("begins near expected continuation S02E09")
+  ));
+  assert.ok(report.discPositionCandidates.includes(duplicateDisc));
+  assert.equal(report.discPositionCandidates[0].discNumber, 1);
+  assertConfidenceBreakdown(duplicateDisc);
 });
 
 test("TV analysis identifies duplicate episodes and alternate cuts", () => {
