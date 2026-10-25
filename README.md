@@ -395,6 +395,13 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.22.0
+
+- Consolidated primary navigation around the media workflow and unified review queue.
+- Added Dashboard attention summaries and quick access to unmatched TV content and items requiring review.
+- Improved review and diagnostics refresh reliability, including protection against stale concurrent responses.
+- Improved Dashboard review counts and synchronized updates across open clients.
+
 ### Version 1.21.0
 
 - Assign TV episodes from provider DVD disc ordering when available, with a sequential disc-order fallback when provider mapping is missing or incomplete.
