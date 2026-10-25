@@ -10,7 +10,8 @@ import type {
   TvEpisodeMatchOption,
   TvEpisodeMatchReport,
   TvEpisodeMatchingInput,
-  TvEpisodeMetadataCandidate
+  TvEpisodeMetadataCandidate,
+  TvProviderDiscEpisode
 } from "../domain/television.js";
 
 export const tvEpisodeMatchingPolicy = {
@@ -227,6 +228,16 @@ function makeOptions(
         kind: "single"
       });
     }
+    for (const entry of input.providerDiscEpisodes ?? []) {
+      if (!entry.providerId.trim() || !entry.episode.seriesId.trim() ||
+        !Number.isInteger(entry.episode.seasonNumber) || entry.episode.seasonNumber < 0 ||
+        !Number.isInteger(entry.episode.episodeNumber) || entry.episode.episodeNumber < 0 ||
+        !Number.isInteger(entry.discNumber) || entry.discNumber < 1 ||
+        !Number.isInteger(entry.discOrder) || entry.discOrder < 1) {
+        throw new Error("Provider disc episode mapping is invalid");
+      }
+      finiteConfidence(entry.confidence, "Provider disc mapping");
+    }
   }
   const multipart = multipartOptions(item, input, rejected);
   for (const option of multipart) options.set(`group:${option.multiPartGroupId}`, option);
@@ -300,7 +311,13 @@ function episodeItemResult(
   analysis: TvDiscAnalysisReport,
   input: TvEpisodeMatchingInput,
   minimumConfidence: number,
-  minimumMargin: number
+  minimumMargin: number,
+  strategyAssignment?: {
+    episode: Episode;
+    method: NonNullable<TvEpisodeMatchItemReport["assignmentMethod"]>;
+    confidence: number;
+    evidence: readonly string[];
+  }
 ): TvEpisodeMatchItemReport {
   const feedback = matchingFeedback(item, analysis, input.feedback ?? []);
   const latest = feedback[0];
@@ -312,6 +329,7 @@ function episodeItemResult(
       decision: "manual-assignment",
       suggestedEpisodes: [...manual.episodes],
       confidence: 1,
+      assignmentMethod: "user-correction",
       alternatives: [],
       evidence: [
         "Episode assignment was explicitly entered by a user",
@@ -328,6 +346,7 @@ function episodeItemResult(
       decision: "accepted",
       suggestedEpisodes: [...accepted.episodes],
       confidence: 1,
+      assignmentMethod: "user-correction",
       alternatives: [],
       evidence: [
         "This match was explicitly accepted by a user",
@@ -338,6 +357,45 @@ function episodeItemResult(
   }
 
   const rejected = latest?.outcome === "rejected" ? [latest] : [];
+  if (strategyAssignment) {
+    const rejectedEpisode = rejected.some((record) =>
+      record.episodes.some((episode) => episodeKey(episode) === episodeKey(strategyAssignment.episode))
+    );
+    if (!rejectedEpisode) {
+      return {
+        itemId: item.itemId,
+        ...(item.title === undefined ? {} : { itemTitle: item.title }),
+        decision: "suggested",
+        suggestedEpisodes: [strategyAssignment.episode],
+        confidence: strategyAssignment.confidence,
+        assignmentMethod: strategyAssignment.method,
+        alternatives: [],
+        evidence: [...new Set([...item.evidence, ...strategyAssignment.evidence])],
+        manualReviewRequired: false
+      };
+    }
+  }
+  const exactHistory = item.candidates.find((candidate) =>
+    candidate.evidence.some((evidence) =>
+      evidence === "Episode match is recorded for this exact disc fingerprint and item signature"
+    ) && !rejected.some((record) =>
+      record.episodes.some((episode) => episodeKey(episode) === episodeKey(candidate.episode))
+    )
+  );
+  if (exactHistory) {
+    return {
+      itemId: item.itemId,
+      ...(item.title === undefined ? {} : { itemTitle: item.title }),
+      decision: "suggested",
+      suggestedEpisodes: [exactHistory.episode],
+      confidence: 1,
+      assignmentMethod: "exact-fingerprint-history",
+      alternatives: [],
+      evidence: [...new Set([...item.evidence, ...exactHistory.evidence,
+        "Episode assigned from exact fingerprint history."])],
+      manualReviewRequired: false
+    };
+  }
   const options = makeOptions(item, input, rejected);
   const rejectedEvidence = rejected.map((record) =>
     `Previously rejected episode match: ${record.episodes.map((episode) => `S${episode.seasonNumber}E${episode.episodeNumber}`).join(", ")}${record.reason ? ` (${record.reason})` : ""}`
@@ -441,10 +499,127 @@ function episodeItemResult(
     decision: "suggested",
     suggestedEpisodes: [...selected.episodes],
     confidence: selected.confidence,
+    ...(selected.scoreComponents.runtimeSimilarity === undefined
+      ? {}
+      : { assignmentMethod: "runtime-matching" as const }),
     alternatives: options,
     evidence: [...new Set([...item.evidence, ...selected.evidence, ...rejectedEvidence])],
     manualReviewRequired: false
   };
+}
+
+type StrategyAssignment = NonNullable<Parameters<typeof episodeItemResult>[5]>;
+
+function isPrimaryEpisodeTrack(item: TvDiscItemResult): boolean {
+  return (item.kind === "episode-candidate" || item.kind === "unknown") &&
+    (item.durationSeconds === undefined || item.durationSeconds >= 600);
+}
+
+function orderedPrimaryTracks(analysis: TvDiscAnalysisReport): TvDiscItemResult[] {
+  return analysis.items.map((item, index) => ({ item, index }))
+    .filter(({ item }) => isPrimaryEpisodeTrack(item))
+    .sort((left, right) =>
+      (left.item.trackNumber ?? left.index + 1) - (right.item.trackNumber ?? right.index + 1) ||
+      left.index - right.index
+    )
+    .map(({ item }) => item);
+}
+
+function strategyAssignments(input: TvEpisodeMatchingInput): Map<string, StrategyAssignment> {
+  const { analysis } = input;
+  const primaryTracks = orderedPrimaryTracks(analysis);
+  const assignments = new Map<string, StrategyAssignment>();
+  const feedbackFor = (item: TvDiscItemResult): TvEpisodeFeedback | undefined =>
+    matchingFeedback(item, analysis, input.feedback ?? [])[0];
+
+  for (const item of primaryTracks) {
+    const feedback = feedbackFor(item);
+    if (feedback?.outcome === "accepted" || feedback?.outcome === "manual-assignment") continue;
+    const exact = item.candidates.find((candidate) =>
+      candidate.evidence.some((evidence) =>
+        evidence === "Episode match is recorded for this exact disc fingerprint and item signature"
+      ) && !feedback?.episodes.some((episode) => episodeKey(episode) === episodeKey(candidate.episode))
+    );
+    if (exact) {
+      assignments.set(item.itemId, {
+        episode: exact.episode,
+        method: "exact-fingerprint-history",
+        confidence: 1,
+        evidence: [...exact.evidence, "Episode assigned from exact fingerprint history."]
+      });
+    }
+  }
+
+  const detectedSeason = analysis.detectedSeason;
+  const detectedDisc = analysis.discPositionCandidates?.[0];
+  const confidentlyLocated = Boolean(analysis.detectedSeries &&
+    analysis.detectedSeries.confidence >= 0.9 &&
+    detectedSeason && detectedSeason.confidence >= 0.9 &&
+    detectedDisc && detectedDisc.confidence >= 0.9);
+  if (!confidentlyLocated || !detectedSeason || !detectedDisc || primaryTracks.length === 0) {
+    return assignments;
+  }
+
+  const providerGroups = new Map<string, TvProviderDiscEpisode[]>();
+  for (const entry of input.providerDiscEpisodes ?? []) {
+    if (entry.discNumber !== detectedDisc.discNumber ||
+      entry.episode.seriesId !== detectedSeason.seriesId ||
+      entry.episode.seasonNumber !== detectedSeason.season.number) continue;
+    const group = providerGroups.get(entry.providerId) ?? [];
+    group.push(entry);
+    providerGroups.set(entry.providerId, group);
+  }
+  const providerMapping = [...providerGroups.values()].map((entries) =>
+    entries.slice().sort((left, right) => left.discOrder - right.discOrder)
+  ).find((entries) => entries.length === primaryTracks.length &&
+    entries.every((entry, index) => entry.discOrder === index + 1) &&
+    new Set(entries.map((entry) => episodeKey(entry.episode))).size === entries.length);
+
+  if (providerMapping) {
+    primaryTracks.forEach((item, index) => {
+      if (assignments.has(item.itemId)) return;
+      const entry = providerMapping[index];
+      if (!entry) return;
+      assignments.set(item.itemId, {
+        episode: entry.episode,
+        method: "provider-disc-mapping",
+        confidence: 1,
+        evidence: [
+          `Provider disc mapping from ${entry.providerId} identifies this episode.`,
+          ...(entry.evidence ?? []),
+          "Episode assigned from provider disc mapping."
+        ]
+      });
+    });
+    return assignments;
+  }
+
+  const seasonEpisodes = new Map<string, Episode>();
+  for (const candidate of [
+    ...analysis.items.flatMap((item) => item.candidates.map((entry) => entry.episode)),
+    ...(input.episodeMetadata ?? []).map((entry) => entry.episode)
+  ]) {
+    if (candidate.seriesId === detectedSeason.seriesId &&
+      candidate.seasonNumber === detectedSeason.season.number) {
+      seasonEpisodes.set(episodeKey(candidate), candidate);
+    }
+  }
+  const orderedEpisodes = [...seasonEpisodes.values()].sort(compareEpisode);
+  const start = (detectedDisc.discNumber - 1) * primaryTracks.length;
+  const range = orderedEpisodes.slice(start, start + primaryTracks.length);
+  if (range.length !== primaryTracks.length) return assignments;
+  primaryTracks.forEach((item, index) => {
+    if (assignments.has(item.itemId)) return;
+    const episode = range[index];
+    if (!episode) return;
+    assignments.set(item.itemId, {
+      episode,
+      method: "sequential-disc-assignment",
+      confidence: 0.9,
+      evidence: ["Episode assigned using sequential disc ordering."]
+    });
+  });
+  return assignments;
 }
 
 function reconcileConflicts(items: TvEpisodeMatchItemReport[]): TvEpisodeMatchItemReport[] {
@@ -536,8 +711,9 @@ export class TvEpisodeMatchingEngine {
     }
     const minimumConfidence = finiteConfidence(input.minimumConfidence ?? tvEpisodeMatchingPolicy.minimumConfidence, "Minimum");
     const minimumMargin = finiteConfidence(input.minimumMargin ?? tvEpisodeMatchingPolicy.minimumMargin, "Minimum margin");
+    const assignments = strategyAssignments(input);
     const items = input.analysis.items.map((item) =>
-      episodeItemResult(item, input.analysis, input, minimumConfidence, minimumMargin)
+      episodeItemResult(item, input.analysis, input, minimumConfidence, minimumMargin, assignments.get(item.itemId))
     );
     const reconciled = reconcileConflicts(items);
     return {

@@ -133,6 +133,7 @@ async function tmdbLookup(
       { tmdbTvId: first.id }
     )];
   }
+  if (input.entityType === "episode-disc") return [];
   if (input.seasonNumber === undefined) return [];
   const seasonNumber = input.seasonNumber;
   const episodesUrl = new URL(`https://api.themoviedb.org/3/tv/${encodeURIComponent(first.id)}/season/${seasonNumber}`);
@@ -346,6 +347,53 @@ async function tvdbLookup(
     ...(typeof item.runtime === "number" ? { runtimeSeconds: item.runtime * 60 } : {}),
     ...(item.overview ? { overview: item.overview } : {})
   }));
+  if (input.entityType === "episode-disc") {
+    const dvdUrl = new URL(`https://api4.thetvdb.com/v4/series/${encodeURIComponent(first.id)}/episodes/dvd`);
+    dvdUrl.searchParams.set("season", String(seasonNumber));
+    dvdUrl.searchParams.set("page", "0");
+    const dvdResponse = await responseJson<{ data?: { episodes?: Array<{
+      id?: number;
+      dvdDiscNumber?: number;
+      discNumber?: number;
+      dvdEpisodeNumber?: number;
+      dvdOrder?: number;
+      number?: number;
+    }> } }>(await fetcher(dvdUrl, { headers, signal }), "TVDB DVD order");
+    const byId = new Map(episodes.map((episode) => [episode.id, episode]));
+    const mapped = (dvdResponse.data?.episodes ?? []).flatMap((dvdEpisode) => {
+      if (typeof dvdEpisode.id !== "number") return [];
+      const episode = byId.get(String(dvdEpisode.id));
+      const discNumber = dvdEpisode.dvdDiscNumber ?? dvdEpisode.discNumber;
+      const dvdOrder = dvdEpisode.dvdEpisodeNumber ?? dvdEpisode.dvdOrder ?? dvdEpisode.number;
+      if (!episode || typeof discNumber !== "number" || typeof dvdOrder !== "number" ||
+        !Number.isInteger(discNumber) || discNumber < 1 || !Number.isInteger(dvdOrder) || dvdOrder < 1) return [];
+      return [{ episode, discNumber, dvdOrder, providerEpisodeId: dvdEpisode.id }];
+    });
+    const byDisc = new Map<number, typeof mapped>();
+    for (const entry of mapped) {
+      const entries = byDisc.get(entry.discNumber) ?? [];
+      entries.push(entry);
+      byDisc.set(entry.discNumber, entries);
+    }
+    return [...byDisc.entries()].flatMap(([discNumber, entries]) =>
+      entries.sort((left, right) => left.dvdOrder - right.dvdOrder)
+        .map(({ episode, providerEpisodeId }, index) => candidate(
+          `${providerEpisodeId}:dvd`,
+          "episode-disc",
+          episode.title,
+          1,
+          {
+            seriesId: first.id,
+            seasonNumber: episode.seasonNumber,
+            episodeNumber: episode.episodeNumber,
+            title: episode.title,
+            discNumber,
+            discOrder: index + 1
+          },
+          { tvdbId: String(providerEpisodeId) }
+        ))
+    );
+  }
   return episodeCandidates(first, episodes, input, "tvdbId");
 }
 

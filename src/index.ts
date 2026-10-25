@@ -1,7 +1,16 @@
 import { getSettings, repositories } from "./db.js";
 import { configureLogLevel, log } from "./logger.js";
 import { startDiscMonitor } from "./disc-monitor.js";
-import { setDiscApprovalAction, setReviewJobActions, setTvMatchingActions, startServer, stopServer } from "./server.js";
+import {
+  setDiscApprovalAction,
+  setReviewJobActions,
+  setTvMatchingActions,
+  startServer,
+  stopServer,
+  scanReviewQueueOrphans,
+  runStorageMaintenance,
+  validateStartupCapabilities
+} from "./server.js";
 import { recoverTemporaryFiles } from "./recovery.js";
 import { createProviderRuntime } from "./bootstrap/providers.js";
 import { JobCoordinator } from "./application/job-coordinator.js";
@@ -9,10 +18,13 @@ import { events } from "./events.js";
 import { jobControl } from "./job-control.js";
 import { ReviewJobProcessor } from "./application/review-job-processor.js";
 import { processInsertedDisc } from "./pipeline.js";
+import type { TvMatchingContinuationSource } from "./domain/tv-matching.js";
 
 let providerRuntime: Awaited<ReturnType<typeof createProviderRuntime>> | undefined;
 
 async function main(): Promise<void> {
+  configureLogLevel(getSettings().logLevel);
+  await validateStartupCapabilities();
   const jobs = new JobCoordinator(repositories, {
     publish() {
       events.emit("status");
@@ -28,13 +40,48 @@ async function main(): Promise<void> {
   );
   setReviewJobActions({
     continue: (id) => reviewProcessor.continue(id),
-    updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch),
-    remove: (id) => providerRuntime!.reviewWorkspaces.remove(id)
+    updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch)
   });
+  const continueTvTask = async (
+    jobId: string,
+    source: TvMatchingContinuationSource = "continue-action"
+  ): Promise<void> => {
+    try {
+      await providerRuntime!.dvdWorkflow.continueTvMatching(jobId, source);
+    } catch (error) {
+      const task = jobs.getTvMatchingTask(jobId);
+      if (task?.status === "ready-to-publish") {
+        jobs.updateTvMatchingTask(jobId, {
+          status: "awaiting-mapping",
+          failure: error instanceof Error ? error.message : "TV publishing could not resume"
+        });
+      }
+      events.emit("status");
+      throw error;
+    }
+  };
   setTvMatchingActions({
-    continue: (jobId) => providerRuntime!.dvdWorkflow.continueTvMatching(jobId),
+    continue: continueTvTask,
     remove: (jobId) => providerRuntime!.dvdWorkflow.removeTvMatchingTask(jobId)
   });
+  let resumingReadyTvTask = false;
+  const resumeReadyTvTask = (): void => {
+    if (resumingReadyTvTask || !providerRuntime || providerRuntime.jobs.activeJob()) return;
+    const task = providerRuntime.jobs.listTvMatchingTasks().find((candidate) =>
+      candidate.status === "ready-to-publish");
+    if (!task) return;
+    resumingReadyTvTask = true;
+    void continueTvTask(task.jobId, "automatic-ready-task").catch((error: unknown) => {
+      log("error", "tv-matching", "Automatic continuation of a fully matched TV disc failed", {
+        jobId: task.jobId,
+        error: error instanceof Error ? error.message : "unknown TV continuation failure"
+      });
+    }).finally(() => {
+      resumingReadyTvTask = false;
+      resumeReadyTvTask();
+    });
+  };
+  events.on("status", resumeReadyTvTask);
   setDiscApprovalAction(async (item) => {
     if (providerRuntime!.jobs.activeJob()) throw new Error("Wait for the active disc job to finish before approving another disc");
     const signature = item.errorDetails?.detectionSignature;
@@ -49,26 +96,47 @@ async function main(): Promise<void> {
     );
     if (!processed) throw new Error("No matching disc is currently available in the optical drive");
   });
-  configureLogLevel(getSettings().logLevel);
   await recoverTemporaryFiles(repositories);
+  try {
+    await scanReviewQueueOrphans();
+  } catch (error) {
+    log("error", "review-cleanup", "Orphaned data scan failed during startup", {
+      error: error instanceof Error ? error.message : "unknown orphan scan failure"
+    });
+  }
   await providerRuntime.reviewWorkspaces.recoverProcessing();
   try {
+    await runStorageMaintenance();
+  } catch (error) {
+    log("error", "storage-lifecycle", "Startup storage maintenance failed", {
+      error: error instanceof Error ? error.message : "unknown storage maintenance failure"
+    });
+  }
+  try {
     providerRuntime.dvdWorkflow.recoverInterruptedTvMatchingTasks();
-    await providerRuntime.dvdWorkflow.recoverOrphanedTvStagingDirectories();
     await providerRuntime.dvdWorkflow.pruneExpiredTvMatchingTasks();
   } catch (error) {
     log("error", "tv-staging", "TV staging recovery failed during startup", {
       error: error instanceof Error ? error.message : "unknown TV staging recovery failure"
     });
   }
-  const retentionTimer = setInterval(() => {
+  resumeReadyTvTask();
+  const stagingMaintenanceTimer = setInterval(() => {
     void providerRuntime?.dvdWorkflow.pruneExpiredTvMatchingTasks().catch((error: unknown) => {
-      log("error", "tv-staging", "TV staging retention cleanup failed", {
-        error: error instanceof Error ? error.message : "unknown retention cleanup failure"
+      log("error", "tv-staging", "TV staging maintenance failed", {
+        error: error instanceof Error ? error.message : "unknown staging maintenance failure"
       });
     });
   }, 6 * 60 * 60 * 1000);
-  retentionTimer.unref();
+  stagingMaintenanceTimer.unref();
+  const storageMaintenanceTimer = setInterval(() => {
+    void runStorageMaintenance().catch((error: unknown) => {
+      log("error", "storage-lifecycle", "Scheduled storage maintenance failed", {
+        error: error instanceof Error ? error.message : "unknown storage maintenance failure"
+      });
+    });
+  }, 24 * 60 * 60 * 1000);
+  storageMaintenanceTimer.unref();
   await startServer();
   const shutdownController = new AbortController();
   const stopMonitor = startDiscMonitor(
@@ -86,8 +154,10 @@ async function main(): Promise<void> {
     shutdownController.abort();
     shuttingDown = (async () => {
       await stopMonitor();
-      clearInterval(retentionTimer);
+      clearInterval(stagingMaintenanceTimer);
+      clearInterval(storageMaintenanceTimer);
       await stopServer();
+      events.removeListener("status", resumeReadyTvTask);
       await providerRuntime?.registry.disposeAll();
       repositories.close();
     })();

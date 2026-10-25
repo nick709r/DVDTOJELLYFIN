@@ -5,6 +5,7 @@ export type MediaType =
   | "movie"
   | "tv_series"
   | "music_album"
+  | "data_disc"
   | "audiobook"
   | "music_video"
   | "concert"
@@ -62,19 +63,36 @@ export interface DiscRecoveryUpdate {
   importedMetadata?: Readonly<Record<string, unknown>> | null;
   artworkReferences?: readonly RecoveryArtworkReference[];
   notes?: string | null;
+  mediaTypeOverrideAudit?: {
+    username: string;
+    reason?: string | null;
+    jobId?: string | null;
+  };
+}
+
+export interface MediaTypeOverrideAuditRecord {
+  id: string;
+  fingerprint: string;
+  jobId: string | null;
+  originalType: MediaType;
+  newType: MediaType;
+  username: string;
+  timestamp: string;
+  reason: string | null;
 }
 
 export interface DiscRecoveryRepository {
   get(fingerprint: string): DiscRecovery | undefined;
   recordDetection(fingerprint: string, discType: DiscType, mediaType: MediaType, confidence?: number): DiscRecovery;
   update(fingerprint: string, patch: DiscRecoveryUpdate): DiscRecovery | undefined;
+  mediaTypeOverrideAudit(fingerprint: string, limit?: number): MediaTypeOverrideAuditRecord[];
   list(limit?: number): DiscRecovery[];
 }
 
 export const discTypes: readonly DiscType[] =
   ["cd", "dvd", "bluray", "uhd_bluray", "data_disc", "unknown"];
 export const mediaTypes: readonly MediaType[] =
-  ["movie", "tv_series", "music_album", "audiobook", "music_video", "concert", "documentary", "mixed_content", "other"];
+  ["movie", "tv_series", "music_album", "data_disc", "audiobook", "music_video", "concert", "documentary", "mixed_content", "other"];
 export const metadataProviderIds: readonly MetadataProviderId[] =
   ["tvdb", "tmdb", "imdb", "anidb", "musicbrainz", "manual"];
 

@@ -15,6 +15,7 @@ test("AutoDisc update versions compare numerically and reject invalid tags", asy
 
 test("update check selects the highest stable version tag and ignores other tags", async () => {
   const { checkForUpdate } = await import("../dist/updater.js");
+  const { version: currentVersion } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   let requestedUrl = "";
   const result = await checkForUpdate(async (input) => {
     requestedUrl = String(input);
@@ -29,6 +30,15 @@ test("update check selects the highest stable version tag and ignores other tags
       { name: "v1.16.0" },
       { name: "v1.17.0" },
       { name: "v1.18.0" },
+      { name: "v1.19.0" },
+      { name: "v1.20.0" },
+      { name: "v1.21.0" },
+      { name: "v1.22.0" },
+      { name: "v1.23.0" },
+      { name: "v1.24.0" },
+      { name: "v1.25.0" },
+      { name: "v1.26.0" },
+      { name: `v${currentVersion}` },
       { name: "v2.0.0-rc.1" },
       { name: "main" },
       { name: 2 }
@@ -36,9 +46,13 @@ test("update check selects the highest stable version tag and ignores other tags
   });
 
   assert.equal(requestedUrl, "https://api.github.com/repos/nick709r/DVDTOJELLYFIN/tags?per_page=100");
-  assert.equal(result.currentVersion, "1.18.0");
-  assert.equal(result.latestVersion, "v1.18.0");
+  assert.equal(result.currentVersion, currentVersion);
+  assert.equal(result.latestVersion, `v${currentVersion}`);
   assert.equal(result.updateAvailable, false);
+  assert.equal(
+    result.assetSelected,
+    `https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/v${currentVersion}.tar.gz`
+  );
 });
 
 test("release notes fall back to the matching README release section", async () => {
@@ -102,6 +116,49 @@ test("update requests accept only version tags and can be queued once", async ()
     delete process.env.AUTODISC_UPDATE_REQUEST_PATH;
     delete process.env.AUTODISC_UPDATE_STATUS_PATH;
     delete process.env.AUTODISC_UPDATE_UNIT_PATH;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("update diagnostics verify the running version against the requested release", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-update-diagnostics-"));
+  const diagnosticsPath = path.join(root, "diagnostics.json");
+  process.env.AUTODISC_UPDATE_DIAGNOSTICS_PATH = diagnosticsPath;
+  try {
+    const updater = await import(`../dist/updater.js?diagnostics-test=${Date.now()}`);
+    assert.deepEqual(await updater.getUpdateDiagnostics(), {
+      targetVersion: null,
+      releaseFound: null,
+      assetSelected: null,
+      downloadState: "not_started",
+      installState: "not_started",
+      verificationState: "not_started",
+      lastError: null
+    });
+
+    await writeFile(diagnosticsPath, JSON.stringify({
+      targetVersion: "v1.2.3",
+      releaseFound: true,
+      assetSelected: "https://github.com/example/autodisc/archive/v1.2.3.tar.gz",
+      downloadState: "completed",
+      installState: "completed",
+      verificationState: "pending",
+      lastError: null
+    }));
+    const verified = await updater.verifyRunningVersion("1.2.3");
+    assert.equal(verified.verificationState, "succeeded");
+    assert.equal(verified.lastError, null);
+
+    await writeFile(diagnosticsPath, JSON.stringify({
+      ...verified,
+      targetVersion: "v1.2.4",
+      verificationState: "pending"
+    }));
+    const mismatch = await updater.verifyRunningVersion("1.2.3");
+    assert.equal(mismatch.verificationState, "failed");
+    assert.match(mismatch.lastError, /does not match requested version v1\.2\.4/);
+  } finally {
+    delete process.env.AUTODISC_UPDATE_DIAGNOSTICS_PATH;
     await rm(root, { recursive: true, force: true });
   }
 });

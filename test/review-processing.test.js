@@ -163,6 +163,18 @@ test("movie metadata and provider identity persist by disc fingerprint and are r
     const movieJob = repositories.history.list(10).find((job) => job.status === "completed");
     assert.ok(movieJob?.outputPath, "movie publishing did not record an output path");
     assert.match(await readFile(join(dirname(movieJob.outputPath), "movie.nfo"), "utf8"), /A sample film/);
+    const movieDirectory = dirname(movieJob.outputPath);
+    const movieInfo = await stat(movieDirectory);
+    const movieFileInfo = await stat(movieJob.outputPath);
+    const movieLibraryInfo = await stat(moviesDir);
+    if (process.platform !== "win32") {
+      assert.equal(movieInfo.gid, movieLibraryInfo.gid);
+      assert.equal(movieFileInfo.gid, movieLibraryInfo.gid);
+      assert.equal(movieInfo.mode & 0o777, 0o775);
+      assert.equal(movieFileInfo.mode & 0o777, 0o664);
+      assert.equal(movieInfo.mode & 0o002, 0);
+      assert.equal(movieFileInfo.mode & 0o002, 0);
+    }
     repositories.recovery.clearInsertedDisc();
     assert.equal(await workflow.process(context), true);
     assert.equal(resolveCalls, 1);

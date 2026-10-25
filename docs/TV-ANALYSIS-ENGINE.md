@@ -54,11 +54,26 @@ report deliberately has no selected episode or assignment operation.
 ## Episode matching engine
 
 `TvEpisodeMatchingEngine.match` consumes the analysis report, optionally
-supplemental normalized episode metadata, exact-disc feedback records, and
-confidence/margin policy values. It returns a `TvEpisodeMatchReport` with a
-per-track decision, candidate episode groupings, confidence, evidence, and
-manual-review status.
+supplemental normalized episode metadata, provider disc-order mappings,
+exact-disc feedback records, and confidence/margin policy values. It returns a
+`TvEpisodeMatchReport` with a per-track decision, assignment method, candidate
+episode groupings, confidence, evidence, and manual-review status.
 
+- Assignment priority is user correction/acceptance, exact fingerprint and
+  item-signature history, complete provider disc mapping, sequential disc
+  ordering, runtime/candidate matching, then manual review.
+- TVDB DVD-order metadata is used when it returns a complete, unique mapping
+  for all primary episode tracks on the detected disc. Such assignments have
+  confidence `1.0`; runtime ranking and ambiguity-margin checks are bypassed.
+- If provider mapping is unavailable or incomplete, high-confidence series,
+  season, and disc identification enables sequential ordering. Bonus,
+  commentary, special-feature, and structurally confirmed duplicate tracks are
+  excluded; remaining tracks follow playback order. The current disc's episode
+  range is selected using its disc number and primary-track count. These
+  assignments have confidence `0.90`.
+- Runtime-derived assignments retain a `runtime-matching` audit method. The
+  other automatic methods are recorded on each match and processing-plan
+  assignment as well as in human-readable evidence.
 - Single episode suggestions use analysis candidate confidence and retain
   provider, title, runtime, and history evidence.
 - A multi-part title is suggested only when metadata explicitly supplies a
@@ -72,7 +87,8 @@ manual-review status.
   selected.
 - Probable duplicates, alternate versions, commentary, bonus material, and
   special features are distinct decisions and are not assigned as episodes.
-  Duplicate episode claims across tracks become unknown.
+  Duplicate episode claims across tracks become unknown unless an explicit
+  multipart grouping permits the shared episode claim.
 - Output is a suggestion/report, not a workflow assignment: the engine does
   not write files, mutate analysis data, persist a decision, or invoke providers.
 
@@ -110,8 +126,8 @@ durations produce explicit errors.
   known input.
 - **Episode:** metadata (0.50), runtime similarity (0.20), track/episode title
   similarity (0.10), and historical match (0.20), normalizing over available
-  evidence. A matching prior user correction is surfaced at confidence `1.0`
-  for review, but remains a candidate rather than an assignment.
+  evidence. Exact fingerprint-and-item-signature history is assigned at
+  confidence `1.0` before provider disc mapping or sequential assignment.
 
 Each ranked match includes component scores and human-readable evidence, such
 as provider confidence, runtime difference, title overlap, fingerprint match,
@@ -128,9 +144,10 @@ episode candidates, and duration:
 - Explicit special kinds and very short items are surfaced as special features.
 - Items with episode candidates or a plausible feature-length runtime remain
   episode candidates unless they match a more specific classification.
-- Repeated episode candidates, matching content fingerprints, near-identical
-  titles/runtimes, and alternate-version wording produce probable duplicate or
-  alternate relationships with their supporting evidence.
+- Similar episode candidates alone do not imply duplication. A duplicate
+  requires runtimes within 3% plus matching chapter structure, stream layout,
+  video properties, and playback structure. Alternate-version wording and
+  related titles can still surface alternate relationships for review.
 
 These are heuristics, not guarantees. A report recommends operator review
 when series/season confidence is weak, episode candidates remain uncertain,

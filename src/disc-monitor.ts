@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { executableAvailable } from "./executable.js";
+import { runProcess } from "./process.js";
 import { events } from "./events.js";
 import { beginDiscDiagnostics, clearDiscDiagnostics, updateDiscDiagnostics } from "./diagnostics.js";
 import { processInsertedDisc } from "./pipeline.js";
@@ -25,6 +27,7 @@ let presenceTimer: NodeJS.Timeout | undefined;
 let monitorChild: ChildProcess | undefined;
 let pendingJob: Promise<boolean> | undefined;
 let lastMediaStateWarningAt = 0;
+let windowsPollingLogged = false;
 
 function log(level: "info" | "warn" | "error", message: string): void {
   writeLog(level, "disc-monitor", message);
@@ -123,6 +126,28 @@ function scheduleInsert(
 }
 
 async function mediaPresent(device: string): Promise<boolean | null> {
+  if (process.platform === "win32") {
+    const letter = device.trim().match(/^([a-z]):\\?$/i)?.[1]?.toUpperCase();
+    if (!letter) return null;
+    try {
+      const command = await executableAvailable("powershell.exe") ? "powershell.exe" :
+        await executableAvailable("pwsh.exe") ? "pwsh.exe" : null;
+      if (!command) throw new Error("PowerShell is unavailable for Windows optical media polling");
+      const result = await runProcess(command, [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `$ErrorActionPreference='Stop'; $drive = Get-CimInstance -ClassName Win32_CDROMDrive | Where-Object { $_.Drive -eq '${letter}:' }; if (-not $drive) { 'missing' } elseif ($drive.MediaLoaded) { 'present' } else { 'absent' }`
+      ], { timeoutMs: 10_000 });
+      const state = result.stdout.trim().toLowerCase();
+      return state === "present" ? true : state === "absent" || state === "missing" ? false : null;
+    } catch (error) {
+      const now = Date.now();
+      if (now - lastMediaStateWarningAt >= 60_000) {
+        lastMediaStateWarningAt = now;
+        log("warn", `Cannot verify Windows optical media state: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+      return null;
+    }
+  }
   try {
     const sectors = Number((await readFile(`/sys/class/block/${basename(device)}/size`, "utf8")).trim());
     return Number.isFinite(sectors) && sectors > 0;
@@ -177,6 +202,14 @@ async function monitor(
 ): Promise<void> {
   while (!stopping && !signal.aborted) {
     try {
+      if (process.platform === "win32") {
+        if (!windowsPollingLogged) {
+          windowsPollingLogged = true;
+          log("info", "Using Windows WMI media-presence polling; udev is not available on this platform");
+        }
+        await delay(5000);
+        continue;
+      }
       const device = jobs.getSettings().opticalDevice;
       const child = spawn("udevadm", ["monitor", "--udev", "--subsystem-match=block", "--property"], {
         stdio: ["ignore", "pipe", "pipe"]
@@ -221,6 +254,7 @@ async function monitor(
         seenInsertedDisc = false;
         mediaWasPresent = undefined;
         retryDelayMs = 2000;
+        windowsPollingLogged = false;
         jobs.clearInsertedDisc();
         clearDiscDiagnostics();
         scheduleInsert(signal, sources, workflows, metadata, jobs);
@@ -296,7 +330,7 @@ export function startDiscMonitor(
     void reconcileMediaPresence(signal, sources, workflows, metadata, jobs).catch((error: unknown) => {
       log("error", `Optical media state reconciliation failed: ${error instanceof Error ? error.message : "unknown error"}`);
     });
-  }, 2000);
+  }, process.platform === "win32" ? 5000 : 2000);
   presenceTimer.unref();
   const running = monitor(signal, sources, workflows, metadata, jobs);
   return async () => {

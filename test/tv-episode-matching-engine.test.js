@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TvAnalysisEngine } from "../dist/application/tv-analysis-engine.js";
+import { TvAnalysisEngine, tvItemSignature } from "../dist/application/tv-analysis-engine.js";
 import { TvEpisodeMatchingEngine } from "../dist/application/tv-episode-matching-engine.js";
 
 const analysisEngine = new TvAnalysisEngine();
@@ -140,6 +140,39 @@ test("episode matcher applies exact-disc accepted, rejected, and manual correcti
   }).items[0];
   assert.equal(manual.decision, "manual-assignment");
   assert.equal(manual.suggestedEpisodes.length, 2);
+  assert.equal(manual.assignmentMethod, "user-correction");
+});
+
+test("exact fingerprint history takes priority over disc mapping and runtime matching", () => {
+  const item = { id: "track", kind: "title", title: "Unclear", durationSeconds: 1200 };
+  const signature = tvItemSignature(item);
+  const episode = { seriesId: "series-1", seasonNumber: 1, episodeNumber: 4, title: "Historical Episode" };
+  const analysis = analyze([item], [
+    episodeCandidate("track", 2, 0.99),
+    episodeCandidate("track", 3, 0.98)
+  ], {
+    history: [{
+      fingerprint: "disc-fingerprint",
+      series: { id: "series-1", title: "Example Show" },
+      seasonNumber: 1,
+      discNumber: 1,
+      episodeMatches: [{ itemSignature: signature, episode, confidence: 1 }]
+    }]
+  });
+  const result = matchingEngine.match({
+    analysis,
+    providerDiscEpisodes: [{
+      episode: { seriesId: "series-1", seasonNumber: 1, episodeNumber: 1 },
+      providerId: "tvdb",
+      discNumber: 1,
+      discOrder: 1,
+      confidence: 1
+    }]
+  }).items[0];
+
+  assert.equal(result.assignmentMethod, "exact-fingerprint-history");
+  assert.equal(result.suggestedEpisodes[0].episodeNumber, 4);
+  assert.equal(result.confidence, 1);
 });
 
 test("a later rejection supersedes an earlier acceptance for the same track", () => {
@@ -174,8 +207,14 @@ test("a later rejection supersedes an earlier acceptance for the same track", ()
 
 test("episode matcher reports duplicate, alternate, commentary, and bonus items for review", () => {
   const analysis = analyze([
-    { id: "episode", kind: "title", title: "Pilot", durationSeconds: 1200 },
-    { id: "duplicate", kind: "title", title: "Pilot", durationSeconds: 1200 },
+    { id: "episode", kind: "title", title: "Pilot", durationSeconds: 1200, attributes: {
+      chapterCount: 8, streamLayout: "1 video/2 audio/1 subtitle", videoCodec: "mpeg2",
+      width: 720, height: 480, playbackStructure: "playlist-1"
+    } },
+    { id: "duplicate", kind: "title", title: "Pilot", durationSeconds: 1200, attributes: {
+      chapterCount: 8, streamLayout: "1 video/2 audio/1 subtitle", videoCodec: "mpeg2",
+      width: 720, height: 480, playbackStructure: "playlist-1"
+    } },
     { id: "alternate", kind: "title", title: "Pilot Extended", durationSeconds: 1800 },
     { id: "commentary", kind: "title", title: "Pilot Director Commentary", durationSeconds: 1200 },
     { id: "bonus", kind: "title", title: "Behind the Scenes", durationSeconds: 800 }
@@ -193,6 +232,130 @@ test("episode matcher reports duplicate, alternate, commentary, and bonus items 
   assert.equal(report.items.find((item) => item.itemId === "bonus").decision, "bonus");
   assert.ok(report.recommendations.some((recommendation) => recommendation.action === "review-duplicates"));
   assert.ok(report.recommendations.some((recommendation) => recommendation.action === "review-bonus-content"));
+});
+
+test("similar sitcom runtimes use sequential disc ordering rather than ambiguous runtime ranking", () => {
+  const items = Array.from({ length: 8 }, (_, index) => ({
+    id: `track-${index + 1}`,
+    kind: "title",
+    title: `Title ${index + 1}`,
+    trackNumber: index + 1,
+    durationSeconds: 1200
+  }));
+  const metadata = items.flatMap((item) =>
+    Array.from({ length: 8 }, (_, index) => episodeCandidate(item.id, index + 1, 0.95))
+  );
+  const freshMetadata = metadata.map((candidate) => ({
+    ...candidate,
+    episode: {
+      ...candidate.episode,
+      seriesId: "fresh-off-the-boat",
+      seasonNumber: 3
+    }
+  }));
+  const analysis = analysisEngine.analyze({
+    ...analysisInput(items, freshMetadata),
+    discLabel: "Fresh Off the Boat Season 3 Disc 1",
+    disc: { seasonNumber: 3, discNumber: 1, discCount: 3 },
+    metadata: {
+      seriesCandidates: [{
+        series: { id: "fresh-off-the-boat", title: "Fresh Off the Boat" },
+        providerId: "tvdb",
+        confidence: 0.95
+      }],
+      seasonCandidates: [{
+        seriesId: "fresh-off-the-boat",
+        season: { seriesId: "fresh-off-the-boat", number: 3 },
+        providerId: "tvdb",
+        confidence: 0.95
+      }],
+      episodeCandidates: freshMetadata
+    }
+  });
+  const report = matchingEngine.match({ analysis, episodeMetadata: freshMetadata });
+
+  assert.deepEqual(report.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.ok(report.items.every((item) =>
+    item.decision === "suggested" &&
+    item.confidence === 0.9 &&
+    item.assignmentMethod === "sequential-disc-assignment" &&
+    item.alternatives.length === 0 &&
+    item.evidence.includes("Episode assigned using sequential disc ordering.")
+  ));
+});
+
+test("provider DVD disc mapping wins without runtime ranking or candidate competition", () => {
+  const items = Array.from({ length: 8 }, (_, index) => ({
+    id: `track-${index + 1}`,
+    kind: "title",
+    title: `Title ${index + 1}`,
+    trackNumber: index + 1,
+    durationSeconds: 1200
+  }));
+  const metadata = items.flatMap((item) =>
+    Array.from({ length: 8 }, (_, index) => episodeCandidate(item.id, index + 1, 0.95))
+  );
+  const providerDiscEpisodes = Array.from({ length: 8 }, (_, index) => ({
+    episode: { seriesId: "series-1", seasonNumber: 1, episodeNumber: index + 1 },
+    providerId: "tvdb",
+    discNumber: 1,
+    discOrder: index + 1,
+    confidence: 1
+  }));
+  const analysis = analyze(items, metadata, {
+    discLabel: "Example Show Season 1 Disc 1",
+    providerDiscEpisodes
+  });
+  const report = matchingEngine.match({ analysis, episodeMetadata: metadata, providerDiscEpisodes });
+
+  assert.ok(analysis.items.every((item) => item.candidates.length === 0));
+  assert.deepEqual(report.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.ok(report.items.every((item) =>
+    item.decision === "suggested" &&
+    item.confidence === 1 &&
+    item.assignmentMethod === "provider-disc-mapping" &&
+    item.alternatives.length === 0 &&
+    item.evidence.includes("Episode assigned from provider disc mapping.")
+  ));
+});
+
+test("multi-disc sequential fallback uses the disc offset and excludes obvious extras", () => {
+  const items = [
+    ...Array.from({ length: 8 }, (_, index) => ({
+      id: `track-${index + 1}`,
+      kind: "title",
+      title: `Title ${index + 1}`,
+      trackNumber: index + 1,
+      durationSeconds: 1200
+    })),
+    { id: "bonus", kind: "title", title: "Behind the Scenes", durationSeconds: 900 }
+  ];
+  const metadata = items.slice(0, 8).flatMap((item) =>
+    Array.from({ length: 16 }, (_, index) => episodeCandidate(item.id, index + 1, 0.95))
+  );
+  const analysis = analyze(items, metadata, {
+    discLabel: "Example Show Season 1 Disc 2",
+    disc: { seasonNumber: 1, discNumber: 2, discCount: 2 }
+  });
+  const incompleteProviderMapping = Array.from({ length: 7 }, (_, index) => ({
+    episode: { seriesId: "series-1", seasonNumber: 1, episodeNumber: index + 1 },
+    providerId: "tvdb",
+    discNumber: 2,
+    discOrder: index + 1,
+    confidence: 1
+  }));
+  const report = matchingEngine.match({
+    analysis,
+    episodeMetadata: metadata,
+    providerDiscEpisodes: incompleteProviderMapping
+  });
+
+  assert.deepEqual(report.items.slice(0, 8).map((item) => item.suggestedEpisodes[0]?.episodeNumber),
+    [9, 10, 11, 12, 13, 14, 15, 16]);
+  assert.ok(report.items.slice(0, 8).every((item) =>
+    item.assignmentMethod === "sequential-disc-assignment" && item.confidence === 0.9
+  ));
+  assert.equal(report.items[8].decision, "bonus");
 });
 
 test("episode matcher keeps globally conflicting suggestions unknown", () => {

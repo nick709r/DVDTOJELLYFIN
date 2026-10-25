@@ -1,10 +1,12 @@
 import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import type {
   DiscRecovery,
   DiscRecoveryRepository,
   DiscRecoveryUpdate,
   DiscType,
   EpisodeMapping,
+  MediaTypeOverrideAuditRecord,
   MediaType,
   MetadataProviderId
 } from "../../domain/disc-recovery.js";
@@ -126,6 +128,14 @@ function validatePatch(patch: DiscRecoveryUpdate): void {
   if (patch.notes !== undefined && patch.notes !== null && patch.notes.length > 2000) {
     throw new Error("Notes must not exceed 2000 characters");
   }
+  if (patch.mediaTypeOverrideAudit !== undefined &&
+    (!patch.mediaTypeOverrideAudit.username.trim() || patch.mediaTypeOverrideAudit.username.length > 32 ||
+      (patch.mediaTypeOverrideAudit.reason !== undefined && patch.mediaTypeOverrideAudit.reason !== null &&
+        patch.mediaTypeOverrideAudit.reason.length > 500) ||
+      (patch.mediaTypeOverrideAudit.jobId !== undefined && patch.mediaTypeOverrideAudit.jobId !== null &&
+        patch.mediaTypeOverrideAudit.jobId.length > 80))) {
+    throw new Error("Media classification audit details are invalid");
+  }
   if (patch.importedMetadata !== undefined && patch.importedMetadata !== null) {
     if (typeof patch.importedMetadata !== "object" || Array.isArray(patch.importedMetadata) ||
       Buffer.byteLength(JSON.stringify(patch.importedMetadata), "utf8") > 64 * 1024) {
@@ -224,7 +234,8 @@ export class SqliteDiscRecoveryRepository implements DiscRecoveryRepository {
       ...(patch.notes === undefined ? {} : { notes: patch.notes?.trim() || null }),
       updatedAt
     };
-    this.db.prepare(`
+    const update = this.db.transaction(() => {
+      this.db.prepare(`
       UPDATE disc_recovery SET final_disc_type = ?, final_media_type = ?,
         disc_type_overridden = ?, media_type_overridden = ?, metadata_provider = ?, provider_id = ?,
         series_name = ?, season_number = ?, mappings_json = ?, imported_metadata_json = ?,
@@ -238,7 +249,32 @@ export class SqliteDiscRecoveryRepository implements DiscRecoveryRepository {
       updated.discNumber, updated.discName, updated.identifiedBy,
       updated.identificationDiagnostics === null ? null : JSON.stringify(updated.identificationDiagnostics),
       fingerprint);
+      if (patch.finalMediaType !== undefined && patch.mediaTypeOverrideAudit &&
+        current.finalMediaType !== updated.finalMediaType) {
+        this.db.prepare(`
+          INSERT INTO media_type_override_audit
+            (id, fingerprint, job_id, original_type, new_type, username, reason, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(randomUUID(), fingerprint, patch.mediaTypeOverrideAudit.jobId ?? null,
+          current.finalMediaType, updated.finalMediaType, patch.mediaTypeOverrideAudit.username.trim(),
+          patch.mediaTypeOverrideAudit.reason?.trim() || null, updatedAt);
+      }
+    });
+    update();
     return this.get(fingerprint);
+  }
+
+  mediaTypeOverrideAudit(fingerprint: string, limit = 100): MediaTypeOverrideAuditRecord[] {
+    if (!fingerprint.trim()) throw new Error("Media classification audit lookup requires a fingerprint");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw new Error("Media classification audit limit must be from 1 to 1000");
+    }
+    return (this.db.prepare(`
+      SELECT id, fingerprint, job_id AS jobId, original_type AS originalType,
+        new_type AS newType, username, created_at AS timestamp, reason
+      FROM media_type_override_audit WHERE fingerprint = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT ?
+    `).all(fingerprint, limit) as MediaTypeOverrideAuditRecord[]);
   }
 
   list(limit = 100): DiscRecovery[] {

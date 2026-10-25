@@ -20,7 +20,15 @@ For Jellyfin, set a library root to inherit `TV Shows`, `Movies`, and `Music`
 subdirectories. A nonempty per-category path overrides the inherited location.
 Generic folders and ARR-compatible roots are configured only when their route
 is selected. Profiles can be created, renamed, selected, and deleted in
-Settings. New paths are checked and created when a profile is saved.
+Settings. Each profile can route its TV, movie, and music categories
+independently: Jellyfin, Sonarr, Radarr, Lidarr (music only), or Custom folder.
+The corresponding settings are Jellyfin TV Library, Jellyfin Movie Library,
+Jellyfin Music Library, Sonarr TV Library, Radarr Movie Library, Music Library,
+and Custom Library paths. The Custom route uses the configured safe naming
+templates from **Metadata, artwork & organization**. Settings validate the
+selected destinations for absolute paths and write access; an unavailable or
+unwritable required destination prevents saving the profile so publishing
+cannot silently fall back to a different library.
 
 Migration 21 creates a `Jellyfin Server` profile using existing `tvRootDir`,
 `moviesDir`, and `musicDir` values. If Lidarr was already enabled, the migrated
@@ -49,7 +57,11 @@ Destination profiles are returned by `GET /api/v1/settings` and saved with
 `activeProfileId` and up to 20 named profiles, each with category routes,
 Jellyfin root/overrides, Sonarr/Radarr/Lidarr roots, and generic folder paths.
 The API validates profile identifiers, route-target compatibility, absolute
-paths, and writability of the active destinations. Use
+paths, and writability of the active destinations. Existing installations
+migrate to a Jellyfin profile that preserves their configured TV, Movies and
+Music paths; existing Lidarr routing remains enabled when it was configured
+before migration. Legacy path settings continue to synchronize with the
+active Jellyfin route. Use
 `POST /api/v1/reviews/:id/approve-process` to approve a queued disc.
 
 The application runs inside the host/container environment; paths must be

@@ -45,6 +45,7 @@ export interface DiscItemAnalysis {
   itemId: string;
   kind: "episode-candidate" | "bonus" | "commentary" | "unknown";
   durationSeconds?: number;
+  trackNumber?: number;
   title?: string;
   trackLanguage?: string;
   releaseId?: string;
@@ -115,6 +116,7 @@ export interface TvAnalysisInput {
   fingerprint?: string;
   disc?: DiscAnalysisStructure;
   metadata: TvMetadataEvidence;
+  providerDiscEpisodes?: readonly TvProviderDiscEpisode[];
   history?: readonly HistoricalDiscAnalysis[];
   corrections?: readonly EpisodeCorrection[];
 }
@@ -173,6 +175,7 @@ export interface TvPlannedEpisodeAssignment {
   decision: TvEpisodeMatchDecision;
   episodes: readonly Episode[];
   confidence: ConfidenceScore;
+  assignmentMethod?: TvEpisodeMatchItemReport["assignmentMethod"];
   confidenceBand: TvConfidenceBand;
   explanation: readonly string[];
   alternatives: readonly TvEpisodeMatchOption[];
@@ -298,7 +301,9 @@ export interface TvDiscItemResult {
   itemId: string;
   itemSignature: string;
   durationSeconds?: number;
+  trackNumber?: number;
   title?: string;
+  attributes?: Readonly<Record<string, string | number | boolean | null>>;
   kind: TvDiscItemKind;
   confidence: ConfidenceScore;
   evidence: readonly string[];
@@ -375,6 +380,8 @@ export interface TvEpisodeMatchItemReport {
   decision: TvEpisodeMatchDecision;
   suggestedEpisodes: readonly Episode[];
   confidence: ConfidenceScore;
+  assignmentMethod?: "user-correction" | "exact-fingerprint-history" | "provider-disc-mapping" |
+    "sequential-disc-assignment" | "runtime-matching";
   alternatives: readonly TvEpisodeMatchOption[];
   evidence: readonly string[];
   relatedItemId?: string;
@@ -389,9 +396,19 @@ export interface TvEpisodeMatchReport {
   recommendations: readonly TvAnalysisRecommendation[];
 }
 
+export interface TvProviderDiscEpisode {
+  episode: Episode;
+  providerId: string;
+  discNumber: number;
+  discOrder: number;
+  confidence: ConfidenceScore;
+  evidence?: readonly string[];
+}
+
 export interface TvEpisodeMatchingInput {
   analysis: TvDiscAnalysisReport;
   episodeMetadata?: readonly TvEpisodeMetadataCandidate[];
+  providerDiscEpisodes?: readonly TvProviderDiscEpisode[];
   feedback?: readonly TvEpisodeFeedback[];
   minimumConfidence?: ConfidenceScore;
   minimumMargin?: ConfidenceScore;

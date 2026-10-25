@@ -12,15 +12,31 @@
       <a class="brand" href="#dashboard" aria-label="AutoDisc dashboard"><img src="/autodisc-logo.png" alt="AutoDisc — Analyze, Archive, Organize"></a>
       <nav aria-label="Main navigation">
         <button class="nav-link active" data-page="dashboard">Dashboard</button>
-        <button class="nav-link" data-page="diagnostics">Disc Diagnostics</button>
-        <button class="nav-link" data-page="history">History</button>
-        <button class="nav-link" data-page="tv-matching">TV Matching</button>
-        <button class="nav-link" data-page="tv-analysis">TV Analysis</button>
-        <button class="nav-link" data-page="episode-matching">Episode Matching</button>
-        <button class="nav-link" data-page="tv-reviews">Review Centre</button>
-        <button class="nav-link" data-page="tv-validation">TV Validation</button>
-        <button class="nav-link" data-page="statistics">Statistics</button>
-        <button class="nav-link" data-page="settings">Settings</button>
+        <details class="nav-group">
+          <summary>Library</summary>
+          <button class="nav-link" data-page="history">Media History</button>
+        </details>
+        <details class="nav-group">
+          <summary>Tasks</summary>
+          <button class="nav-link" data-page="tv-reviews" data-scroll="#review-list">Review Queue</button>
+          <button class="nav-link" data-page="tv-validation">Activity &amp; Insights</button>
+        </details>
+        <details class="nav-group">
+          <summary>Identification</summary>
+          <button class="nav-link" data-page="tv-analysis">TV Matching &amp; Analysis</button>
+        </details>
+        <details class="nav-group">
+          <summary>Storage</summary>
+          <button class="nav-link" data-page="diagnostics">Paths &amp; Diagnostics</button>
+          <button class="nav-link" data-page="settings" data-scroll="#storage-output-card">Paths &amp; Output</button>
+          <button class="nav-link" data-page="storage-manager">Storage Manager</button>
+        </details>
+        <details class="nav-group">
+          <summary>Settings</summary>
+          <button class="nav-link" data-page="settings" data-scroll="#general-settings-card">General</button>
+          <button class="nav-link" data-page="settings" data-scroll="#integrations-settings-card">Integrations</button>
+          <button class="nav-link" data-page="settings" data-scroll="#advanced-admin-card">Advanced</button>
+        </details>
       </nav>
       <div class="sidebar-footer"><span class="pulse"></span> Disc monitor active</div>
     </aside>
@@ -32,12 +48,38 @@
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="page-dashboard" class="page">
         <div id="warning" class="warning hidden"></div>
-        <div class="stat-grid">
-          <article class="card stat"><span class="muted">Discs processed</span><strong id="total-count">0</strong></article>
-          <article class="card stat"><span class="muted">Successful</span><strong id="success-count">0</strong></article>
-          <article class="card stat"><span class="muted">Failures</span><strong id="failure-count">0</strong></article>
-          <article class="card stat"><span class="muted">Average processing</span><strong id="average-duration">—</strong></article>
+        <article id="dashboard-attention" class="card dashboard-attention hidden" role="alert">
+          <div><p class="eyebrow">ACTION REQUIRED</p><h2>Some items need your attention</h2><p id="dashboard-attention-message" class="muted"></p></div>
+          <div class="dashboard-quick-actions">
+            <button class="button primary" data-page="tv-reviews" data-scroll="#review-list" data-attention-action="open-review">Open Review Queue</button>
+            <button class="button primary" data-page="tv-reviews" data-scroll="#tv-review-list" data-attention-action="review-match">Review Match</button>
+            <button class="button secondary" data-page="tv-reviews" data-scroll="#review-list" data-review-category="metadata_issue" data-attention-action="fix-metadata">Fix Metadata</button>
+            <button class="button secondary" data-page="tv-reviews" data-scroll="#review-jobs-list" data-attention-action="continue-processing">Continue Processing</button>
+            <button class="button danger" data-page="tv-reviews" data-scroll="#tv-review-list" data-attention-action="remove-item">Remove Item</button>
+          </div>
+        </article>
+        <div class="stat-grid dashboard-summary">
+          <article class="card stat"><span class="muted">Active Tasks</span><strong id="dashboard-active-count">0</strong><button class="text-button" data-page="dashboard" data-scroll="#job-title">View active task</button></article>
+          <article class="card stat"><span class="muted">Waiting For Review</span><strong id="dashboard-review-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#review-list">Open review queue</button></article>
+          <article class="card stat"><span class="muted">Unmatched TV Content</span><strong id="dashboard-unmatched-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#tv-review-list">Review TV discs</button></article>
+          <article class="card stat"><span class="muted">Failed Identifications</span><strong id="dashboard-failed-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#review-list">Fix failed items</button></article>
+          <article class="card stat"><span class="muted">Recent Activity</span><strong id="dashboard-activity-count">0</strong><button class="text-button" data-page="history">View activity</button></article>
         </div>
+        <article id="dashboard-storage-warning" class="card storage-warning hidden" role="alert">
+          <div><p class="eyebrow">STORAGE ATTENTION</p><h2>Review Queue storage is above its warning threshold</h2>
+            <p id="dashboard-storage-warning-message" class="muted"></p></div>
+          <div id="dashboard-storage-warning-items" class="storage-warning-items"></div>
+          <div class="dashboard-quick-actions">
+            <button class="button secondary" data-page="storage-manager">View Storage Manager</button>
+            <button class="button danger" data-storage-cleanup="review-queue-data">Clean Now</button>
+          </div>
+        </article>
+        <article class="card dashboard-storage-card">
+          <div class="card-heading"><div><p class="eyebrow">STORAGE</p><h2>Application storage</h2></div>
+            <button class="text-button" data-page="storage-manager">Manage storage →</button></div>
+          <div id="dashboard-storage-summary" class="storage-summary-grid"></div>
+          <div id="dashboard-storage-breakdown" class="storage-breakdown"></div>
+        </article>
         <div class="dashboard-grid">
           <article class="card current-card">
             <div class="card-heading"><div><p class="eyebrow">LIVE JOB</p><h2 id="job-title">Waiting for a DVD</h2></div><span id="job-badge" class="badge idle">Idle</span></div>
@@ -46,7 +88,7 @@
             <p id="cancel-status" class="inline-info hidden" role="status"></p>
             <div class="progress-track"><div id="progress-bar"></div></div>
             <div class="progress-meta"><span id="progress-label">Waiting</span><span id="encoder-label">Encoder —</span></div>
-            <div class="stage-row" id="stage-row">
+            <div class="stage-row">
               <span data-stage="ripping">Rip</span><i></i><span data-stage="converting">Convert</span><i></i><span data-stage="publishing">Move</span>
             </div>
           </article>
@@ -73,7 +115,7 @@
           <div class="card-heading"><h3>TV disc trend · 30 days</h3></div><div id="tv-trend" class="tv-trend"></div>
         </article>
         <article class="card tv-intelligence-card">
-          <div class="card-heading"><div><p class="eyebrow">TV METADATA</p><h2>Lookup activity</h2></div><button class="text-button" data-page="settings">Configure providers →</button></div>
+          <div class="card-heading"><div><p class="eyebrow">TV METADATA</p><h2>Lookup activity</h2></div><button class="text-button" data-page="settings" data-scroll="#tv-metadata-settings">Configure providers →</button></div>
           <div id="tv-metadata-dashboard-stats" class="tv-stat-grid"></div>
           <p id="tv-metadata-dashboard-status" class="hint" role="status">Loading metadata provider metrics…</p>
           <div id="tv-metadata-provider-activity" class="tv-metadata-provider-activity"></div>
@@ -82,22 +124,27 @@
       <section id="page-history" class="page hidden">
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">LIBRARY</p><h2>Conversion history</h2></div><button id="refresh-history" class="button secondary">Refresh</button></div><div id="history-list"></div></article>
       </section>
-      <section id="page-tv-matching" class="page hidden">
-        <article class="card table-card">
-          <div class="card-heading"><div><p class="eyebrow">STAGED TV DISCS</p><h2>TV Matching Queue</h2></div><button id="refresh-tv-matching" class="button secondary" type="button">Refresh</button></div>
-          <p class="hint">Unidentified discs stay in protected staging until episode assignments are complete and the staged files can be published.</p>
-          <div id="tv-matching-queue"></div>
-        </article>
-      </section>
       <section id="page-diagnostics" class="page hidden">
         <article class="card table-card">
+          <div class="card-heading"><div><p class="eyebrow">SYSTEM ACCESS</p><h2>System Capabilities</h2></div>
+            <button id="refresh-capabilities" class="button secondary" type="button">Refresh checks</button></div>
+          <p id="capability-platform" class="hint">Checking operating system capabilities…</p>
+          <div id="capability-report" class="diagnostic-criteria" aria-live="polite"></div>
+        </article>
+        <article class="card table-card">
           <div class="card-heading"><div><p class="eyebrow">LIVE INSPECTION</p><h2>Disc Diagnostics</h2></div>
-            <div class="diagnostics-controls"><label for="diagnostics-job">Disc or job</label><select id="diagnostics-job"></select><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button></div>
+            <div class="diagnostics-controls"><label for="diagnostics-job">Disc or job</label><select id="diagnostics-job"></select><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button><button id="forget-diagnostics-disc" class="button danger" type="button">Forget Disc</button></div>
           </div>
           <div id="diagnostics-live" class="diagnostics-grid"></div>
           <p id="diagnostics-live-status" class="hint" role="status">Waiting for disc detection data.</p>
         </article>
-        <article class="card" id="classification-review">
+        <article class="card">
+          <div class="card-heading"><div><p class="eyebrow">STORAGE</p><h2>Resolved storage paths</h2></div>
+            <button id="refresh-storage-diagnostics" class="button secondary" type="button">Refresh paths</button></div>
+          <div id="diagnostics-storage-paths" class="diagnostics-grid"></div>
+          <div id="diagnostics-tv-staging-validation" class="path-check-list" role="status" aria-live="polite"></div>
+        </article>
+        <article class="card">
           <div class="card-heading"><div><p class="eyebrow">DISK MONITOR</p><h2>Classification review</h2></div>
             <div class="diagnostics-controls"><a class="button secondary" href="/api/v1/classification/export/text" download>Export log (text)</a><a class="button secondary" href="/api/v1/classification/export/json" download>Export JSON (LLM)</a></div></div>
           <div id="classification-summary" class="hint">No disc selected.</div>
@@ -112,10 +159,11 @@
             <p id="disc-recovery-summary" class="classification-history-content">Detected and final classifications are stored separately.</p>
             <label>Final disc type<select name="discType"></select></label>
             <label>Final media type<select name="mediaType">
-              <option value="movie">Movie</option><option value="tv_series">TV Series</option><option value="music_album">Music Album</option>
+              <option value="movie">Movie</option><option value="tv_series">TV Series</option><option value="music_album">Music</option><option value="data_disc">Data Disc</option>
               <option value="audiobook">Audiobook</option><option value="music_video">Music Video</option><option value="concert">Concert</option>
               <option value="documentary">Documentary</option><option value="mixed_content">Mixed Content</option><option value="other">Other</option>
             </select></label>
+            <label>Override reason (optional)<input name="mediaTypeReason" maxlength="500"></label>
             <label>Metadata provider<select name="metadataProvider">
               <option value="tvdb">TVDB</option><option value="tmdb">TMDB</option><option value="imdb">IMDb</option>
               <option value="anidb">AniDB</option><option value="manual">Manual Entry</option>
@@ -125,7 +173,7 @@
             <label>Season number<input name="seasonNumber" type="number" min="0" max="100"></label>
             <label>Notes<textarea name="notes" maxlength="2000"></textarea></label>
             <button class="button secondary" type="submit">Save Media Recovery</button>
-            <p class="hint">Manual choices take precedence on the next disc detection. TV tracks can then be mapped in Review Centre.</p>
+            <p class="hint">Automatic classification remains visible for reference. Manual choices take precedence on the next disc detection and are audit logged. TV tracks can then be mapped in Review Centre.</p>
           </form>
           <div id="classification-metrics"></div>
         </article>
@@ -149,19 +197,24 @@
           </div>
           <div id="tv-analysis-list"></div>
         </article>
-        <article id="tv-analysis-detail" class="card tv-detail hidden"></article>
-      </section>
-      <section id="page-episode-matching" class="page hidden">
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EXPLAINABLE MATCHING</p><h2>Episode suggestions</h2></div></div>
           <p class="hint">Confidence scores rank available evidence; they are not calibrated probabilities. Unknown is preferred to an unsupported assignment.</p>
           <div id="tv-matching-list"></div>
         </article>
+        <article id="tv-analysis-detail" class="card tv-detail hidden"></article>
       </section>
       <section id="page-tv-reviews" class="page hidden">
         <article class="card table-card">
-          <div class="card-heading"><div><p class="eyebrow">VERSION 2 OPERATIONS</p><h2>Review Centre</h2></div>
+          <div class="card-heading"><div><p class="eyebrow">WORK QUEUE</p><h2>Unified Review Queue</h2></div>
             <div><button id="identify-disc-open" class="button primary" type="button">Identify Disc</button> <button id="refresh-reviews" class="button secondary" type="button">Refresh</button></div>
           </div>
+          <section class="review-queue-section">
+            <div class="card-heading"><div><p class="eyebrow">TV WORKFLOW</p><h3>Unmatched TV discs &amp; episode plans</h3></div>
+              <label>Plan status<select id="tv-review-filter"><option value="awaiting-review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All plans</option></select></label>
+            </div>
+            <div id="tv-review-list"></div>
+          </section>
+          <div id="orphaned-data"></div>
           <div id="review-summary" class="tv-stat-grid"></div>
           <div class="review-filters">
             <label>Category<select id="review-category"><option value="">All categories</option><option value="tv_review">TV review</option><option value="cd_review">CD review</option><option value="metadata_issue">Metadata</option><option value="processing_failure">Processing failure</option><option value="folder_creation_failure">Folder creation</option><option value="disc_read_error">Disc read error</option><option value="validation_warning">Validation warning</option><option value="configuration_issue">Configuration</option><option value="system_warning">System warning</option></select></label>
@@ -173,14 +226,15 @@
           <div id="review-list"></div>
         </article>
         <article class="card table-card">
-          <div class="card-heading"><div><p class="eyebrow">PRESERVED MEDIA</p><h2>Extracted Media Review Queue</h2></div></div>
+          <div class="card-heading"><div><p class="eyebrow">PRESERVED MEDIA</p><h2>Continue Extracted Media</h2></div></div>
           <div id="review-jobs-list"></div>
         </article>
-        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">TV WORKFLOW</p><h2>Episode plans awaiting review</h2></div>
-          <label>Show<select id="tv-review-filter"><option value="awaiting-review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All plans</option></select></label>
-        </div><div id="tv-review-list"></div></article>
       </section>
       <section id="page-tv-validation" class="page hidden">
+        <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
+        <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
+          <p class="hint">Automatic TV suggestions never publish files. Confirm series metadata and episode-to-track mappings in the Review Queue to process TV episodes.</p>
+        </article>
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EVIDENCE & DATASETS</p><h2>TV validation</h2></div>
           <button id="export-tv-validation" class="button secondary" type="button">Export validation dataset</button>
         </div>
@@ -191,16 +245,14 @@
         </article>
         <article id="tv-validation-detail" class="card tv-detail hidden"></article>
       </section>
-      <section id="page-statistics" class="page hidden">
-        <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
-        <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
-          <p class="hint">Automatic TV suggestions never publish files. Confirm series metadata and episode-to-track mappings in Review Centre to process TV episodes.</p>
-        </article>
-      </section>
       <section id="page-settings" class="page hidden">
         <form id="settings-form" class="settings-layout">
           <article class="card settings-card update-card"><p class="eyebrow">SOFTWARE</p><h2>AutoDisc updates</h2>
-            <p id="update-version" class="inline-info">Checking installed version…</p>
+            <p id="update-version" class="inline-info">Current version: checking…</p>
+            <p id="update-target-version" class="inline-info">Target version: none</p>
+            <p id="update-download-state" class="inline-info">Download state: not started</p>
+            <p id="update-install-state" class="inline-info">Install state: not started</p>
+            <p id="update-last-error" class="inline-info hidden" role="alert"></p>
             <button id="check-updates" class="button secondary" type="button">Check for updates</button>
             <p id="update-status" class="inline-info" role="status">Updates are checked only when you click the button. A newer version is applied automatically.</p>
             <section class="release-notes" aria-live="polite">
@@ -208,7 +260,7 @@
               <pre id="release-notes-body">Click “Check for updates” to load notes for the latest version.</pre>
             </section>
           </article>
-          <article class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
+          <article id="storage-output-card" class="card settings-card"><p class="eyebrow">FILE MANAGEMENT</p><h2>Storage & output</h2>
             <h3>Library Paths</h3>
             <div id="library-settings-health" class="library-health-list"></div>
             <div class="form-row">
@@ -255,20 +307,47 @@
             <p class="hint">Sonarr/Radarr destinations use compatible folder layouts; AutoDisc does not call those applications' APIs. For Lidarr, configure its integration below. Browse folders as they appear inside the AutoDisc host/container.</p>
             <p class="hint">TV DVDs publish only after you save explicit series metadata and track-to-episode mappings in Review Centre.</p>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
+            <label>TV Staging Directory<input name="tvStagingDir" placeholder="Leave blank to derive from Work Directory"></label>
+            <h3>Storage maintenance</h3>
+            <div class="form-row">
+              <label>Review Queue warning threshold
+                <select name="storageWarningThresholdGb">
+                  <option value="50">50 GB</option><option value="100">100 GB</option>
+                  <option value="250">250 GB</option><option value="500">500 GB</option>
+                  <option value="null">Disabled</option>
+                </select>
+              </label>
+              <label class="check-row"><input name="autoWarnLargeReviewQueues" type="checkbox"> Warn when the Review Queue exceeds the threshold</label>
+            </div>
+            <div class="form-row">
+              <label>Automatically clean temporary logs after (days)<input name="autoCleanTempLogsAfterDays" type="number" min="1" max="3650" placeholder="Disabled"></label>
+              <label>Automatically clean failed conversion temp files after (days)<input name="autoCleanFailedConversionsAfterDays" type="number" min="1" max="3650" placeholder="Disabled"></label>
+            </div>
+            <p class="hint">Automatic maintenance never deletes review items, unmatched TV content, staged rips, published media, or job history. Leave an age blank to disable that cleanup.</p>
+            <p id="tv-staging-path-source" class="hint">Leave blank to use a folder under the Work Directory.</p>
+            <section class="path-check-list" aria-live="polite">
+              <h3>TV staging path validation</h3>
+              <div id="tv-staging-validation"></div>
+              <div id="storage-active-publishing-directories"></div>
+              <div id="tv-staging-autofix-details"></div>
+              <button id="tv-staging-autofix" class="button secondary hidden" type="button">Move TV staging to recommended location</button>
+            </section>
+            <div class="diagnostics-grid" id="storage-resolved-paths"></div>
+            <p class="hint">Metadata cache entries are stored in AutoDisc's SQLite database; the cache directory shown here is the database's parent directory.</p>
             <label>Optical drive<input name="opticalDevice" required placeholder="/dev/sr0"></label>
             <button id="check-paths" class="button secondary" type="button">Check paths and permissions</button>
             <div id="paths-status" class="path-check-list hidden" role="status" aria-live="polite"></div>
             <div class="form-row"><label>Output format<select name="format"><option value="mp4">MP4</option><option value="mkv">MKV</option></select></label><label>Quality <small>(18 = higher quality)</small><input name="quality" type="number" min="18" max="30" step="1"></label></div>
             <label>Encoding preset<select name="preset"><option value="ultrafast">Ultrafast — lower CPU, larger file</option><option value="veryfast">Very fast</option><option value="medium">Medium — slower, more efficient</option></select></label>
           </article>
-          <article class="card settings-card"><p class="eyebrow">ENCODING</p><h2>Encoder & behavior</h2>
+          <article id="general-settings-card" class="card settings-card"><p class="eyebrow">ENCODING</p><h2>Encoder & behavior</h2>
             <label>Encoder preference<select name="encoder"><option value="auto">Automatic — prefer NVIDIA</option><option value="nvidia">NVIDIA NVENC (fallback enabled)</option><option value="software">Software (libx264)</option></select></label>
             <label>Automation mode<select name="automationMode"><option value="full_auto">Full Auto — eject and continue; errors go to Review</option><option value="regular_auto">Regular Auto — process automatically; stop on errors</option><option value="review_based">Review-Based — require approval before processing</option></select></label>
             <p class="hint">Full Auto ejects after successful jobs and after recording failures in Review. Regular Auto leaves failed discs in the drive. Review-Based queues detected discs; use Approve & Process in Review Centre.</p>
             <label class="check"><input name="autoEject" type="checkbox"> Eject disc after successful conversion</label>
             <div id="encoder-capability" class="inline-info">Checking FFmpeg encoders…</div>
           </article>
-          <article class="card settings-card"><p class="eyebrow">TITLE MATCHING</p><h2>Optional online metadata</h2>
+          <article id="integrations-settings-card" class="card settings-card"><p class="eyebrow">TITLE MATCHING</p><h2>Optional online metadata</h2>
             <label class="check"><input name="metadataEnabled" type="checkbox"> Enable TMDB title lookup</label>
             <label>TMDB API key<input name="metadataApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key"></label>
             <label class="check"><input name="clearMetadataKey" type="checkbox"> Clear saved API key</label>
@@ -329,11 +408,7 @@
           <article class="card settings-card"><p class="eyebrow">VERSION 2 · TELEVISION</p><h2>TV Processing</h2>
             <label class="check"><input name="tvDetectionEnabled" type="checkbox"> Enable TV detection and analysis</label>
             <label class="check"><input name="tvValidationLoggingEnabled" type="checkbox"> Capture complete analysis and matching evidence</label>
-            <label>Unidentified TV staging retention<select name="tvStagingRetentionChoice">
-              <option value="never">Never Delete</option><option value="7">7 Days</option><option value="30">30 Days</option><option value="90">90 Days</option><option value="custom">Custom</option>
-            </select></label>
-            <label id="tv-staging-custom-label" class="hidden">Custom retention (days)<input name="tvStagingRetentionCustomDays" type="number" min="1" max="3650" step="1"></label>
-            <p class="hint">Unidentified TV discs are ripped to staging and remain unpublished until identified. The default is Never Delete; custom retention is measured in days.</p>
+            <p class="hint">Every TV disc is staged before review and is never automatically deleted. Choose Delete unmatched tracks or Remove disc from review when you want to clear staged content.</p>
             <p class="hint">Disabling TV detection prevents TV analysis. Disabling evidence capture does not disable TV analysis or review plans.</p>
             <div class="policy-panel">
               <b>Current matching policy (read-only)</b>
@@ -344,7 +419,7 @@
               <p>Threshold editing is intentionally locked until calibration against a representative real-disc dataset; displayed scores are evidence rankings, not probabilities.</p>
             </div>
           </article>
-          <article class="card settings-card tv-metadata-settings">
+          <article id="tv-metadata-settings" class="card settings-card tv-metadata-settings">
             <p class="eyebrow">VERSION 2 · PROVIDERS</p><h2>TV Metadata</h2>
             <p class="hint">When enabled, TV analysis looks up series and episode candidates using the selected providers. Results inform suggestions only; no episodes are automatically assigned or published.</p>
             <label class="check"><input name="tvMetadataLookupEnabled" type="checkbox"> Enable TV metadata lookup during analysis</label>
@@ -368,13 +443,38 @@
               <div id="tv-metadata-matching-policy">Loading the current policy…</div>
             </div>
           </article>
-          <article class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
+          <article id="advanced-admin-card" class="card settings-card"><p class="eyebrow">ACCESS</p><h2>Administrator</h2>
             <label>New admin password            <input name="adminPassword" type="password" minlength="4" autocomplete="new-password" placeholder="Leave blank to keep current password"></label>
                         <p class="hint">The administrator username is configured during first-run setup. Passwords must be at least 4 characters.</p>
             <label>Logging level<select name="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
           </article>
           <div class="form-actions"><button class="button primary" type="submit">Save settings</button><span id="settings-message" role="status"></span></div>
         </form>
+      </section>
+      <section id="page-storage-manager" class="page hidden">
+        <article class="card storage-overview-card">
+          <div class="card-heading"><div><p class="eyebrow">STORAGE LIFECYCLE</p><h2>Storage overview</h2></div>
+            <button class="button danger" data-storage-cleanup="everything-safe">Clean Everything Safe</button></div>
+          <div id="storage-manager-summary" class="storage-summary-grid"></div>
+          <div id="storage-manager-breakdown" class="storage-breakdown"></div>
+          <p class="hint">Published media, Jellyfin/Arr libraries, active processing files, and shared resources are protected from cleanup.</p>
+        </article>
+        <article class="card storage-categories-card">
+          <div class="card-heading"><div><p class="eyebrow">CATEGORY BREAKDOWN</p><h2>Storage categories</h2></div>
+            <button id="storage-manager-refresh" class="button secondary">Refresh</button></div>
+          <div id="storage-category-list" class="storage-category-list"></div>
+        </article>
+        <article class="card storage-orphans-card">
+          <div class="card-heading"><div><p class="eyebrow">OWNERSHIP SCAN</p><h2>Orphaned data</h2>
+            <p id="storage-orphan-summary" class="muted">Checking untracked AutoDisc workspaces…</p></div>
+            <button class="button danger" data-storage-cleanup="orphaned-data">Clean Orphaned Data</button></div>
+          <div id="storage-orphan-list"></div>
+        </article>
+        <article class="card storage-largest-card">
+          <div class="card-heading"><div><p class="eyebrow">SPACE USAGE</p><h2>Largest consumers</h2></div></div>
+          <div id="storage-largest-list"></div>
+        </article>
+        <p id="storage-cleanup-result" class="inline-info" role="status"></p>
       </section>
     </main>
     <dialog id="login-dialog">
@@ -428,6 +528,11 @@
       <form id="identify-disc-form">
         <p class="eyebrow">IDENTIFY DISC</p><h2>Identify TV series</h2>
         <p id="identify-disc-context" class="muted"></p>
+        <ol class="tv-identify-steps" aria-label="TV identification steps">
+          <li id="identify-step-series" class="active">Search series</li>
+          <li id="identify-step-season">Select season &amp; disc</li>
+          <li>Review episodes &amp; save</li>
+        </ol>
         <div class="form-row">
           <label>Search<input id="identify-search" autocomplete="off" placeholder="Series title, tvdb:12345, tmdb:12345 or tt1234567"></label>
           <button id="identify-search-button" class="button secondary" type="button">Search</button>
@@ -438,7 +543,7 @@
           <p id="identify-selected" class="inline-info"></p>
           <div class="form-row">
             <label>Season Number<select id="identify-season"></select></label>
-            <label>Disc Number<select id="identify-disc"></select></label>
+            <label>Disc Number (optional)<select id="identify-disc"></select></label>
           </div>
           <label>Disc Name (optional)<input id="identify-disc-name" maxlength="200"></label>
         </div>
@@ -447,6 +552,28 @@
           <button id="identify-cancel" class="button secondary" type="button">Cancel</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="tv-track-preview-dialog" class="tv-track-preview-dialog">
+      <div class="tv-track-preview-heading">
+        <div><p class="eyebrow">STAGED TRACK PREVIEW</p><h2 id="tv-track-preview-title">Track preview</h2></div>
+        <button id="tv-track-preview-close" class="button secondary" type="button">Close</button>
+      </div>
+      <p id="tv-track-preview-status" class="hint" role="status">Preparing preview…</p>
+      <video id="tv-track-preview-video" controls playsinline preload="metadata"></video>
+      <div id="tv-track-preview-thumbnails" class="tv-track-preview-thumbnails" aria-label="Preview thumbnails"></div>
+    </dialog>
+    <dialog id="forget-disc-dialog">
+      <div class="delete-confirmation">
+        <h2>Forget Disc?</h2>
+        <p>This will permanently remove:</p>
+        <ul><li>Disc history</li><li>Review records</li><li>Episode matches</li><li>Metadata</li><li>Diagnostics</li><li>Processing logs</li><li>Disc fingerprints</li></ul>
+        <p>The disc will be treated as completely new if inserted again.</p>
+        <p><strong>This action cannot be undone.</strong></p>
+        <div class="metadata-actions">
+          <button id="forget-disc-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="forget-disc-confirm" class="button danger" type="button">Forget Disc</button>
+        </div>
+      </div>
     </dialog>
     <dialog id="tv-delete-dialog">
       <div class="delete-confirmation">
@@ -457,6 +584,54 @@
         <div class="metadata-actions">
           <button id="tv-delete-confirm" class="button danger" type="button">Delete</button>
           <button id="tv-delete-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="tv-unmatched-delete-dialog">
+      <div class="delete-confirmation">
+        <p class="eyebrow">TV DISC REVIEW</p><h2>Delete unmatched tracks?</h2>
+        <p>Only tracks without confirmed episode matches will be deleted. Matched tracks and their mappings will remain staged.</p>
+        <p><strong>This cannot be undone.</strong></p>
+        <div class="metadata-actions">
+          <button id="tv-unmatched-delete-cancel" class="button secondary" type="button">Keep tracks</button>
+          <button id="tv-unmatched-delete-confirm" class="button danger" type="button">Delete unmatched tracks</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="review-delete-dialog">
+      <div class="delete-confirmation">
+        <h2>Delete Review Item</h2>
+        <p>The preview lists the exact files, directories, and database records that will be removed. Only data owned by this review item is eligible for deletion.</p>
+        <p>Published media, configured library roots, provider caches, and fingerprint data shared with another job or review are protected.</p>
+        <p><strong>This action cannot be undone.</strong></p>
+        <div id="review-delete-impact" class="hint"></div>
+        <div class="metadata-actions">
+          <button id="review-delete-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="review-delete-confirm" class="button danger" type="button">Delete Listed Items</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="orphan-cleanup-dialog">
+      <div class="delete-confirmation">
+        <h2>Clean Up Orphaned Data</h2>
+        <p>These temporary directories are not associated with a known job or review workspace. Their contents will be permanently deleted.</p>
+        <p id="orphan-cleanup-impact" class="hint"></p>
+        <p><strong>Published media and shared metadata caches are not included.</strong></p>
+        <div class="metadata-actions">
+          <button id="orphan-cleanup-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="orphan-cleanup-confirm" class="button danger" type="button">Delete Orphaned Data</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="storage-cleanup-dialog">
+      <div class="delete-confirmation">
+        <p class="eyebrow">STORAGE MANAGER</p><h2 id="storage-cleanup-title">Confirm storage cleanup</h2>
+        <p id="storage-cleanup-summary"></p>
+        <p id="storage-cleanup-impact" class="hint"></p>
+        <p><strong>Published media, active processing files, and job history are protected.</strong></p>
+        <div class="metadata-actions">
+          <button id="storage-cleanup-cancel" class="button secondary" type="button">Cancel</button>
+          <button id="storage-cleanup-confirm" class="button danger" type="button">Clean Now</button>
         </div>
       </div>
     </dialog>

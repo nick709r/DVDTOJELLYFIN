@@ -56,3 +56,30 @@ test("job coordinator reports first-run setup state", () => {
 
   assert.equal(coordinator.setupComplete(), false);
 });
+
+test("resumed jobs preserve their fingerprint through completion and review resolution", () => {
+  const calls = [];
+  const coordinator = new JobCoordinator({
+    history: { get: () => ({ id: "job-review", status: "review", discFingerprint: "disc-fingerprint" }) },
+    jobs: {
+      setStatus: (...args) => calls.push(["status", ...args]),
+      finish: (...args) => calls.push(["finish", ...args])
+    },
+    reviewItems: { resolveForDisc: (...args) => calls.push(["resolve", ...args]) }
+  }, { publish: () => {} }, {
+    begin: () => {},
+    register: () => {},
+    cancel: () => false,
+    wasCancelled: () => false,
+    end: () => {}
+  });
+
+  const context = coordinator.resume("job-review", "dvd", null, "Review disc", new AbortController().signal);
+  assert.equal(context.fingerprint, "disc-fingerprint");
+  coordinator.complete(context);
+
+  assert.deepEqual(calls.find(([name]) => name === "finish"),
+    ["finish", "job-review", "completed", null, "disc-fingerprint"]);
+  assert.deepEqual(calls.find(([name]) => name === "resolve"),
+    ["resolve", "disc-fingerprint", "Related disc processing completed successfully"]);
+});

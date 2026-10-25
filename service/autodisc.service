@@ -8,7 +8,6 @@ Wants=systemd-udevd.service
 Type=simple
 User=autodisc
 Group=autodisc
-SupplementaryGroups=cdrom video
 EnvironmentFile=-/etc/default/autodisc
 Environment=NODE_ENV=production
 Environment=HOME=/var/lib/autodisc
@@ -34,7 +33,6 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 

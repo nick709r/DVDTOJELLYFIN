@@ -78,3 +78,56 @@ test("TMDB season lookup returns episode numbers and titles for manual mapping",
     { seriesId: "1396", seasonNumber: 1, episodeNumber: 2, title: "Episode Two" }
   ]);
 });
+
+test("TVDB DVD lookup exposes disc order mapped back to aired episode identities", async () => {
+  const requests = [];
+  const result = await tvMetadataProviderRegistry.lookup(
+    "tvdb",
+    { entityType: "episode-disc", query: "Example Show", seasonNumber: 1 },
+    "test-key",
+    async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (requests.length === 1) return jsonResponse({ data: { token: "test-token" } });
+      if (requests.length === 2) {
+        return jsonResponse({ data: [{ tvdb_id: "80379", name: "Example Show" }] });
+      }
+      if (String(url).includes("/episodes/default")) {
+        return jsonResponse({ data: { episodes: [
+          { id: 101, name: "Aired Episode One", seasonNumber: 1, number: 1 },
+          { id: 102, name: "Aired Episode Two", seasonNumber: 1, number: 2 }
+        ] } });
+      }
+      return jsonResponse({ data: { episodes: [
+        { id: 102, dvdDiscNumber: 1, dvdEpisodeNumber: 1 },
+        { id: 101, dvdDiscNumber: 1, dvdEpisodeNumber: 2 }
+      ] } });
+    }
+  );
+
+  assert.deepEqual(result.map((entry) => ({
+    entityType: entry.entityType,
+    seriesId: entry.metadata.seriesId,
+    seasonNumber: entry.metadata.seasonNumber,
+    episodeNumber: entry.metadata.episodeNumber,
+    discNumber: entry.metadata.discNumber,
+    discOrder: entry.metadata.discOrder
+  })), [
+    {
+      entityType: "episode-disc",
+      seriesId: "80379",
+      seasonNumber: 1,
+      episodeNumber: 2,
+      discNumber: 1,
+      discOrder: 1
+    },
+    {
+      entityType: "episode-disc",
+      seriesId: "80379",
+      seasonNumber: 1,
+      episodeNumber: 1,
+      discNumber: 1,
+      discOrder: 2
+    }
+  ]);
+  assert.match(requests[3].url, /\/episodes\/dvd\?season=1&page=0/);
+});

@@ -19,21 +19,26 @@ model. It communicates which available signals supported the routing decision.
 
 For a potential series disc, the DVD workflow generates a TV analysis report,
 runs the episode matching engine, builds a confidence-gated processing plan,
-and persists it. It records a review-state job and does not acquire/rip a title
-as a movie. This prevents a likely TV disc from being published as one movie.
+and persists it. It stages the complete disc and records a review-state job;
+TV content is never routed through the movie publisher or published before
+explicit episode review. This prevents a likely TV disc from being published
+as one movie.
 Detected and final physical/media classifications are persisted separately by
 disc fingerprint. A reviewer can explicitly choose TV Series for a disc
 classified as a movie, enter/import series metadata, and map detected tracks
 to one or more episodes.
 
 Automatic suggestions remain analysis-only: they never trigger TV output.
-When a user has saved series metadata and episode-to-track mappings, the DVD
-workflow can acquire and convert those mapped titles into Jellyfin-style
-Series/Season folders. It rejects incomplete episode mapping, invalid tracks,
-cross-season multi-episode groups, and output collisions. Outputs created
-during a failed run are rolled back when possible; existing files are never
-overwritten. Manual choices are loaded by fingerprint before automatic
-classification, so subsequent insertions restore the user's work.
+Users confirm mappings in the disc-centric review. Partial mappings are
+persisted while unmatched tracks remain staged. Publishing begins only when
+all retained tracks have confirmed mappings, or after the user explicitly
+deletes unmatched tracks. Ready-to-publish tasks resume automatically when
+the active job slot is available, including after restart recovery. The DVD
+workflow converts mapped titles into the configured TV library structure. It
+rejects incomplete episode mapping, invalid tracks, cross-season multi-episode
+groups, and output collisions. Outputs created during a failed run are rolled
+back when possible; existing files are never overwritten. Manual choices are
+loaded by fingerprint, so subsequent insertions restore the user's work.
 
 Settings include a validated TV root output path. Validation can create the
 root directory and reports write permissions and available disk space; path
@@ -60,9 +65,11 @@ flowchart TD
   Matcher[TvEpisodeMatchingEngine]
   Plan[Build confidence-gated<br/>TvProcessingPlan]
   Store[(SQLite TV plan repository)]
-  Hold[Hold job for review;<br/>do not rip as movie]
+  Hold[Hold TV job for disc review;<br/>do not publish]
+  Staging[(Protected TV staging<br/>and persisted matching task)]
   Recovery[(Fingerprint-keyed manual recovery)]
-  Manual[Confirm series and map tracks]
+  Manual[Confirm series and save track matches]
+  Partial[Keep unmatched tracks<br/>staged for later]
   Output[Acquire, convert and publish<br/>mapped episodes]
 
   Disc --> Prefilter
@@ -74,11 +81,13 @@ flowchart TD
   Feedback --> Matcher
   Matcher --> Plan
   Plan --> Store
-  Store --> Hold
+  Store --> Hold --> Staging
   Uncertain --> Hold
   Hold --> Recovery
-  Recovery --> Manual
-  Manual --> Output
+  Staging --> Recovery --> Manual
+  Manual --> Partial
+  Partial -- Save remaining matches --> Manual
+  Partial -- All tracks matched --> Output
 ```
 
 ## Integration services and contracts

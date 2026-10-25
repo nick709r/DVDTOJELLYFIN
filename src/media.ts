@@ -3,6 +3,7 @@ import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { DiscTitle } from "./model.js";
 import { runProcess } from "./process.js";
+export { ejectDisc } from "./eject.js";
 
 const makeMkv = process.env.MAKEMKV_COMMAND ?? "makemkvcon";
 
@@ -92,10 +93,6 @@ export async function ripTitle(device: string, titleId: number, workDir: string,
   candidates.sort((a, b) => b.size - a.size);
   if (candidates[0] === undefined) throw new Error("MakeMKV completed without producing a Matroska file");
   return candidates[0].path;
-}
-
-export async function ejectDisc(device: string): Promise<void> {
-  await runProcess(process.env.EJECT_COMMAND ?? "eject", [device], { timeoutMs: 15_000 });
 }
 
 export function safeTitle(input: string): string {

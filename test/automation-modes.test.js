@@ -15,9 +15,10 @@ test("Review-Based queues detected media before processing and approval verifies
   const repositories = createSqliteRepositories(db, defaultSettings);
   repositories.setup.complete("admin", "salt", "hash");
   repositories.settings.save({ automationMode: "review_based" });
+  const sourceId = repositories.settings.get().opticalDevice;
   const candidate = {
     providerId: "source.video-dvd.test",
-    sourceId: "/dev/sr0",
+    sourceId,
     mediaKind: "dvd",
     label: "Review Me",
     manifest: { mediaKind: "dvd", items: [{ id: "title-1", kind: "title", durationSeconds: 90 }] }

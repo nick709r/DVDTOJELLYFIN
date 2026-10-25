@@ -85,9 +85,9 @@ if ! getent group autodisc >/dev/null 2>&1; then
   groupadd --system autodisc
 fi
 if ! id autodisc >/dev/null 2>&1; then
-  useradd --system --no-create-home --gid autodisc --groups cdrom --shell /usr/sbin/nologin autodisc
+  useradd --system --no-create-home --gid autodisc --groups cdrom,video --shell /usr/sbin/nologin autodisc
 else
-  usermod --append --groups cdrom autodisc
+  usermod --append --groups cdrom,video autodisc
 fi
 
 configured_path() {
@@ -122,10 +122,38 @@ for library_path in \
     exit 1
   fi
   if [ ! -d "$library_path" ]; then
+    library_parent=$(dirname "$library_path")
+    while [ ! -d "$library_parent" ]; do
+      next_parent=$(dirname "$library_parent")
+      if [ "$next_parent" = "$library_parent" ]; then
+        echo "Could not find an existing parent for library path: $library_path" >&2
+        exit 1
+      fi
+      library_parent=$next_parent
+    done
+    library_gid=$(stat -c '%g' "$library_parent")
+    if [ "$library_gid" = "0" ]; then
+      if getent group jellyfin >/dev/null 2>&1; then
+        library_gid=$(getent group jellyfin | cut -d: -f3)
+      else
+        library_gid=$(getent group autodisc | cut -d: -f3)
+      fi
+    fi
     mkdir -p "$library_path"
-    chown autodisc:autodisc "$library_path"
-    chmod 0775 "$library_path"
+    chown "autodisc:$library_gid" "$library_path"
+  else
+    library_gid=$(stat -c '%g' "$library_path")
+    if [ "$library_gid" = "0" ]; then
+      if getent group jellyfin >/dev/null 2>&1; then
+        library_gid=$(getent group jellyfin | cut -d: -f3)
+      else
+        library_gid=$(getent group autodisc | cut -d: -f3)
+      fi
+      chgrp "$library_gid" "$library_path"
+    fi
   fi
+  usermod --append --groups "$library_gid" autodisc
+  chmod 2775 "$library_path"
 done
 
 if systemctl is-active --quiet autodisc.service; then
@@ -138,8 +166,8 @@ install -d -o autodisc -g autodisc -m 0700 /var/lib/autodisc/.MakeMKV
 install -d -o root -g autodisc -m 1770 /var/lib/autodisc/updater
 cp "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/tsconfig.json" /opt/autodisc/
 cp "$ROOT/README.md" "$ROOT/AUTODISC-ARCHITECTURE.md" /opt/autodisc/
-rm -rf /opt/autodisc/src /opt/autodisc/web
-cp -R "$ROOT/src" "$ROOT/web" /opt/autodisc/
+rm -rf /opt/autodisc/src /opt/autodisc/web /opt/autodisc/scripts
+cp -R "$ROOT/src" "$ROOT/web" "$ROOT/scripts" /opt/autodisc/
 chown -R root:root /opt/autodisc
 
 cd /opt/autodisc

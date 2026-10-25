@@ -107,8 +107,14 @@ test("TV analysis identifies duplicate episodes and alternate cuts", () => {
     manifest: {
       mediaKind: "dvd",
       items: [
-        { id: "1", kind: "title", title: "Pilot", durationSeconds: 2700 },
-        { id: "2", kind: "title", title: "Pilot", durationSeconds: 2690 },
+        { id: "1", kind: "title", title: "Pilot", durationSeconds: 2700, attributes: {
+          chapterCount: 8, streamLayout: "1 video/2 audio/1 subtitle", videoCodec: "mpeg2",
+          width: 720, height: 480, playbackStructure: "playlist-1"
+        } },
+        { id: "2", kind: "title", title: "Pilot", durationSeconds: 2690, attributes: {
+          chapterCount: 8, streamLayout: "1 video/2 audio/1 subtitle", videoCodec: "mpeg2",
+          width: 720, height: 480, playbackStructure: "playlist-1"
+        } },
         { id: "3", kind: "title", title: "Pilot Extended", durationSeconds: 3300 }
       ]
     },
@@ -133,12 +139,46 @@ test("TV analysis identifies duplicate episodes and alternate cuts", () => {
   assert.deepEqual(report.probableDuplicates[0], {
     itemId: "2",
     relatedItemId: "1",
-    confidence: 0.9,
-    evidence: ["Both items rank the same episode highest", "Runtimes differ by no more than 3%", "Track titles are highly similar (1.00)"]
+    confidence: 0.99,
+    evidence: [
+      "Chapter structure, stream layout, video properties, and playback structure match",
+      "Runtime differs by no more than 3%",
+      "Track titles are highly similar (1.00)"
+    ]
   });
   assert.ok(report.probableAlternates.some((relationship) => relationship.itemId === "3"));
   assert.ok(report.recommendations.some((recommendation) => recommendation.action === "review-duplicates"));
   assert.ok(report.recommendations.some((recommendation) => recommendation.action === "review-alternates"));
+});
+
+test("TV analysis does not classify similar episode candidates as duplicates without matching structure", () => {
+  const input = baseInput({
+    manifest: {
+      mediaKind: "dvd",
+      items: [
+        { id: "1", kind: "title", title: "Episode", durationSeconds: 2700 },
+        { id: "2", kind: "title", title: "Episode", durationSeconds: 2690 }
+      ]
+    },
+    metadata: {
+      seriesCandidates: [{
+        series: { id: "series-1", title: "The Example Show" },
+        providerId: "metadata.test",
+        confidence: 0.95
+      }],
+      seasonCandidates: [],
+      episodeCandidates: [1, 2].map((itemNumber) => ({
+        itemId: String(itemNumber),
+        episode: { seriesId: "series-1", seasonNumber: 1, episodeNumber: 1, title: "Episode" },
+        providerId: "metadata.test",
+        confidence: 0.9,
+        runtimeSeconds: 2700
+      }))
+    }
+  });
+  const report = engine.analyze(input);
+  assert.equal(report.probableDuplicates.length, 0);
+  assert.ok(report.items.every((item) => item.kind === "episode-candidate"));
 });
 
 test("TV analysis classifies bonus, commentary, and short special features", () => {
