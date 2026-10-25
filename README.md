@@ -395,6 +395,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.26.3
+
+- Confirmed the reported TypeScript build errors are resolved and `npm run build` completes successfully.
+
 ### Version 1.26.2
 
 - Fixed TypeScript build errors in review processing, storage lifecycle, process tracking, and the DVD TV workflow.
