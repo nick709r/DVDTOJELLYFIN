@@ -35,6 +35,7 @@ test("update check selects the highest stable version tag and ignores other tags
       { name: "v1.22.0" },
       { name: "v1.23.0" },
       { name: "v1.24.0" },
+      { name: "v1.25.0" },
       { name: "v2.0.0-rc.1" },
       { name: "main" },
       { name: 2 }
@@ -42,12 +43,12 @@ test("update check selects the highest stable version tag and ignores other tags
   });
 
   assert.equal(requestedUrl, "https://api.github.com/repos/nick709r/DVDTOJELLYFIN/tags?per_page=100");
-  assert.equal(result.currentVersion, "1.24.0");
-  assert.equal(result.latestVersion, "v1.24.0");
+  assert.equal(result.currentVersion, "1.25.0");
+  assert.equal(result.latestVersion, "v1.25.0");
   assert.equal(result.updateAvailable, false);
   assert.equal(
     result.assetSelected,
-    "https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/v1.24.0.tar.gz"
+    "https://github.com/nick709r/DVDTOJELLYFIN/archive/refs/tags/v1.25.0.tar.gz"
   );
 });
 

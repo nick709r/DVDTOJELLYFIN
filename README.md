@@ -395,6 +395,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.25.0
+
+- Fixed the Review Queue cleanup service method scope so TypeScript can parse the class.
+
 ### Version 1.24.0
 
 - Fixed the Linux updater helper shell parsing failure that prevented updates from reaching download and installation.

@@ -473,20 +473,21 @@ export class ReviewQueueCleanupService {
       throw error;
     }
 
-    private protectedPaths(settings: AppSettings): string[] {
-      const recordedOutputs = this.db.prepare("SELECT output_path FROM jobs WHERE output_path IS NOT NULL")
-        .all() as Array<{ output_path: string }>;
-      return [...new Set([
-        ...protectedOutputRoots(settings),
-        ...recordedOutputs.map(({ output_path }) => resolve(output_path))
-      ])];
-    }
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Owned resource is not a regular directory: ${path}`);
     const realRoot = await realpath(root);
     const realPath = await realpath(path);
     if (!isWithin(realRoot, realPath) || dirname(realPath) !== realRoot || basename(realPath) !== resource.ownerId) {
       throw new Error(`Owned resource resolves outside its expected directory: ${path}`);
     }
+  }
+
+  private protectedPaths(settings: AppSettings): string[] {
+    const recordedOutputs = this.db.prepare("SELECT output_path FROM jobs WHERE output_path IS NOT NULL")
+      .all() as Array<{ output_path: string }>;
+    return [...new Set([
+      ...protectedOutputRoots(settings),
+      ...recordedOutputs.map(({ output_path }) => resolve(output_path))
+    ])];
   }
 
   private isFingerprintExclusive(fingerprint: string, jobId: string | null, reviewId: string): boolean {
