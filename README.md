@@ -399,6 +399,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.30.0
+
+- Corrected TV continuity to prioritize the earliest known missing canonical episodes and added imported, highest, missing, and expected-continuation diagnostics.
+
 ### Version 1.29.0
 
 - Added imported-episode continuity evidence to TV disc-position confidence scoring, including expected next episodes, missing episode ranges, overlap penalties, and duplicate-disc explanations.

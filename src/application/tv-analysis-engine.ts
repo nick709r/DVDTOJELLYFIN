@@ -61,6 +61,20 @@ function episodeRangeLabel(seasonNumber: number, ranges: readonly TvEpisodeNumbe
   ).join(", ");
 }
 
+function missingEpisodeLabel(continuity: TvEpisodeContinuity): string {
+  if (continuity.remainingEpisodeRanges.length === 0) {
+    return `${episodeCode(continuity.seasonNumber, continuity.expectedNextEpisodeNumber)}+`;
+  }
+  const lastRangeIndex = continuity.remainingEpisodeRanges.length - 1;
+  return continuity.remainingEpisodeRanges.map((range, index) =>
+    index === lastRangeIndex
+      ? `${episodeCode(continuity.seasonNumber, range.start)}+`
+      : range.start === range.end
+        ? episodeCode(continuity.seasonNumber, range.start)
+        : `${episodeCode(continuity.seasonNumber, range.start)}-${episodeCode(continuity.seasonNumber, range.end)}`
+  ).join(", ");
+}
+
 function tvEpisodeContinuity(
   season: TvSeasonMatchCandidate | undefined,
   completedHistory: readonly CompletedTvDiscHistory[],
@@ -87,25 +101,28 @@ function tvEpisodeContinuity(
     ...episodeCandidates
       .filter((candidate) => candidate.episode.seriesId === season.seriesId &&
         candidate.episode.seasonNumber === seasonNumber)
-      .map((candidate) => candidate.episode.episodeNumber)
+      .map((candidate) => candidate.episode.episodeNumber),
+    ...importedEpisodeNumbers
   ].filter((episodeNumber) => Number.isInteger(episodeNumber) && episodeNumber > 0);
   const highestImportedEpisodeNumber = Math.max(...importedEpisodeNumbers);
-  const expectedNextEpisodeNumber = highestImportedEpisodeNumber + 1;
+  const remainingEpisodeRanges = episodeNumberRanges(catalogEpisodeNumbers.filter((number) => !imported.has(number)));
+  const expectedNextEpisodeNumber = remainingEpisodeRanges[0]?.start ?? highestImportedEpisodeNumber + 1;
   const latestCatalogEpisode = catalogEpisodeNumbers.length > 0
     ? Math.max(...catalogEpisodeNumbers)
     : undefined;
+  const expectedRemainingEpisodeRange = remainingEpisodeRanges[0] ?? {
+    start: expectedNextEpisodeNumber,
+    ...(latestCatalogEpisode !== undefined && latestCatalogEpisode >= expectedNextEpisodeNumber
+      ? { end: latestCatalogEpisode }
+      : {})
+  };
   return {
     seasonNumber,
     highestImportedEpisodeNumber,
     expectedNextEpisodeNumber,
-    expectedRemainingEpisodeRange: {
-      start: expectedNextEpisodeNumber,
-      ...(latestCatalogEpisode !== undefined && latestCatalogEpisode >= expectedNextEpisodeNumber
-        ? { end: latestCatalogEpisode }
-        : {})
-    },
+    expectedRemainingEpisodeRange,
     importedEpisodeRanges: episodeNumberRanges(importedEpisodeNumbers),
-    remainingEpisodeRanges: episodeNumberRanges(catalogEpisodeNumbers.filter((number) => !imported.has(number)))
+    remainingEpisodeRanges
   };
 }
 
@@ -612,7 +629,7 @@ function rankDiscPositions(
           : `${episodeCode(seasonContinuity.seasonNumber, expectedRange.start)}-${episodeCode(seasonContinuity.seasonNumber, expectedRange.end)}`;
       evidence.push(makeEvidence(
         "episode-continuity",
-        `Expected next episode: ${nextEpisodeLabel}`,
+        `Expected Continuation: ${nextEpisodeLabel}`,
         0
       ));
       evidence.push(makeEvidence(
@@ -627,10 +644,20 @@ function rankDiscPositions(
       if (importedRangeLabel) {
         evidence.push(makeEvidence(
           "episode-continuity",
-          `Imported episode ranges: ${importedRangeLabel}`,
+          `Imported Episodes: ${importedRangeLabel}`,
           0
         ));
       }
+      evidence.push(makeEvidence(
+        "episode-continuity",
+        `Highest Imported: ${seasonContinuity.highestImportedEpisodeNumber}`,
+        0
+      ));
+      evidence.push(makeEvidence(
+        "episode-continuity",
+        `Missing Episodes: ${missingEpisodeLabel(seasonContinuity)}`,
+        0
+      ));
       const remainingRangeLabel = episodeRangeLabel(
         seasonContinuity.seasonNumber,
         seasonContinuity.remainingEpisodeRanges
@@ -638,16 +665,17 @@ function rankDiscPositions(
       if (remainingRangeLabel) {
         evidence.push(makeEvidence(
           "episode-continuity",
-          `Unimported episode ranges: ${remainingRangeLabel}`,
+          `Known unimported episode ranges: ${remainingRangeLabel}`,
           0
         ));
       }
       const firstCandidateEpisode = candidateEpisodeNumbers[0];
-      const candidateHasMissingEpisodes = candidateEpisodeNumbers.some((episodeNumber) =>
-        !seasonContinuity.importedEpisodeRanges.some((range) =>
-          episodeNumber >= range.start && episodeNumber <= range.end
+      const nextMissingRange = seasonContinuity.remainingEpisodeRanges[0];
+      const candidateCoversNextMissingEpisodes = nextMissingRange
+        ? candidateEpisodeNumbers.some((episodeNumber) =>
+          episodeNumber >= nextMissingRange.start && episodeNumber <= nextMissingRange.end
         )
-      );
+        : candidateEpisodeNumbers.includes(expectedNext);
       const overlappingEpisodeNumbers = candidateEpisodeNumbers.filter((episodeNumber) =>
         seasonContinuity.importedEpisodeRanges.some((range) =>
           episodeNumber >= range.start && episodeNumber <= range.end
@@ -675,17 +703,17 @@ function rankDiscPositions(
           "positive"
         );
       }
-      if (candidateHasMissingEpisodes) {
-        const missingRangeLabel = episodeRangeLabel(
+      if (candidateCoversNextMissingEpisodes) {
+        const coveredNextMissingRangeLabel = episodeRangeLabel(
           seasonContinuity.seasonNumber,
           episodeNumberRanges(candidateEpisodeNumbers.filter((episodeNumber) =>
-            !seasonContinuity.importedEpisodeRanges.some((range) =>
-              episodeNumber >= range.start && episodeNumber <= range.end
-            )
+            nextMissingRange
+              ? episodeNumber >= nextMissingRange.start && episodeNumber <= nextMissingRange.end
+              : episodeNumber === expectedNext
           ))
         );
         applyContinuityAdjustment(
-          `Candidate covers missing episodes ${missingRangeLabel}`,
+          `Candidate covers next missing episodes ${coveredNextMissingRangeLabel}`,
           0.2,
           "positive"
         );
