@@ -605,8 +605,17 @@ function strategyAssignments(input: TvEpisodeMatchingInput): Map<string, Strateg
     }
   }
   const orderedEpisodes = [...seasonEpisodes.values()].sort(compareEpisode);
-  const start = (detectedDisc.discNumber - 1) * primaryTracks.length;
-  const range = orderedEpisodes.slice(start, start + primaryTracks.length);
+  const continuity = detectedDisc.confidenceBreakdown.continuity;
+  const range = continuity
+    ? orderedEpisodes.filter((episode) =>
+      !continuity.importedEpisodeRanges.some((episodeRange) =>
+        episode.episodeNumber >= episodeRange.start && episode.episodeNumber <= episodeRange.end
+      )
+    ).slice(0, primaryTracks.length)
+    : orderedEpisodes.slice(
+      (detectedDisc.discNumber - 1) * primaryTracks.length,
+      detectedDisc.discNumber * primaryTracks.length
+    );
   if (range.length !== primaryTracks.length) return assignments;
   primaryTracks.forEach((item, index) => {
     if (assignments.has(item.itemId)) return;

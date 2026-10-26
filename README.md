@@ -399,6 +399,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.31.0
+
+- Generated TV episode candidates from imported episode continuity and confident disc position before runtime ranking; sequential fallback now uses the earliest unimported canonical episodes.
+
 ### Version 1.30.0
 
 - Corrected TV continuity to prioritize the earliest known missing canonical episodes and added imported, highest, missing, and expected-continuation diagnostics.

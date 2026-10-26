@@ -319,7 +319,7 @@ test("provider DVD disc mapping wins without runtime ranking or candidate compet
   ));
 });
 
-test("multi-disc sequential fallback uses the disc offset and excludes obvious extras", () => {
+test("multi-disc sequential fallback uses disc offset without history and excludes extras", () => {
   const items = [
     ...Array.from({ length: 8 }, (_, index) => ({
       id: `track-${index + 1}`,
@@ -356,6 +356,98 @@ test("multi-disc sequential fallback uses the disc offset and excludes obvious e
     item.assignmentMethod === "sequential-disc-assignment" && item.confidence === 0.9
   ));
   assert.equal(report.items[8].decision, "bonus");
+});
+
+test("Disc 3 candidates follow imported episode continuity before matching", () => {
+  const items = Array.from({ length: 7 }, (_, index) => ({
+    id: `disc3-title-${String.fromCharCode(65 + index)}`,
+    kind: "title",
+    title: `Title ${index + 1}`,
+    trackNumber: index + 1,
+    durationSeconds: 1294
+  }));
+  const metadata = items.flatMap((item) =>
+    Array.from({ length: 23 }, (_, index) => {
+      const episodeNumber = index + 1;
+      return episodeCandidate(item.id, episodeNumber, 0.55, {
+        episode: {
+          seriesId: "series-1",
+          seasonNumber: 3,
+          episodeNumber,
+          title: episodeNumber === 1 ? "Coming from America" : `Episode ${episodeNumber}`
+        },
+        runtimeSeconds: 1294
+      });
+    })
+  );
+  const completedDiscHistory = [1, 2].map((discNumber) => {
+    const start = discNumber === 1 ? 1 : 9;
+    const end = discNumber === 1 ? 8 : 16;
+    return {
+      jobId: `completed-disc-${discNumber}`,
+      fingerprint: `fresh-off-the-boat-s3-d${discNumber}`,
+      metadataProvider: "test",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber,
+      mappings: [],
+      episodes: Array.from({ length: end - start + 1 }, (_, index) => ({
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber: start + index
+      })),
+      completedAt: "2026-10-24T12:00:00.000Z"
+    };
+  });
+  const analysis = analyze(items, metadata, {
+    fingerprint: "fresh-off-the-boat-s3-d3",
+    discLabel: "FRESH_OFF_THE_BOAT_S3_D3",
+    disc: { seasonNumber: 3, discNumber: 3, discCount: 3 },
+    discStructureHints: [{
+      source: "disc-label",
+      confidence: 0.99,
+      seasonNumber: 3,
+      discNumber: 3
+    }],
+    completedDiscHistory,
+    metadata: {
+      seriesCandidates: [{
+        series: { id: "series-1", title: "Fresh Off the Boat" },
+        providerId: "test",
+        confidence: 0.96
+      }],
+      seasonCandidates: [{
+        seriesId: "series-1",
+        season: { seriesId: "series-1", number: 3 },
+        providerId: "test",
+        confidence: 0.96
+      }],
+      episodeCandidates: metadata
+    }
+  });
+
+  const continuity = analysis.discPositionCandidates[0].confidenceBreakdown.continuity;
+  assert.equal(continuity.highestImportedEpisodeNumber, 16);
+  assert.equal(continuity.expectedNextEpisodeNumber, 17);
+  assert.deepEqual(continuity.importedEpisodeRanges, [{ start: 1, end: 16 }]);
+  assert.deepEqual(analysis.items.map((item) => item.candidates[0].episode.episodeNumber),
+    [17, 18, 19, 20, 21, 22, 23]);
+  assert.ok(analysis.items.every((item) => item.candidates[0].scoreComponents.discStructure >= 0.9));
+  assert.ok(analysis.items.every((item) =>
+    item.candidates.find((candidate) => candidate.episode.episodeNumber === 1)
+      .evidence.some((evidence) => evidence.includes("is out of playback order"))
+  ));
+
+  const report = matchingEngine.match({ analysis, episodeMetadata: metadata });
+  assert.deepEqual(report.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber),
+    [17, 18, 19, 20, 21, 22, 23]);
+  assert.ok(report.items.every((item) =>
+    item.decision === "suggested" &&
+    item.confidence === 0.9 &&
+    item.assignmentMethod === "sequential-disc-assignment" &&
+    item.alternatives.length === 0
+  ));
 });
 
 test("episode matcher keeps globally conflicting suggestions unknown", () => {
