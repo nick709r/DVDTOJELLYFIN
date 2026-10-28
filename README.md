@@ -399,6 +399,10 @@ sudo journalctl -u autodisc.service -f
 
 ## Release History
 
+### Version 1.32.0
+
+- Require movie or TV structure evidence before TV metadata matching, and log separate movie/TV confidence with classification evidence.
+
 ### Version 1.31.0
 
 - Generated TV episode candidates from imported episode continuity and confident disc position before runtime ranking; sequential fallback now uses the earliest unimported canonical episodes.

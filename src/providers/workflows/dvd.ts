@@ -1001,12 +1001,15 @@ async function processMappedTvEpisodes(
       tvCandidateTitles: titles.filter((title) => title.durationSeconds >= 600 && title.durationSeconds <= 6000),
       bonusContentCandidates: titles.filter((title) => /\b(?:bonus|extra|featurette|trailer|commentary|interview)\b/i.test(title.name))
     }));
-    const tvAssessment = assessTvDisc({
+    const tvSource = {
       sourceId: info.sourceId,
       providerId: info.providerId,
       mediaKind: info.mediaKind,
       label: info.label,
       manifest: info.manifest
+    };
+    const tvAssessment = assessTvDisc(tvSource, {
+      hasCompletedTvHistory: this.tvWorkflow?.hasCompletedTvHistory(tvSource) ?? false
     });
     const detectedMediaType = tvAssessment.classification === "movie" ? "movie" :
       tvAssessment.classification === "tv" ? "tv_series" : "mixed_content";
@@ -1040,9 +1043,14 @@ async function processMappedTvEpisodes(
         }));
       }
     }
-    const finalMediaType = recovery.mediaTypeOverridden ? recovery.finalMediaType : detectedMediaType;
+    const hasKnownTvRecovery = Boolean(recovery.seriesName &&
+      (recovery.finalMediaType === "tv_series" || recovery.mappings.length > 0));
+    const finalMediaType = recovery.mediaTypeOverridden ? recovery.finalMediaType :
+      hasKnownTvRecovery ? "tv_series" : detectedMediaType;
     const isTvWorkflow = finalMediaType === "tv_series" ||
-      (!recovery.mediaTypeOverridden && tvAssessment.classification !== "movie");
+      (!recovery.mediaTypeOverridden && tvAssessment.classification === "tv");
+    const classificationReviewRequired = !recovery.mediaTypeOverridden &&
+      !isTvWorkflow && tvAssessment.classification === "review";
     const unsupportedOverride = (recovery.mediaTypeOverridden &&
       !["movie", "tv_series"].includes(recovery.finalMediaType)) ||
       (recovery.discTypeOverridden && recovery.finalDiscType !== "dvd");
@@ -1062,7 +1070,10 @@ async function processMappedTvEpisodes(
       classification: tvAssessment.classification,
       finalMediaType,
       mediaTypeOverridden: recovery.mediaTypeOverridden,
-      tvConfidence: tvAssessment.confidence,
+      classificationConfidence: tvAssessment.confidence,
+      movieConfidence: tvAssessment.movieConfidence,
+      tvConfidence: tvAssessment.tvConfidence,
+      classificationEvidence: tvAssessment.classificationEvidence,
       criteria: tvAssessment.criteria,
       reasons: tvAssessment.reasons,
       tvDetectionEnabled: tvEnabled
@@ -1073,6 +1084,9 @@ async function processMappedTvEpisodes(
       finalMediaType,
       mediaTypeOverridden: recovery.mediaTypeOverridden,
       confidence: tvAssessment.confidence,
+      movieConfidence: tvAssessment.movieConfidence,
+      tvConfidence: tvAssessment.tvConfidence,
+      classificationEvidence: tvAssessment.classificationEvidence,
       criteria: tvAssessment.criteria.map((criterion, index) => ({
         ...criterion,
         weight: scoreWeights[index] ?? 0,
@@ -1082,16 +1096,21 @@ async function processMappedTvEpisodes(
       tvDetectionEnabled: tvEnabled
     }));
 
-    if (unsupportedOverride || (isTvWorkflow && !tvEnabled)) {
+    if (unsupportedOverride || classificationReviewRequired || (isTvWorkflow && !tvEnabled)) {
       const message = unsupportedOverride
         ? `The manually selected ${recovery.discTypeOverridden && recovery.finalDiscType !== "dvd"
           ? `disc type ${recovery.finalDiscType}` : `media type ${finalMediaType}`} is not supported by the DVD processing workflow; held for review.`
+        : classificationReviewRequired
+          ? "Disc lacks sufficient movie or TV structure evidence; held for review before TV metadata lookup."
         : `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV detection is disabled; held for review instead of movie processing.`;
       jobs.holdForReview(context, message, {
         classification: tvAssessment.classification,
         finalMediaType,
         mediaTypeOverridden: recovery.mediaTypeOverridden,
         confidence: tvAssessment.confidence,
+        movieConfidence: tvAssessment.movieConfidence,
+        tvConfidence: tvAssessment.tvConfidence,
+        classificationEvidence: tvAssessment.classificationEvidence,
         criteria: tvAssessment.criteria,
         reasons: tvAssessment.reasons,
         tvDetectionEnabled: tvEnabled

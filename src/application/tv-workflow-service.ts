@@ -225,11 +225,66 @@ export interface TvPrefilterCriterion {
 export interface TvPrefilterAssessment {
   classification: "tv" | "review" | "movie";
   confidence: number;
+  movieConfidence: number;
+  tvConfidence: number;
   criteria: readonly TvPrefilterCriterion[];
+  classificationEvidence: readonly {
+    category: "movie" | "tv";
+    message: string;
+    scoreImpact: number;
+  }[];
   reasons: readonly string[];
 }
 
-export function assessTvDisc(source: TvWorkflowSource): TvPrefilterAssessment {
+export interface TvPrefilterContext {
+  hasCompletedTvHistory?: boolean;
+}
+
+export function assessTvDisc(
+  source: TvWorkflowSource,
+  context: TvPrefilterContext = {}
+): TvPrefilterAssessment {
+  const allTitleItems = source.manifest.items.filter((item) =>
+    item.kind === "title" && Number.isFinite(item.durationSeconds) && (item.durationSeconds ?? 0) > 0
+  );
+  const dominantTitle = allTitleItems.slice().sort((left, right) =>
+    (right.durationSeconds ?? 0) - (left.durationSeconds ?? 0)
+  )[0];
+  const totalRuntime = allTitleItems.reduce((sum, item) => sum + (item.durationSeconds ?? 0), 0);
+  const dominantRuntime = dominantTitle?.durationSeconds ?? 0;
+  const otherTitleItems = dominantTitle
+    ? allTitleItems.filter((item) => item.id !== dominantTitle.id)
+    : [];
+  const dominantShare = totalRuntime > 0 ? dominantRuntime / totalRuntime : 0;
+  const extrasCount = otherTitleItems.filter((item) =>
+    (item.durationSeconds ?? 0) <= 10 * 60 || nonEpisodeTitlePattern.test(item.title ?? "")
+  ).length;
+  const extrasPattern = otherTitleItems.length > 0 &&
+    extrasCount / otherTitleItems.length >= 0.6;
+  const secondLongestRuntime = otherTitleItems.reduce((longest, item) =>
+    Math.max(longest, item.durationSeconds ?? 0), 0);
+  const movieSignals = [
+    {
+      passed: dominantRuntime > 75 * 60,
+      weight: 0.35,
+      message: "Dominant title exceeds 75 minutes"
+    },
+    {
+      passed: dominantShare >= 0.55,
+      weight: 0.25,
+      message: "Dominant title contains most of the disc runtime"
+    },
+    {
+      passed: extrasPattern,
+      weight: 0.2,
+      message: "Remaining titles follow an extras runtime/title pattern"
+    },
+    {
+      passed: secondLongestRuntime > 0 && dominantRuntime / secondLongestRuntime >= 2.5,
+      weight: 0.2,
+      message: "Title runtimes have high variance around one dominant feature"
+    }
+  ];
   const titleItems = source.manifest.items.filter((item) =>
     item.kind === "title" && item.durationSeconds !== undefined &&
     item.durationSeconds >= tvWorkflowPolicy.episodeMinimumSeconds &&
@@ -289,12 +344,45 @@ export function assessTvDisc(source: TvWorkflowSource): TvPrefilterAssessment {
     (score, criterion, index) => score + (criterion.passed ? weights[index] ?? 0 : 0),
     0
   ).toFixed(2));
-  const confirmedTv = hasSeasonOrSeriesLabel ||
+  const tvConfidence = Number(Math.min(1,
+    confidence + (context.hasCompletedTvHistory ? 0.4 : 0)
+  ).toFixed(2));
+  const movieConfidence = Number(movieSignals.reduce(
+    (score, signal) => score + (signal.passed ? signal.weight : 0),
+    0
+  ).toFixed(2));
+  const confirmedTv = hasSeasonOrSeriesLabel || context.hasCompletedTvHistory ||
     (hasThreeEpisodeTitles && runtimesAreConsistent && noFeatureLengthTitle);
-  const uncertainTv = !confirmedTv && hasTwoEpisodeTitles;
-  const classification = confirmedTv ? "tv" : uncertainTv ? "review" : "movie";
+  const strongMovie = movieConfidence >= 0.75 && !confirmedTv;
+  const uncertainTv = !confirmedTv && !strongMovie && hasTwoEpisodeTitles;
+  const classification = confirmedTv ? "tv" : strongMovie || !uncertainTv ? "movie" : "review";
+  const classificationEvidence = [
+    ...movieSignals.filter((signal) => signal.passed).map((signal) => ({
+      category: "movie" as const,
+      message: signal.message,
+      scoreImpact: signal.weight
+    })),
+    ...criteria.flatMap((criterion, index) => criterion.passed ? [{
+      category: "tv" as const,
+      message: criterion.explanation,
+      scoreImpact: weights[index] ?? 0
+    }] : []),
+    ...(context.hasCompletedTvHistory ? [{
+      category: "tv" as const,
+      message: "Completed TV disc history matches the identified season and series",
+      scoreImpact: 0.4
+    }] : [])
+  ];
   const reasons = criteria.filter((criterion) => !criterion.passed).map((criterion) => criterion.explanation);
-  return { classification, confidence, criteria, reasons };
+  return {
+    classification,
+    confidence: classification === "movie" ? movieConfidence : tvConfidence,
+    movieConfidence,
+    tvConfidence,
+    criteria,
+    classificationEvidence,
+    reasons
+  };
 }
 
 export function tvPrefilterRejectionReasons(source: TvWorkflowSource): string[] {
@@ -416,6 +504,25 @@ export class TvWorkflowService {
     private readonly identification: TvWorkflowDependencies = {}
   ) {}
 
+  hasCompletedTvHistory(source: TvWorkflowSource): boolean {
+    const attributes = source.manifest.attributes ?? {};
+    const names = [
+      source.label,
+      attributes.filesystemVolumeName,
+      attributes.makemkvDiscName,
+      attributes.dvdVolumeName,
+      attributes.dvdTitle
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    return names.some((name) => {
+      const seasonNumber = parseDiscStructure(name).seasonNumber;
+      const normalizedName = normalizeDiscName(name).toLocaleLowerCase();
+      if (seasonNumber === undefined || !normalizedName) return false;
+      return (this.identification.completedDiscHistory?.listForSeason(seasonNumber) ?? [])
+        .some((record) => record.discNumber !== null &&
+          normalizeDiscName(record.seriesName).toLocaleLowerCase() === normalizedName);
+    });
+  }
+
   private async searchProviders(
     query: string,
     source: TvWorkflowSource,
@@ -474,7 +581,10 @@ export class TvWorkflowService {
     signal?: AbortSignal,
     saved?: TvSavedIdentification
   ): Promise<TvWorkflowResult | undefined> {
-    if (assessTvDisc(source).classification === "movie") return undefined;
+    const classification = assessTvDisc(source, {
+      hasCompletedTvHistory: this.hasCompletedTvHistory(source)
+    });
+    if (classification.classification !== "tv" && !saved?.seriesName) return undefined;
 
     const attributes = source.manifest.attributes ?? {};
     const attribute = (key: string): string | null => {
