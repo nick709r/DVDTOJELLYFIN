@@ -75,10 +75,143 @@ test("DVD metadata failure queues verified extraction without requiring another 
     const reviewJob = repositories.reviewJobs.list()[0];
     assert.equal(reviewJob.status, "pending");
     assert.equal(reviewJob.failureStage, "metadata");
+    assert.equal(reviewJob.metadata.title, null);
+    assert.equal(reviewJob.metadata.namingSource, "Fallback");
+    assert.deepEqual(reviewJob.metadata.movieCandidates, []);
     const [mediaPath] = await workspaces.mediaFiles(reviewJob.id);
     assert.equal((await stat(mediaPath)).size, 4096);
     assert.equal(JSON.parse(await readFile(join(reviewJob.storagePath, "review.json"), "utf8")).ripCompleted, true);
     assert.equal(repositories.history.get(reviewJob.originalJobId).status, "review");
+  } finally {
+    repositories.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("THE_BREAK_UP filesystem volume name is normalized and low-confidence candidates require review", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dvd-movie-identification-review-"));
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  try {
+    const workDir = join(root, "working");
+    const moviesDir = join(root, "movies");
+    repositories.settings.save({ workDir, moviesDir, metadataEnabled: true, autoEject: false });
+    const jobs = new JobCoordinator(repositories, { publish() {} }, {
+      begin() {},
+      end() {},
+      register() {},
+      cancel() { return false; },
+      wasCancelled() { return false; }
+    });
+    const workspaces = new ReviewWorkspaceService(repositories.reviewJobs);
+    let metadataQuery = "";
+    let conversionCalls = 0;
+    const workflow = new DvdWorkflow(undefined, workspaces, async () => {
+      conversionCalls += 1;
+      throw new Error("Low-confidence movie must not be converted");
+    }, async () => {});
+    const durations = [6371, 131, 308, 1269, 490, 127, 123, 689, 145, 146, 917, 385];
+    const source = {
+      provider: {},
+      candidate: {
+        providerId: "source.video-dvd.makemkv",
+        sourceId: "drive-1",
+        mediaKind: "dvd",
+        label: "",
+        manifest: {
+          mediaKind: "dvd",
+          attributes: { filesystemVolumeName: "THE_BREAK_UP" },
+          items: durations.map((durationSeconds, index) => ({
+            id: String(index + 1),
+            kind: "title",
+            title: "",
+            durationSeconds
+          }))
+        }
+      }
+    };
+    const handled = await workflow.process({
+      source,
+      sources: {
+        acquire: async (_source, workspacePath) => {
+          const mediaPath = join(workspacePath, "extracted.mkv");
+          await writeFile(mediaPath, Buffer.alloc(4096, 5));
+          return {
+            source: { id: "drive-1", providerId: "source.video-dvd.makemkv", kind: "dvd" },
+            artifacts: [{ id: "video-1", kind: "video", path: mediaPath }]
+          };
+        }
+      },
+      jobs,
+      metadata: {
+        resolve: async ({ query }) => {
+          metadataQuery = query ?? "";
+          const candidate = {
+            id: "tmdb-1",
+            providerId: "metadata.tmdb.movie",
+            entityType: "movie",
+            title: "The Break-Up (2006)",
+            confidence: 0.41,
+            metadata: { title: "The Break-Up", year: 2006 }
+          };
+          return { selected: candidate, candidates: [candidate], providerFailures: [] };
+        }
+      },
+      signal: new AbortController().signal,
+      devicePath: "/dev/sr0"
+    });
+
+    assert.equal(handled, true);
+    assert.equal(metadataQuery, "The Break Up");
+    assert.equal(conversionCalls, 0);
+    const reviewJob = repositories.reviewJobs.list()[0];
+    assert.equal(reviewJob.status, "pending");
+    assert.equal(reviewJob.metadata.title, null);
+    assert.equal(reviewJob.metadata.suggestedTitle, "The Break Up");
+    assert.equal(reviewJob.metadata.namingSource, "Filesystem volume name");
+    assert.equal(reviewJob.metadata.movieIdentificationRequiresConfirmation, true);
+    assert.equal(reviewJob.metadata.movieIdentificationEvidence.confidence, 0.41);
+    assert.equal(reviewJob.metadata.movieIdentificationEvidence.minimumConfidence, 0.9);
+    assert.equal(reviewJob.metadata.movieCandidates[0].title, "The Break-Up (2006)");
+    assert.equal(repositories.history.get(reviewJob.originalJobId).status, "review");
+    const movieReview = repositories.reviewItems.list({ category: "metadata_issue", status: "active" })[0];
+    assert.equal(movieReview.title, "Movie identification needs confirmation");
+    assert.equal(movieReview.errorDetails.filesystemVolumeName, "THE_BREAK_UP");
+    assert.equal(movieReview.errorDetails.action, "Manual confirmation required");
+    const processor = new ReviewJobProcessor(
+      repositories.reviewJobs,
+      workspaces,
+      jobs,
+      () => repositories.settings.get(),
+      { resolve: async () => ({ candidates: [], providerFailures: [] }) },
+      async (_input, target, _title, _settings, onPublishing, onProgress) => {
+        await writeFile(target, Buffer.alloc(4096, 6));
+        const encoder = { name: "Test encoder", codec: "libx264", hardware: false };
+        onPublishing(encoder);
+        onProgress(1);
+        return { encoder, outputBytes: 4096 };
+      }
+    );
+    await assert.rejects(processor.continue(reviewJob.id), /explicitly confirmed/);
+    await workspaces.updateMetadata(reviewJob.id, {
+      movieIdentificationRequiresConfirmation: false,
+      title: "Unknown Title 2026-10-28",
+      movieIdentificationConfirmed: false
+    });
+    await assert.rejects(processor.continue(reviewJob.id), /explicitly confirmed/);
+    await workspaces.updateMetadata(reviewJob.id, {
+      title: "The Break-Up (2006)",
+      movieIdentificationConfirmed: true,
+      namingSource: "User review"
+    });
+    assert.equal(repositories.reviewJobs.get(reviewJob.id).metadata.movieIdentificationConfirmed, true);
+    await processor.continue(reviewJob.id);
+    const publishedMovie = repositories.history.get(reviewJob.originalJobId);
+    assert.equal(publishedMovie.status, "completed");
+    assert.equal(publishedMovie.title, "The Break-Up (2006)");
+    assert.ok(publishedMovie.outputPath);
+    assert.equal((await stat(publishedMovie.outputPath)).size, 4096);
   } finally {
     repositories.close();
     await rm(root, { recursive: true, force: true });
@@ -235,7 +368,7 @@ test("review retry resumes metadata from saved media without a source provider",
       }
     );
 
-    await assert.rejects(processor.continue(reviewJob.job.id), /Metadata lookup failed/);
+    await assert.rejects(processor.continue(reviewJob.job.id), /No movie metadata candidate met/);
     assert.equal(metadataLookups, 1);
     assert.equal(repositories.reviewJobs.get(jobId).status, "pending");
     assert.equal((await stat((await workspaces.mediaFiles(jobId))[0])).size, 4096);

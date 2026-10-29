@@ -59,6 +59,7 @@ AutoDisc is built on a provider and workflow model, so new media types and metad
 
 - **Automatic disc detection**: udev-driven insertion events with a periodic presence check and retry/backoff for drives that are slow to become readable.
 - **Movie classification**: separates feature films from other DVD content.
+- **Movie identification review**: holds low-confidence metadata matches for title confirmation and uses a normalized filesystem volume name as the fallback suggestion.
 - **TV classification**: episodic structure and runtime analysis, with unidentified discs ripped to a TV staging area rather than published as movies.
 - **TV Disc Review**: identify staged series, review tracks with video previews, save episode matches, and resume publishing without reinserting or re-ripping the disc.
 - **Audio CD processing**: lossless FLAC ripping with tagging and MusicBrainz lookup.
@@ -398,6 +399,11 @@ sudo journalctl -u autodisc.service -f
 ---
 
 ## Release History
+
+### Version 1.33.0
+
+- Use the filesystem volume name consistently for movie lookup and fallback naming, and hold uncertain identifications for candidate review and explicit title confirmation.
+- Add a configurable minimum movie-match confidence and prevent generated unknown titles from publishing without explicit confirmation.
 
 ### Version 1.32.0
 

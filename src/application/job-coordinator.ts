@@ -331,6 +331,36 @@ export class JobCoordinator {
     };
   }
 
+  holdForMovieIdentificationReview(
+    context: JobContext,
+    message: string,
+    errorDetails: Readonly<Record<string, unknown>>
+  ): JobResult {
+    this.repositories.jobs.finish(context.id, "review", message);
+    const job = this.repositories.history.get(context.id);
+    this.createReview({
+      category: "metadata_issue",
+      severity: "high",
+      title: "Movie identification needs confirmation",
+      description: message,
+      relatedJobId: context.id,
+      ...(job?.discLabel ? { relatedDisc: job.discLabel } : {}),
+      ...(context.fingerprint ? { discFingerprint: context.fingerprint } : {}),
+      ...(context.drivePath ? { relatedDrive: context.drivePath } : {}),
+      errorDetails,
+      suggestedActions: [
+        { type: "open-review", label: "Review movie title" },
+        { type: "view-job", label: "View job details" }
+      ]
+    });
+    this.publisher.publish(context.id, "review");
+    return {
+      jobId: context.id,
+      status: "review",
+      error: { code: "movie_identification_review_required", message, recoverable: true }
+    };
+  }
+
   fail(context: JobContext, status: "failed" | "cancelled" | "interrupted", failure: JobFailure): JobResult {
     this.repositories.jobs.finish(context.id, status, failure.message);
     if (status === "failed" && failure.code !== "folder_creation_failed") {

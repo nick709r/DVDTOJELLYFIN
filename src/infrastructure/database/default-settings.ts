@@ -14,6 +14,7 @@ export const defaultSettings: AppSettings = {
   autoEject: true,
   automationMode: "regular_auto",
   metadataEnabled: false,
+  movieIdentificationMinimumConfidence: 0.9,
   metadataProvider: "tmdb",
   metadataApiKey: "",
   musicMetadataEnabled: false,

@@ -90,6 +90,7 @@ export interface AppSettings {
   autoEject: boolean;
   automationMode: AutomationMode;
   metadataEnabled: boolean;
+  movieIdentificationMinimumConfidence: number;
   metadataProvider: "tmdb";
   metadataApiKey: string;
   musicMetadataEnabled: boolean;

@@ -21,6 +21,7 @@ import { getRuntimeStatus } from "./runtime-status.js";
 import { configureLogLevel } from "./logger.js";
 import { testLidarrConnection, validateLidarrUrl } from "./lidarr.js";
 import { getManualMusicMetadataPrompt, submitManualMusicMetadata } from "./manual-music-metadata.js";
+import { isGeneratedUnknownTitle } from "./media.js";
 import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-metadata.js";
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateDiagnostics, getUpdateStatus, isUpdatePending, queueUpdate, verifyRunningVersion, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, Job, LibraryMetadataSettings, OutputFormat } from "./model.js";
@@ -902,9 +903,18 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review-jobs/:id/met
     (typeof body.title === "string" && body.title.length > 200)) {
     return reply.code(400).send({ error: "Review metadata contains unsupported or invalid fields" });
   }
+  if (typeof body.title === "string" && isGeneratedUnknownTitle(body.title) &&
+    !/^Unknown Title \d{4}-\d{2}-\d{2}$/i.test(body.title.trim())) {
+    return reply.code(400).send({ error: "Movie title must not normalize to an automatic unknown-title fallback" });
+  }
   if (!reviewJobActions) return reply.code(503).send({ error: "Review workspace service is unavailable" });
   try {
-    return { reviewJob: await reviewJobActions.updateMetadata(reviewJob.id, body) };
+    const metadataPatch: Record<string, unknown> = { ...body };
+    if (typeof body.title === "string" && body.title.trim()) {
+      metadataPatch.movieIdentificationConfirmed = true;
+      metadataPatch.namingSource = "User review";
+    }
+    return { reviewJob: await reviewJobActions.updateMetadata(reviewJob.id, metadataPatch) };
   } catch (error) {
     return reply.code(409).send({ error: error instanceof Error ? error.message : "Could not update review metadata" });
   }
@@ -916,6 +926,17 @@ app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/continue", {
   const reviewJob = repositories.reviewJobs.get(request.params.id);
   if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
   if (reviewJob.status !== "pending") return reply.code(409).send({ error: `Cannot continue a ${reviewJob.status} review job` });
+  const generatedUnknownTitle = typeof reviewJob.metadata.title === "string" &&
+    /^Unknown Title \d{4}-\d{2}-\d{2}$/i.test(reviewJob.metadata.title);
+  const storedTitle = typeof reviewJob.metadata.title === "string" ? reviewJob.metadata.title.trim() : "";
+  const needsMovieConfirmation = reviewJob.metadata.movieIdentificationRequiresConfirmation === true ||
+    generatedUnknownTitle ||
+    (storedTitle.length > 0 && reviewJob.metadata.namingSource !== "Metadata match" &&
+      reviewJob.metadata.movieIdentificationConfirmed !== true);
+  if (needsMovieConfirmation &&
+    reviewJob.metadata.movieIdentificationConfirmed !== true) {
+    return reply.code(409).send({ error: "Confirm the movie title before publishing" });
+  }
   if (!reviewJobActions) return reply.code(503).send({ error: "Review processing service is unavailable" });
   if (activeJob()) return reply.code(409).send({ error: "Another media job is already active" });
   repositories.reviewJobs.update(reviewJob.id, { status: "retrying" });
@@ -2848,6 +2869,13 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
   if ("metadataEnabled" in body) {
     if (typeof body.metadataEnabled !== "boolean") return reply.code(400).send({ error: "metadataEnabled must be a boolean" });
     patch.metadataEnabled = body.metadataEnabled;
+  }
+  if ("movieIdentificationMinimumConfidence" in body) {
+    const threshold = body.movieIdentificationMinimumConfidence;
+    if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+      return reply.code(400).send({ error: "Movie identification confidence threshold must be between 0 and 1" });
+    }
+    patch.movieIdentificationMinimumConfidence = threshold;
   }
   if ("metadataProvider" in body) {
     if (body.metadataProvider !== "tmdb") return reply.code(400).send({ error: "Unsupported metadata provider" });

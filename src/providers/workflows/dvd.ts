@@ -11,7 +11,7 @@ import type { DiscTitle } from "../../model.js";
 import { events, notifyStatus } from "../../events.js";
 import { getLiveDiscDiagnostics, updateDiscDiagnostics } from "../../diagnostics.js";
 import { convert, inspectVideo } from "../../encoding.js";
-import { ejectDisc, safeTitle, selectMainFeature } from "../../media.js";
+import { ejectDisc, isGeneratedUnknownTitle, normalizeVolumeTitle, safeTitle, selectMainFeature } from "../../media.js";
 import { setRuntimeStatus } from "../../runtime-status.js";
 import { log } from "../../logger.js";
 import { createMovieOutput } from "../../movie-output.js";
@@ -36,6 +36,23 @@ import { normalizeDiscName } from "../../application/tv-name-normalization.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
+
+type MovieNamingSource = "Metadata match" | "User review" | "Filesystem volume name" | "Fallback";
+
+function movieCandidatesForReview(candidates: readonly MetadataCandidate[]): Record<string, unknown>[] {
+  return candidates
+    .filter((candidate) => typeof candidate.title === "string" && candidate.title.trim().length > 0)
+    .map((candidate) => ({
+      id: candidate.id,
+      providerId: candidate.providerId,
+      title: candidate.title,
+      confidence: candidate.confidence,
+      ...(typeof candidate.metadata.title === "string" ? { metadataTitle: candidate.metadata.title } : {}),
+      ...(typeof candidate.metadata.year === "string" || typeof candidate.metadata.year === "number"
+        ? { year: candidate.metadata.year }
+        : {})
+    }));
+}
 
 function pathIsWithin(parent: string, child: string): boolean {
   const path = relative(resolve(parent), resolve(child));
@@ -962,6 +979,8 @@ async function processMappedTvEpisodes(
   async process({ source, sources, jobs, metadata, signal, devicePath }: MediaWorkflowContext): Promise<boolean> {
     const info = source.candidate;
     const settings = jobs.getSettings();
+    const rawFilesystemVolumeName = info.manifest.attributes?.filesystemVolumeName;
+    const filesystemVolumeName = typeof rawFilesystemVolumeName === "string" ? rawFilesystemVolumeName.trim() : "";
     const titles: DiscTitle[] = info.manifest.items
       .filter((item) => item.kind === "title" && item.durationSeconds !== undefined)
       .map((item) => ({ id: Number(item.id), name: item.title ?? "", durationSeconds: item.durationSeconds ?? 0 }));
@@ -983,7 +1002,8 @@ async function processMappedTvEpisodes(
       return true;
     }
     const id = randomUUID();
-    const context = jobs.begin(id, info.label || null, info.mediaKind, fingerprint, signal, devicePath);
+    const discLabel = info.label.trim() || filesystemVolumeName || null;
+    const context = jobs.begin(id, discLabel, info.mediaKind, fingerprint, signal, devicePath);
     jobs.record(context, "disc-detected", "info", JSON.stringify({
       driveId: devicePath,
       devicePath,
@@ -1015,8 +1035,7 @@ async function processMappedTvEpisodes(
       tvAssessment.classification === "tv" ? "tv_series" : "mixed_content";
     let recovery = jobs.recordDiscDetection(fingerprint, "dvd", detectedMediaType, tvAssessment.confidence);
     if (!recovery.seriesName) {
-      const filesystemVolumeName = info.manifest.attributes?.filesystemVolumeName;
-      const volumeName = typeof filesystemVolumeName === "string" ? filesystemVolumeName : "";
+      const volumeName = filesystemVolumeName;
       const learned = jobs.listDiscRecoveries(1000).find((candidate) =>
         candidate.fingerprint !== fingerprint && candidate.seriesName &&
         (nameMatchesEvidence(info.label, candidate.importedMetadata?.knownLabels) ||
@@ -1290,6 +1309,8 @@ async function processMappedTvEpisodes(
     let movieDirectory: string | null = null;
     let successful = false;
     let failure: string | null = null;
+    let movieIdentificationReviewRequired = false;
+    let movieReviewEvidence: Record<string, unknown> | undefined;
     let conversionStartedAt: number | undefined;
     let reviewWorkspace: { job: ReviewJob; mediaPath: string } | undefined;
     let failureStage = "metadata";
@@ -1318,7 +1339,7 @@ async function processMappedTvEpisodes(
           id,
           originalJobId: id,
           discType: info.mediaKind,
-          discLabel: info.label || null,
+          discLabel,
           metadata: { title: null, selectedTitle: selectedTitle.name, providerId: info.providerId },
           workDir: settings.workDir,
           mediaSource: input
@@ -1343,15 +1364,78 @@ async function processMappedTvEpisodes(
         title = { selected: recoveredCandidate, candidates: [recoveredCandidate], providerFailures: [] };
         restoredMovieMetadata = true;
       } else {
-        title = await metadata.resolve({ entityType: "movie", query: info.label || selectedTitle.name }, signal);
+        const movieQuery = normalizeVolumeTitle(filesystemVolumeName || info.label.trim() || selectedTitle.name);
+        title = await metadata.resolve({ entityType: "movie", query: movieQuery }, signal);
       }
       for (const providerFailure of title.providerFailures) {
         log("warn", "metadata", providerFailure.message, { providerId: providerFailure.providerId });
       }
-      if (settings.metadataEnabled && !title.selected && title.providerFailures.length > 0) {
-        throw new Error(`Metadata lookup failed: ${title.providerFailures.map((item) => item.message).join("; ")}`);
+      const selectedCandidate = title.selected && title.selected.title.trim() &&
+        !isGeneratedUnknownTitle(title.selected.title)
+        ? title.selected
+        : undefined;
+      const confidenceThreshold = settings.movieIdentificationMinimumConfidence;
+      const confidentMatch = selectedCandidate !== undefined &&
+        selectedCandidate.confidence >= confidenceThreshold;
+      if (!confidentMatch) {
+        const candidates = movieCandidatesForReview(title.candidates);
+        const fallbackTitle = normalizeVolumeTitle(
+          filesystemVolumeName || info.label.trim() || selectedTitle.name
+        ) || `Unknown Title ${new Date().toISOString().slice(0, 10)}`;
+        const namingSource: MovieNamingSource = filesystemVolumeName
+          ? "Filesystem volume name"
+          : "Fallback";
+        const message = selectedCandidate
+          ? `Movie candidate confidence ${selectedCandidate.confidence.toFixed(2)} is below the configured ${confidenceThreshold.toFixed(2)} threshold. Manual confirmation is required.`
+          : `No movie metadata candidate met the configured ${confidenceThreshold.toFixed(2)} confidence threshold. Manual confirmation is required.`;
+        movieIdentificationReviewRequired = true;
+        movieReviewEvidence = {
+          namingSource,
+          sourceLabel: info.label.trim() || null,
+          filesystemVolumeName: filesystemVolumeName || null,
+          metadataQuery: normalizeVolumeTitle(filesystemVolumeName || info.label.trim() || selectedTitle.name) || null,
+          confidence: selectedCandidate?.confidence ?? null,
+          minimumConfidence: confidenceThreshold,
+          candidates,
+          evidence: [
+            {
+              type: "positive",
+              message: `Disc volume name: ${filesystemVolumeName || "Unavailable"}`
+            },
+            ...(selectedCandidate ? [{
+              type: "neutral",
+              message: `Metadata candidate: ${selectedCandidate.title}`
+            }] : []),
+            {
+              type: "negative",
+              message: selectedCandidate
+                ? `Confidence ${selectedCandidate.confidence.toFixed(2)} is below threshold ${confidenceThreshold.toFixed(2)}`
+                : "No metadata candidate met the confidence threshold"
+            },
+            { type: "neutral", message: "Action: Manual confirmation required" }
+          ],
+          providerFailures: title.providerFailures
+        };
+        if (reviewWorkspace) {
+          await this.reviewWorkspaces?.updateMetadata(id, {
+            title: null,
+            suggestedTitle: fallbackTitle,
+            namingSource,
+            filesystemVolumeName: filesystemVolumeName || null,
+            sourceLabel: info.label.trim() || null,
+            movieCandidates: candidates,
+            movieIdentificationRequiresConfirmation: true,
+            movieIdentificationConfirmed: false,
+            movieIdentificationEvidence: movieReviewEvidence
+          });
+        }
+        jobs.record(context, "movie-identification", "warn", JSON.stringify({
+          ...movieReviewEvidence,
+          action: "Manual confirmation required"
+        }));
+        throw new Error(message);
       }
-      let selectedMetadata = title.selected;
+      let selectedMetadata = selectedCandidate;
       if (selectedMetadata && !restoredMovieMetadata && settings.libraryMetadata.automaticImport &&
         settings.libraryMetadata.downloadMovieMetadata) {
         try {
@@ -1374,17 +1458,33 @@ async function processMappedTvEpisodes(
         });
       }
       const metadataValues = selectedMetadata?.metadata ?? {};
-      const movieTitle = typeof metadataValues.title === "string" ? metadataValues.title : selectedMetadata?.title ??
-        (info.label.trim() || selectedTitle.name || `Unknown Title ${new Date().toISOString().slice(0, 10)}`);
+      const fallbackTitle = normalizeVolumeTitle(
+        filesystemVolumeName || info.label.trim() || selectedTitle.name
+      ) || `Unknown Title ${new Date().toISOString().slice(0, 10)}`;
+      const namingSource: MovieNamingSource = selectedMetadata
+        ? "Metadata match"
+        : filesystemVolumeName ? "Filesystem volume name" : "Fallback";
+      const metadataTitle = typeof metadataValues.title === "string" && metadataValues.title.trim() &&
+        !isGeneratedUnknownTitle(metadataValues.title)
+        ? metadataValues.title
+        : selectedMetadata?.title;
+      const movieTitle = metadataTitle ?? fallbackTitle;
       const movieYear = typeof metadataValues.year === "string" || typeof metadataValues.year === "number"
         ? metadataValues.year
         : undefined;
-      const resolvedTitle = selectedMetadata?.title ??
-        (info.label.trim() || selectedTitle.name || `Unknown Title ${new Date().toISOString().slice(0, 10)}`);
+      const resolvedTitle = selectedMetadata?.title ?? fallbackTitle;
       const cleanTitle = safeTitle(resolvedTitle);
-      if (reviewWorkspace) await this.reviewWorkspaces?.updateMetadata(id, { title: cleanTitle });
+      if (reviewWorkspace) await this.reviewWorkspaces?.updateMetadata(id, { title: cleanTitle, namingSource });
       jobs.update(context, { title: cleanTitle });
-      jobs.record(context, "title", "info", `Title selected from ${title.selected?.providerId ?? "disc-label"}`);
+      jobs.record(context, "movie-identification", "info", JSON.stringify({
+        namingSource,
+        sourceLabel: info.label.trim() || null,
+        filesystemVolumeName: filesystemVolumeName || null,
+        confidence: selectedMetadata?.confidence ?? null,
+        minimumConfidence: confidenceThreshold,
+        title: cleanTitle
+      }));
+      jobs.record(context, "title", "info", `Title selected from ${namingSource}`);
 
       failureStage = "naming";
       resumeStage = "naming";
@@ -1504,7 +1604,13 @@ async function processMappedTvEpisodes(
       const message = cancelled ? `Cancelled by user${failure ? `; ${failure}` : ""}` : failure ?? "Processing failed";
       if (reviewWorkspace && !cancelled && !interrupted) {
         await this.reviewWorkspaces?.markPending(id, { reason: message, stage: failureStage, resumeStage });
-        jobs.holdForProcessingReview(context, message, failureStage, { resumeStage });
+        if (movieIdentificationReviewRequired) {
+          jobs.holdForMovieIdentificationReview(context, message, movieReviewEvidence ?? {});
+        } else {
+          jobs.holdForProcessingReview(context, message, failureStage, { resumeStage });
+        }
+      } else if (movieIdentificationReviewRequired && !cancelled && !interrupted) {
+        jobs.holdForMovieIdentificationReview(context, message, movieReviewEvidence ?? {});
       } else {
         if (reviewWorkspace) await this.reviewWorkspaces?.remove(id);
         jobs.fail(context, cancelled ? "cancelled" : interrupted ? "interrupted" : "failed", {
