@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -103,6 +104,21 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal("lidarrApiKey" in initial.json().settings, false);
     assert.equal(typeof initial.json().settings.outputDestinations.activeProfileId, "string");
     assert.equal(initial.json().settings.automationMode, "regular_auto");
+    assert.equal(initial.json().settings.movieIdentificationMinimumConfidence, 0.9);
+    const invalidMovieConfidence = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { movieIdentificationMinimumConfidence: 1.1 }
+    });
+    assert.equal(invalidMovieConfidence.statusCode, 400);
+    const savedMovieConfidence = await app.inject({
+      method: "PUT",
+      url: "/api/v1/settings",
+      payload: { movieIdentificationMinimumConfidence: 0.95 }
+    });
+    assert.equal(savedMovieConfidence.statusCode, 200);
+    assert.equal(savedMovieConfidence.json().settings.movieIdentificationMinimumConfidence, 0.95);
+    jobs.saveSettings({ movieIdentificationMinimumConfidence: 0.9 });
     const emptyDiagnostics = await app.inject({ method: "GET", url: "/api/v1/diagnostics" });
     assert.equal(emptyDiagnostics.statusCode, 200);
     assert.equal(emptyDiagnostics.json().job, null);
@@ -573,6 +589,30 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     jobs.repositories.jobs.add(matchingJobId, "fresh-off-the-boat", matchingFingerprint, "dvd");
     jobs.repositories.jobs.finish(matchingJobId, "awaiting-identification", "Awaiting series identification");
     jobs.repositories.discRecovery.recordDetection(matchingFingerprint, "dvd", "tv_series");
+    const discPositionEvidence = {
+      discNumber: 1,
+      confidence: 0.92,
+      evidence: [],
+      scoreComponents: { discStructure: 1 },
+      confidenceBreakdown: {
+        baseScore: 50,
+        evidence: [{
+          category: "disc-label",
+          message: "Disc label suggests Season 3 Disc 1",
+          scoreImpact: 30,
+          type: "positive"
+        }],
+        finalScore: 92,
+        continuity: {
+          seasonNumber: 3,
+          highestImportedEpisodeNumber: 8,
+          expectedNextEpisodeNumber: 9,
+          expectedRemainingEpisodeRange: { start: 9, end: 22 },
+          importedEpisodeRanges: [{ start: 1, end: 8 }],
+          remainingEpisodeRanges: [{ start: 9, end: 22 }]
+        }
+      }
+    };
     jobs.repositories.tvMatchingTasks.create({
       jobId: matchingJobId,
       fingerprint: matchingFingerprint,
@@ -585,7 +625,10 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
         label: "fresh-off-the-boat",
         manifest: { mediaKind: "dvd", attributes: {}, items: [] }
       },
-      diagnostics: { status: "analysis-unavailable" },
+      diagnostics: {
+        status: "analysis-unavailable",
+        discPositionCandidates: [discPositionEvidence]
+      },
       files: { "1": "episode01.mp4", "2": "episode02.mp4" },
       assignments: [{
         trackId: "1",
@@ -603,7 +646,9 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     });
     const matchingQueue = await app.inject({ method: "GET", url: "/api/v1/tv/matching", headers: { cookie } });
     assert.equal(matchingQueue.statusCode, 200);
-    assert.equal(matchingQueue.json().tasks.some(({ task }) => task.jobId === matchingJobId), true);
+    const matchingTask = matchingQueue.json().tasks.find(({ task }) => task.jobId === matchingJobId)?.task;
+    assert.ok(matchingTask);
+    assert.deepEqual(matchingTask.diagnostics.discPositionCandidates, [discPositionEvidence]);
     const trackPreview = await app.inject({
       method: "GET",
       url: `/api/v1/tv/matching/${matchingJobId}/preview/1`,
@@ -926,6 +971,56 @@ test("settings endpoint redacts secrets and enforces configured admin authentica
     assert.equal(saveDestinations.json().settings.automationMode, "review_based");
     assert.equal(saveDestinations.json().settings.outputDestinations.profiles[0].routes.tv, "folder");
     assert.equal(saveDestinations.json().settings.tvRootDir, linuxRoot);
+
+    const movieReviewId = randomUUID();
+    const reviewMediaPath = path.join(root, "movie-review-source.mkv");
+    await writeFile(reviewMediaPath, Buffer.alloc(4096, 8));
+    jobs.addJob(movieReviewId, "THE_BREAK_UP", "movie-review-fingerprint", "dvd");
+    jobs.finishJob(movieReviewId, "review", "Movie identification needs confirmation");
+    const { ReviewWorkspaceService } = await import("../dist/application/review-workspace-service.js");
+    const reviewWorkspaces = new ReviewWorkspaceService(jobs.repositories.reviewJobs);
+    await reviewWorkspaces.create({
+      id: movieReviewId,
+      originalJobId: movieReviewId,
+      discType: "dvd",
+      discLabel: "THE_BREAK_UP",
+      metadata: {
+        title: null,
+        suggestedTitle: "The Break Up",
+        filesystemVolumeName: "THE_BREAK_UP",
+        movieIdentificationRequiresConfirmation: true,
+        movieIdentificationConfirmed: false
+      },
+      workDir: jobs.getSettings().workDir,
+      mediaSource: reviewMediaPath
+    });
+    await reviewWorkspaces.markPending(movieReviewId, {
+      reason: "Movie candidate confidence is below threshold",
+      stage: "metadata",
+      resumeStage: "metadata"
+    });
+    const prematureMoviePublish = await app.inject({
+      method: "POST",
+      url: `/api/v1/review-jobs/${movieReviewId}/continue`,
+      headers: { cookie }
+    });
+    assert.equal(prematureMoviePublish.statusCode, 409);
+    const invalidConfirmedTitle = await app.inject({
+      method: "POST",
+      url: `/api/v1/review-jobs/${movieReviewId}/metadata`,
+      headers: { cookie },
+      payload: { title: "///" }
+    });
+    assert.equal(invalidConfirmedTitle.statusCode, 400);
+    const confirmMovieTitle = await app.inject({
+      method: "POST",
+      url: `/api/v1/review-jobs/${movieReviewId}/metadata`,
+      headers: { cookie },
+      payload: { title: "The Break-Up (2006)" }
+    });
+    assert.equal(confirmMovieTitle.statusCode, 200);
+    assert.equal(confirmMovieTitle.json().reviewJob.metadata.movieIdentificationConfirmed, true);
+    assert.equal(confirmMovieTitle.json().reviewJob.metadata.namingSource, "User review");
 
     const approvalItem = jobs.repositories.reviewItems.create({
       category: "configuration_issue",

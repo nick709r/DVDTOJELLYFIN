@@ -96,7 +96,8 @@ export async function createProviderRuntime(
     undefined,
     {
       seriesSearch: (query, signal) => tvMetadataLookupService.searchSeries(query, signal),
-      seasonEpisodeCounts: (series, signal) => tvMetadataLookupService.seasonEpisodeCounts(series, signal)
+      seasonEpisodeCounts: (series, signal) => tvMetadataLookupService.seasonEpisodeCounts(series, signal),
+      completedDiscHistory: repositories.completedTvDiscHistory
     }
   );
   const tvReview = new TvReviewService(

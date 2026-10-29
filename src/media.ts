@@ -105,3 +105,15 @@ export function safeTitle(input: string): string {
     .slice(0, 150);
   return safe || `Unknown Title ${new Date().toISOString().slice(0, 10)}`;
 }
+
+export function normalizeVolumeTitle(input: string): string {
+  const words = input.normalize("NFKC").replace(/[_.]+/g, " ").trim().replace(/\s+/g, " ");
+  return words.split(" ").filter(Boolean).map((word) => word.split("-").map((part) => {
+    const lower = part.toLowerCase();
+    return lower ? `${lower.charAt(0).toUpperCase()}${lower.slice(1)}` : "";
+  }).join("-")).join(" ");
+}
+
+export function isGeneratedUnknownTitle(input: string): boolean {
+  return /^Unknown Title \d{4}-\d{2}-\d{2}$/i.test(safeTitle(input));
+}

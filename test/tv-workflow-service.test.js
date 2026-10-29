@@ -32,7 +32,7 @@ function metadataProvider(identify) {
   };
 }
 
-function createTvService({ candidates = [], feedback = [], savedPlans = [] } = {}) {
+function createTvService({ candidates = [], feedback = [], savedPlans = [], completedDiscHistory } = {}) {
   const resolver = new MetadataResolver([metadataProvider(async (input) =>
     candidates.filter((candidate) => candidate.entityType === input.entityType)
   )]);
@@ -52,7 +52,11 @@ function createTvService({ candidates = [], feedback = [], savedPlans = [] } = {
         savedPlans.push(saved);
         return saved;
       }
-    }
+    },
+    undefined,
+    undefined,
+    undefined,
+    completedDiscHistory ? { completedDiscHistory } : {}
   );
 }
 
@@ -191,6 +195,201 @@ test("TV workflow applies provider disc order and records the automatic assignme
   assert.equal(result.plan.confidence, 1);
 });
 
+test("a Disc 2 label and completed Disc 1 history override conflicting Disc 1 metadata", async () => {
+  const episodes = [1, 2, 3, 4];
+  const candidates = [
+    {
+      id: "series-1",
+      providerId: "metadata.test.tv",
+      entityType: "series",
+      title: "Fresh Off the Boat",
+      confidence: 0.96,
+      metadata: { seriesId: "series-1", title: "Fresh Off the Boat" }
+    },
+    {
+      id: "season-3",
+      providerId: "metadata.test.tv",
+      entityType: "season",
+      title: "Season 3",
+      confidence: 0.96,
+      metadata: { seriesId: "series-1", seasonNumber: 3, title: "Season 3" }
+    },
+    ...["1", "2"].flatMap((itemId) => episodes.map((episodeNumber) => ({
+      id: `${itemId}-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode",
+      title: `Episode ${episodeNumber}`,
+      confidence: 0.95,
+      metadata: {
+        itemId,
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber,
+        title: `Episode ${episodeNumber}`,
+        runtimeSeconds: 1200
+      }
+    }))),
+    ...[1, 2].map((episodeNumber) => ({
+      id: `disc-1-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode-disc",
+      title: `Episode ${episodeNumber}`,
+      confidence: 1,
+      metadata: {
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber,
+        discNumber: 1,
+        discOrder: episodeNumber
+      }
+    }))
+  ];
+  const completedDiscHistory = {
+    listForSeason: () => [{
+      jobId: "completed-disc-1",
+      fingerprint: "previous-disc-1",
+      metadataProvider: "metadata.test.tv",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber: 1,
+      mappings: [
+        { trackId: "1", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 1 }] },
+        { trackId: "2", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 2 }] }
+      ],
+      episodes: [1, 2].map((episodeNumber) => ({
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber
+      })),
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }]
+  };
+  const saved = {
+    seriesName: "Fresh Off the Boat",
+    seriesId: "series-1",
+    provider: "metadata.test.tv",
+    seasonNumber: 3,
+    discNumber: 1,
+    discName: null,
+    origin: "fingerprint"
+  };
+  const result = await createTvService({ candidates, completedDiscHistory }).prepare(
+    tvSource("fresh-off-the-boat-s3-d2"),
+    "new-disc-2",
+    undefined,
+    saved
+  );
+
+  assert.ok(result);
+  assert.equal(result.plan.discPosition.discNumber, 2);
+  assert.equal(result.identification.discLabelSuggestion.seasonNumber, 3);
+  assert.equal(result.identification.discLabelSuggestion.discNumber, 2);
+  assert.deepEqual(result.identification.discPositionCandidates, result.analysis.discPositionCandidates);
+  assert.ok(result.analysis.discPositionCandidates[0].evidence.some((evidence) =>
+    evidence.includes("Optical disc volume label")
+  ));
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [3, 4]);
+  assert.ok(result.matches.items.every((item) =>
+    item.assignmentMethod === "sequential-disc-assignment"
+  ));
+});
+
+test("an already completed fingerprint keeps its original disc and episode assignments", async () => {
+  const episodes = [1, 2, 3, 4];
+  const candidates = [
+    {
+      id: "series-1",
+      providerId: "metadata.test.tv",
+      entityType: "series",
+      title: "Fresh Off the Boat",
+      confidence: 0.96,
+      metadata: { seriesId: "series-1", title: "Fresh Off the Boat" }
+    },
+    ...["1", "2"].flatMap((itemId) => episodes.map((episodeNumber) => ({
+      id: `${itemId}-${episodeNumber}`,
+      providerId: "metadata.test.tv",
+      entityType: "episode",
+      title: `Episode ${episodeNumber}`,
+      confidence: 0.95,
+      metadata: {
+        itemId,
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber,
+        title: `Episode ${episodeNumber}`,
+        runtimeSeconds: 1200
+      }
+    })))
+  ];
+  const completedDiscHistory = {
+    listForSeason: () => [{
+      jobId: "completed-disc-1",
+      fingerprint: "same-fingerprint",
+      metadataProvider: "metadata.test.tv",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber: 1,
+      mappings: [
+        { trackId: "1", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 1 }] },
+        { trackId: "2", episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 2 }] }
+      ],
+      episodes: [1, 2].map((episodeNumber) => ({
+        seriesId: "series-1",
+        seasonNumber: 3,
+        episodeNumber
+      })),
+      completedAt: "2026-10-24T12:00:00.000Z"
+    }]
+  };
+  const result = await createTvService({ candidates, completedDiscHistory }).prepare(
+    tvSource("fresh-off-the-boat-s3-d1"),
+    "same-fingerprint"
+  );
+
+  assert.ok(result);
+  assert.equal(result.plan.discPosition.discNumber, 1);
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [1, 2]);
+  assert.ok(result.matches.items.every((item) =>
+    item.assignmentMethod === "exact-fingerprint-history"
+  ));
+});
+
+test("completed TV disc history reads successful imports from job and recovery records", () => {
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  try {
+    repositories.discRecovery.recordDetection("completed-fingerprint", "dvd", "tv_series", 0.95);
+    repositories.discRecovery.update("completed-fingerprint", {
+      finalMediaType: "tv_series",
+      metadataProvider: "tvdb",
+      providerId: "series-1",
+      seriesName: "Fresh Off the Boat",
+      seasonNumber: 3,
+      discNumber: 1,
+      mappings: [{
+        trackId: "track-1",
+        episodes: [{ seriesId: "series-1", seasonNumber: 3, episodeNumber: 1 }]
+      }]
+    });
+    db.prepare(`
+      INSERT INTO jobs (id, status, disc_fingerprint, started_at, finished_at)
+      VALUES (?, 'completed', ?, ?, ?)
+    `).run("completed-job", "completed-fingerprint", "2026-10-24T11:00:00.000Z", "2026-10-24T12:00:00.000Z");
+
+    const history = repositories.completedTvDiscHistory.listForSeason(3);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].discNumber, 1);
+    assert.equal(history[0].fingerprint, "completed-fingerprint");
+    assert.deepEqual(history[0].episodes.map((episode) => episode.episodeNumber), [1]);
+    assert.equal(history[0].completedAt, "2026-10-24T12:00:00.000Z");
+  } finally {
+    repositories.close();
+  }
+});
+
 test("TV workflow keeps incomplete metadata low-confidence and requires review", async () => {
   const service = createTvService();
   const result = await service.prepare(tvSource(), "fingerprint-2");
@@ -253,7 +452,7 @@ test("generic TV wording alone does not divert a movie disc from the movie workf
   ]);
 });
 
-test("two consistent episode-length titles classify as uncertain TV with an explainable scorecard", () => {
+test("two consistent episode-length titles remain review-only without TV structure evidence", async () => {
   const source = {
     ...tvSource("DISC_01"),
     manifest: {
@@ -268,6 +467,8 @@ test("two consistent episode-length titles classify as uncertain TV with an expl
 
   assert.equal(assessment.classification, "review");
   assert.equal(assessment.confidence, 0.35);
+  assert.equal(assessment.tvConfidence, 0.35);
+  assert.equal(assessment.movieConfidence, 0);
   assert.deepEqual(assessment.criteria.map(({ id, passed }) => [id, passed]), [
     ["explicit-series-label", false],
     ["two-episode-length-titles", true],
@@ -302,10 +503,144 @@ test("two consistent episode-length titles classify as uncertain TV with an expl
       }]
     }
   };
-  assert.equal(assessTvDisc(sourceWithLongTitle).classification, "review");
+  assert.equal(assessTvDisc(sourceWithLongTitle).classification, "movie");
+  assert.equal(assessTvDisc(sourceWithLongTitle).movieConfidence, 0.8);
   assert.ok(assessTvDisc(sourceWithLongTitle).reasons.includes(
     "At least one title exceeds the configured maximum episode runtime"
   ));
+  let metadataLookups = 0;
+  const service = new TvWorkflowService(
+    new MetadataResolver([metadataProvider(async () => {
+      metadataLookups += 1;
+      return [];
+    })]),
+    { findForItemSignature: () => [] },
+    { save: (plan) => plan }
+  );
+  assert.equal(await service.prepare(source, "ambiguous-disc"), undefined);
+  assert.equal(metadataLookups, 0);
+});
+
+test("movie and TV confidence distinguish feature DVDs from episodic discs before lookup", () => {
+  const theBreakUpDurations = [6371, 131, 308, 1269, 490, 127, 123, 689, 145, 146, 917, 385];
+  const cases = [
+    {
+      name: "THE_BREAK_UP DVD",
+      label: "THE_BREAK_UP",
+      items: theBreakUpDurations,
+      expected: "movie"
+    },
+    {
+      name: "Wedding Crashers DVD",
+      label: "WEDDING_CRASHERS",
+      items: [7200, 420, 230, 160, 510, 300],
+      expected: "movie"
+    },
+    {
+      name: "TV season DVD",
+      label: "Fresh Off the Boat Season 3 Disc 1",
+      items: Array(8).fill(1294),
+      expected: "tv"
+    },
+    {
+      name: "Miniseries DVD",
+      label: "Chernobyl S01",
+      items: [3000, 2940, 3060, 2990],
+      expected: "tv"
+    },
+    {
+      name: "Concert DVD",
+      label: "LIVE_IN_CONCERT",
+      items: [5400, 300, 290, 310, 280, 305, 295],
+      expected: "movie"
+    },
+    {
+      name: "Movie with many extras",
+      label: "FEATURE_DISC",
+      items: [6900, 120, 180, 240, 300, 360, 420, 480],
+      expected: "movie"
+    }
+  ];
+
+  for (const entry of cases) {
+    const assessment = assessTvDisc({
+      sourceId: "drive-1",
+      providerId: "source.video-dvd.makemkv",
+      mediaKind: "dvd",
+      label: entry.label,
+      manifest: {
+        mediaKind: "dvd",
+        items: entry.items.map((durationSeconds, index) => ({
+          id: String(index + 1),
+          kind: "title",
+          title: `Title ${index + 1}`,
+          durationSeconds
+        }))
+      }
+    });
+    assert.equal(assessment.classification, entry.expected, entry.name);
+    assert.ok(assessment.movieConfidence >= 0 && assessment.movieConfidence <= 1);
+    assert.ok(assessment.tvConfidence >= 0 && assessment.tvConfidence <= 1);
+    assert.ok(assessment.classificationEvidence.length > 0);
+  }
+
+  const breakUp = assessTvDisc({
+    sourceId: "drive-1",
+    providerId: "source.video-dvd.makemkv",
+    mediaKind: "dvd",
+    label: "THE_BREAK_UP",
+    manifest: {
+      mediaKind: "dvd",
+      items: theBreakUpDurations.map((durationSeconds, index) => ({
+        id: String(index + 1),
+        kind: "title",
+        title: `Title ${index + 1}`,
+        durationSeconds
+      }))
+    }
+  });
+  assert.equal(breakUp.movieConfidence, 1);
+  assert.equal(breakUp.tvConfidence, 0.3);
+  assert.ok(breakUp.classificationEvidence.some((entry) =>
+    entry.category === "movie" && entry.message === "Dominant title exceeds 75 minutes"
+  ));
+});
+
+test("completed TV disc history is positive pre-lookup classification evidence", () => {
+  const source = {
+    ...tvSource("DISC_01"),
+    manifest: {
+      mediaKind: "dvd",
+      items: [
+        { id: "1", kind: "title", title: "Title 1", durationSeconds: 1320 },
+        { id: "2", kind: "title", title: "Title 2", durationSeconds: 1350 }
+      ]
+    }
+  };
+  const assessment = assessTvDisc(source, { hasCompletedTvHistory: true });
+
+  assert.equal(assessment.classification, "tv");
+  assert.equal(assessment.tvConfidence, 0.75);
+  assert.ok(assessment.classificationEvidence.some((entry) =>
+    entry.category === "tv" && entry.message.includes("Completed TV disc history")
+  ));
+});
+
+test("completed TV history only matches a normalized series label with season structure", () => {
+  const service = createTvService({
+    completedDiscHistory: {
+      listForSeason: (seasonNumber) => seasonNumber === 3 ? [{
+        seriesName: "Fresh Off the Boat",
+        discNumber: 1
+      }] : [{
+        seriesName: "The Countdown to Break-Up",
+        discNumber: 1
+      }]
+    }
+  });
+
+  assert.equal(service.hasCompletedTvHistory(tvSource("FRESH_OFF_THE_BOAT_S3_D3")), true);
+  assert.equal(service.hasCompletedTvHistory(tvSource("THE_BREAK_UP")), false);
 });
 
 test("DVD with no usable titles logs why no job was created", async () => {
@@ -469,7 +804,7 @@ test("unlabeled two-episode DVD remains a TV review candidate", () => {
   assert.deepEqual(assessment.criteria.map(({ passed }) => passed), [false, true, false, true, true]);
 });
 
-test("DVD workflow classifies an ordinary feature as Movie and does not invoke TV analysis", async () => {
+test("THE_BREAK_UP feature disc classifies as Movie and does not invoke TV analysis", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "autodisc-dvd-movie-route-"));
   const blockedWorkDir = path.join(root, "work-is-a-file");
   await writeFile(blockedWorkDir, "block directory creation");
@@ -499,10 +834,16 @@ test("DVD workflow classifies an ordinary feature as Movie and does not invoke T
           providerId: "source.video-dvd.makemkv",
           sourceId: "drive-1",
           mediaKind: "dvd",
-          label: "Movie Disc",
+          label: "THE_BREAK_UP",
           manifest: {
             mediaKind: "dvd",
-            items: [{ id: "1", kind: "title", title: "Feature", durationSeconds: 7200 }]
+            items: [6371, 131, 308, 1269, 490, 127, 123, 689, 145, 146, 917, 385]
+              .map((durationSeconds, index) => ({
+                id: String(index + 1),
+                kind: "title",
+                title: `Title ${index + 1}`,
+                durationSeconds
+              }))
           }
         }
       },
@@ -518,7 +859,13 @@ test("DVD workflow classifies an ordinary feature as Movie and does not invoke T
       name === "record" && stage === "tv-classification"
     );
     assert.ok(classificationEvent);
-    assert.equal(JSON.parse(classificationEvent[4]).decision, "movie");
+    const classification = JSON.parse(classificationEvent[4]);
+    assert.equal(classification.decision, "movie");
+    assert.equal(classification.movieConfidence, 1);
+    assert.equal(classification.tvConfidence, 0.3);
+    assert.ok(classification.classificationEvidence.some((entry) =>
+      entry.category === "movie" && entry.message === "Dominant title exceeds 75 minutes"
+    ));
     assert.ok(calls.some(([name]) => name === "fail"));
   } finally {
     await rm(root, { recursive: true, force: true });

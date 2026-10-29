@@ -59,6 +59,7 @@ AutoDisc is built on a provider and workflow model, so new media types and metad
 
 - **Automatic disc detection**: udev-driven insertion events with a periodic presence check and retry/backoff for drives that are slow to become readable.
 - **Movie classification**: separates feature films from other DVD content.
+- **Movie identification review**: holds low-confidence metadata matches for title confirmation and uses a normalized filesystem volume name as the fallback suggestion.
 - **TV classification**: episodic structure and runtime analysis, with unidentified discs ripped to a TV staging area rather than published as movies.
 - **TV Disc Review**: identify staged series, review tracks with video previews, save episode matches, and resume publishing without reinserting or re-ripping the disc.
 - **Audio CD processing**: lossless FLAC ripping with tagging and MusicBrainz lookup.
@@ -212,7 +213,11 @@ When series, season and disc are confidently identified, provider DVD order
 ambiguity checks. If provider disc order is unavailable or incomplete, AutoDisc
 falls back to sequential episode ordering after excluding extras and confirmed
 duplicates. Assignment reports record whether provider order, sequential order
-or runtime matching was used.
+or runtime matching was used. Volume labels and disc titles are also parsed for
+series, season and disc hints (including compact forms such as `S03D02`); these
+hints are confidence evidence and are weighed against completed-disc history.
+The TV review card shows the parsed label suggestion and previously completed
+discs for the same season.
 
 ### TV staging and storage paths
 
@@ -394,6 +399,31 @@ sudo journalctl -u autodisc.service -f
 ---
 
 ## Release History
+
+### Version 1.33.0
+
+- Use the filesystem volume name consistently for movie lookup and fallback naming, and hold uncertain identifications for candidate review and explicit title confirmation.
+- Add a configurable minimum movie-match confidence and prevent generated unknown titles from publishing without explicit confirmation.
+
+### Version 1.32.0
+
+- Require movie or TV structure evidence before TV metadata matching, and log separate movie/TV confidence with classification evidence.
+
+### Version 1.31.0
+
+- Generated TV episode candidates from imported episode continuity and confident disc position before runtime ranking; sequential fallback now uses the earliest unimported canonical episodes.
+
+### Version 1.30.0
+
+- Corrected TV continuity to prioritize the earliest known missing canonical episodes and added imported, highest, missing, and expected-continuation diagnostics.
+
+### Version 1.29.0
+
+- Added imported-episode continuity evidence to TV disc-position confidence scoring, including expected next episodes, missing episode ranges, overlap penalties, and duplicate-disc explanations.
+
+### Version 1.28.0
+
+- Added structured positive, negative, and neutral TV disc-matching evidence with score breakdowns and alternative-candidate explanations.
 
 ### Version 1.27.0
 

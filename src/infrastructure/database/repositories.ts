@@ -15,6 +15,7 @@ import { SqliteClassificationAuditRepository } from "./classification-audit-repo
 import { SqliteSetupRepository } from "./setup-repository.js";
 import { SqliteDiscRecoveryRepository } from "./disc-recovery-repository.js";
 import { SqliteTvMatchingTaskRepository } from "./tv-matching-task-repository.js";
+import { SqliteCompletedTvDiscHistoryRepository } from "./tv-completed-disc-history-repository.js";
 import { SqliteForgetDiscService } from "./forget-disc-service.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
@@ -30,6 +31,7 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     events,
     recovery: new SqliteRecoveryRepository(db, events, classificationAudit, reviewItems),
     tvEpisodeFeedback: new SqliteTvEpisodeFeedbackRepository(db),
+    completedTvDiscHistory: new SqliteCompletedTvDiscHistoryRepository(db),
     tvProcessingPlans: new SqliteTvProcessingPlanRepository(db),
     tvValidationEvidence: new SqliteTvValidationEvidenceRepository(db),
     reviewItems,

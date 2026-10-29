@@ -1487,8 +1487,68 @@ function tvAssignmentConfidence(confidence) {
   return `${band} confidence · ${Math.round(confidence * 100)}%`;
 }
 
+function formatCompletedTvDiscDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown date";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(date).replace(",", "");
+}
+
+function tvDiscEvidenceList(evidence, type) {
+  const entries = (evidence || []).filter((item) => item.type === type);
+  if (!entries.length) return "";
+  const heading = type === "positive" ? "Positive evidence" :
+    type === "negative" ? "Negative evidence" : "Neutral evidence";
+  return `<div class="tv-evidence-group tv-evidence-${type}">
+    <h6>${heading}</h6>
+    <ul>${entries.map((item) => `<li><span>${escapeHtml(item.message)}</span><b>${item.scoreImpact > 0 ? "+" : ""}${Number(item.scoreImpact).toFixed(1)}</b></li>`).join("")}</ul>
+  </div>`;
+}
+
+function renderTvDiscPositionEvidence(task, recovery) {
+  const candidates = task.diagnostics?.discPositionCandidates || [];
+  if (!candidates.length) return "";
+  const selectedDiscNumber = Number.isInteger(recovery?.discNumber)
+    ? recovery.discNumber
+    : task.diagnostics?.selected?.discNumber;
+  const selected = candidates.find((candidate) => candidate.discNumber === selectedDiscNumber) || candidates[0];
+  const alternatives = candidates.filter((candidate) => candidate !== selected);
+  const breakdown = selected.confidenceBreakdown;
+  const selectedEvidence = breakdown ? `
+    <div class="tv-evidence-score"><span>Base score</span><b>${Number(breakdown.baseScore).toFixed(1)}</b></div>
+    ${tvDiscEvidenceList(breakdown.evidence, "positive")}
+    ${tvDiscEvidenceList(breakdown.evidence, "negative")}
+    ${tvDiscEvidenceList(breakdown.evidence, "neutral")}
+    <div class="tv-evidence-score tv-evidence-final"><span>Final score</span><b>${Number(breakdown.finalScore).toFixed(1)}</b></div>` : "";
+  return `<details class="tv-disc-evidence">
+    <summary>TV matching evidence</summary>
+    <section class="tv-selected-evidence">
+      <h5>Disc ${escapeHtml(selected.discNumber)} · Confidence ${Math.round(selected.confidence * 100)}%</h5>
+      <h6>Why this match?</h6>
+      ${selectedEvidence}
+    </section>
+    ${alternatives.map((candidate) => {
+      const rejected = (candidate.confidenceBreakdown?.evidence || []).filter((item) => item.type === "negative");
+      const ranking = (candidate.confidenceBreakdown?.evidence || []).filter((item) =>
+        item.category === "candidate-ranking"
+      );
+      return `<section class="tv-alternative-evidence">
+        <h5>Alternative: Disc ${escapeHtml(candidate.discNumber)} · Confidence ${Math.round(candidate.confidence * 100)}%</h5>
+        <h6>Rejected because:</h6>
+        ${rejected.length
+          ? `<ul>${rejected.map((item) => `<li>${escapeHtml(item.message)} <b>${Number(item.scoreImpact).toFixed(1)}</b></li>`).join("")}</ul>`
+          : `<ul>${ranking.map((item) => `<li>${escapeHtml(item.message)}</li>`).join("")}</ul>`}
+      </section>`;
+    }).join("")}
+  </details>`;
+}
+
 function renderTvMatchingTask(entry) {
-  const { task, recovery, mediaTypeAudit = [] } = entry;
+  const { task, recovery, completedDiscHistory = [], mediaTypeAudit = [] } = entry;
   const series = recovery?.seriesName || "";
   const season = recovery?.seasonNumber;
   const discNumber = recovery?.discNumber;
@@ -1564,6 +1624,16 @@ function renderTvMatchingTask(entry) {
   }
   const seasonText = season === null || season === undefined ? "Season not identified" : `Season ${season}`;
   const discText = discNumber === null || discNumber === undefined ? "Disc number not specified" : `Disc ${discNumber}`;
+  const labelSuggestion = task.diagnostics?.discLabelSuggestion;
+  const labelSuggestionText = Number.isInteger(labelSuggestion?.seasonNumber) &&
+    Number.isInteger(labelSuggestion?.discNumber)
+    ? `Disc label suggests: Season ${labelSuggestion.seasonNumber} Disc ${labelSuggestion.discNumber}`
+    : "";
+  const completedDiscNotices = completedDiscHistory
+    .filter((record) => Number.isInteger(record.discNumber))
+    .map((record) =>
+      `Season ${record.seasonNumber} Disc ${record.discNumber} already processed on ${formatCompletedTvDiscDate(record.completedAt)}.`
+    );
   return `<article class="tv-disc-review tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
     <div class="tv-disc-summary">
       ${poster
@@ -1573,6 +1643,8 @@ function renderTvMatchingTask(entry) {
         <p class="eyebrow">STAGED TV DISC</p>
         <h3>${escapeHtml(series || task.source.label || "Unidentified TV disc")}</h3>
         <p class="tv-disc-season">${escapeHtml(seasonText)}${discNumber === null || discNumber === undefined ? "" : ` · ${escapeHtml(discText)}`}</p>
+        ${labelSuggestionText ? `<p class="tv-disc-label-evidence">${escapeHtml(labelSuggestionText)}</p>` : ""}
+        ${completedDiscNotices.map((notice) => `<p class="tv-disc-history-notice">${escapeHtml(notice)}</p>`).join("")}
         <div class="tv-disc-facts">
           ${year ? `<span>${escapeHtml(year)}</span>` : ""}
           <span>${task.assignments.length} tracks</span>
@@ -1601,6 +1673,7 @@ function renderTvMatchingTask(entry) {
         <div><h4>Match each staged track</h4><p>Suggestions are not confirmed until you save. Unmatched tracks remain safely staged.</p></div>
         ${guide?.error ? `<p class="tv-episode-guide-error">Episode guide unavailable: ${escapeHtml(guide.error)}. You can still choose episode numbers.</p>` : ""}
       </div>
+      ${renderTvDiscPositionEvidence(task, recovery)}
       <div class="tv-track-list">${trackRows}</div>
       <div class="tv-save-workflow">
         <p>Matched <b data-matched-count>${progress.matchedCount} / ${progress.totalCount}</b> · Unmatched <b data-unmatched-count>${progress.unmatchedCount}</b></p>
@@ -2055,10 +2128,22 @@ function renderReviewItem(item) {
 function renderReviewJob(item, storage = {}) {
   const title = typeof item.metadata?.title === "string" && item.metadata.title
     ? item.metadata.title
-    : item.discLabel || item.originalJobId;
+    : item.metadata?.suggestedTitle || item.discLabel || item.originalJobId;
+  const movieTitleConfirmed = item.metadata?.movieIdentificationConfirmed === true;
+  const generatedUnknownTitle = typeof item.metadata?.title === "string" &&
+    /^Unknown Title \d{4}-\d{2}-\d{2}$/i.test(item.metadata.title.trim());
+  const needsMovieConfirmation = item.metadata?.movieIdentificationRequiresConfirmation === true ||
+    generatedUnknownTitle ||
+    (typeof item.metadata?.title === "string" && item.metadata.title.trim() &&
+      item.metadata.namingSource !== "Metadata match" && !movieTitleConfirmed);
+  const movieCandidates = Array.isArray(item.metadata?.movieCandidates)
+    ? item.metadata.movieCandidates.filter((candidate) =>
+      candidate && typeof candidate.title === "string" && candidate.title.trim())
+    : [];
   const actions = item.status === "pending"
-    ? `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Open Review</button>
-      <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">Approve &amp; Continue</button>
+    ? `${needsMovieConfirmation && !movieTitleConfirmed ? "" :
+      `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Edit Title</button>
+      <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">${needsMovieConfirmation ? "Publish Confirmed Movie" : "Approve &amp; Continue"}</button>`}
       <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete</button>
       <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
     : ["completed", "dismissed"].includes(item.status)
@@ -2071,10 +2156,21 @@ function renderReviewJob(item, storage = {}) {
       <span class="review-status">${escapeHtml(item.status)}</span></div>
     <p>${escapeHtml(item.failureReason || "Processing requires review")} · Stage: ${escapeHtml(item.failureStage || "unknown")}</p>
     <p class="list-sub">Staged ${escapeHtml(formatBytes(storage.stagedBytes ?? item.mediaSize))} · Artwork ${escapeHtml(formatBytes(storage.artworkBytes ?? 0))} · Metadata ${escapeHtml(formatBytes(storage.metadataBytes ?? 0))} · Total ${escapeHtml(formatBytes(storage.totalBytes ?? item.mediaSize))} · Resume stage: ${escapeHtml(item.resumeStage)}</p>
+    ${needsMovieConfirmation ? `<section class="movie-review-evidence">
+      <h4>Movie Evidence</h4>
+      <p>✓ Disc volume name: ${escapeHtml(item.metadata.filesystemVolumeName || "Unavailable")}</p>
+      ${movieCandidates.length ? `<label>Metadata candidates<select class="movie-review-candidate" data-id="${escapeHtml(item.id)}">
+        <option value="">Choose a candidate or enter a title</option>
+        ${movieCandidates.map((candidate, index) => `<option value="${index}" data-title="${escapeHtml(candidate.title)}">${escapeHtml(candidate.title)} · ${Math.round(Number(candidate.confidence || 0) * 100)}%</option>`).join("")}
+      </select></label><p>✓ Metadata candidate: ${escapeHtml(movieCandidates[0].title)}</p>` : "<p>✗ No metadata candidates found</p>"}
+      <p>✗ Confidence below threshold (${escapeHtml(Number(item.metadata.movieIdentificationEvidence?.confidence ?? 0).toFixed(2))} &lt; ${escapeHtml(Number(item.metadata.movieIdentificationEvidence?.minimumConfidence ?? 0).toFixed(2))})</p>
+      <p>Action: ${movieTitleConfirmed ? "Title confirmed by user" : "Manual confirmation required"}</p>
+      <p class="list-sub">Naming source: ${escapeHtml(item.metadata.namingSource || "Fallback")}</p>
+    </section>` : ""}
     <div class="tv-actions">${actions}</div>
-    ${item.status === "pending" ? `<div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
-      <label>Title<input type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : title)}"></label>
-      <button class="button secondary review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">Save Metadata</button>
+    ${item.status === "pending" ? `<div class="review-job-editor${needsMovieConfirmation && !movieTitleConfirmed ? "" : " hidden"}" data-review-editor="${escapeHtml(item.id)}">
+      <label>${needsMovieConfirmation ? "Confirmed movie title" : "Title"}<input data-review-title type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : item.metadata?.suggestedTitle || title)}"></label>
+      <button class="button ${needsMovieConfirmation ? "primary" : "secondary"} review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">${needsMovieConfirmation ? "Confirm Title" : "Save Metadata"}</button>
     </div>` : ""}
   </article>`;
 }
@@ -2346,6 +2442,8 @@ async function loadSettings() {
   form.elements.namedItem("autoEject").checked = data.settings.autoEject;
   form.elements.namedItem("automationMode").value = data.settings.automationMode || "regular_auto";
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
+  form.elements.namedItem("movieIdentificationMinimumConfidence").value =
+    data.settings.movieIdentificationMinimumConfidence;
   form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
   form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
   state.outputDestinations = data.settings.outputDestinations;
@@ -2379,7 +2477,7 @@ async function loadSettings() {
     : "No Lidarr API key is saved.";
   $("#metadata-key-status").textContent = data.settings.metadataApiKeyConfigured
     ? "A metadata API key is saved. It is never displayed."
-    : "No metadata API key is saved; lookup will use the disc label until one is configured.";
+    : "No metadata API key is saved; movie identification will require title confirmation.";
   $("#auth-state").textContent = data.settings.adminPasswordConfigured ? "Admin protection enabled" : "Password not configured";
   $("#logout").classList.toggle("hidden", !data.settings.adminPasswordConfigured);
   await refreshLibraryHealth();
@@ -2948,7 +3046,7 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
       return;
     }
     if (action === "save") {
-      const title = card.querySelector("input").value.trim();
+      const title = card.querySelector("[data-review-title]").value.trim();
       await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
         method: "POST",
         body: JSON.stringify({ title })
@@ -2957,7 +3055,7 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
     } else if (action === "continue") {
       const editor = card.querySelector(".review-job-editor");
       if (!editor.classList.contains("hidden")) {
-        const title = card.querySelector("input").value.trim();
+        const title = card.querySelector("[data-review-title]").value.trim();
         await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
           method: "POST",
           body: JSON.stringify({ title })
@@ -2978,6 +3076,16 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
   } finally {
     button.disabled = false;
   }
+});
+
+$("#review-jobs-list").addEventListener("change", (event) => {
+  const select = event.target.closest(".movie-review-candidate");
+  if (!select) return;
+  const title = select.selectedOptions[0]?.dataset.title;
+  if (!title) return;
+  const card = select.closest(".review-item");
+  const titleInput = card.querySelector("[data-review-title]");
+  if (titleInput) titleInput.value = title;
 });
 
 document.addEventListener("click", async (event) => {
@@ -3551,6 +3659,7 @@ $("#settings-form").addEventListener("submit", async (event) => {
     autoEject: form.elements.namedItem("autoEject").checked,
     automationMode: values.get("automationMode"),
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
+    movieIdentificationMinimumConfidence: Number(values.get("movieIdentificationMinimumConfidence")),
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
     musicBrainzContactEmail: values.get("musicBrainzContactEmail"),
     libraryMetadata: {

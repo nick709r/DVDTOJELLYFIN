@@ -1,5 +1,6 @@
 import type { AppSettings, Job, JobStatus } from "../model.js";
 import type {
+  CompletedTvDiscHistoryRepository,
   TvEpisodeFeedbackRepository,
   TvProcessingPlanRepository
 } from "../domain/television.js";
@@ -81,6 +82,7 @@ export interface AutoDiscRepositories {
   events: EventRepository;
   recovery: RecoveryRepository;
   tvEpisodeFeedback: TvEpisodeFeedbackRepository;
+  completedTvDiscHistory: CompletedTvDiscHistoryRepository;
   tvProcessingPlans: TvProcessingPlanRepository;
   tvValidationEvidence: TvValidationEvidenceRepository;
   reviewItems: ReviewItemRepository;
