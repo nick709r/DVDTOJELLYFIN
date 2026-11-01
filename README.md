@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-2.0.0-4c9aff">
+  <img alt="version" src="https://img.shields.io/badge/version-2.0.1-4c9aff">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-3c873a">
   <img alt="platform" src="https://img.shields.io/badge/runs%20on-Linux%20%C2%B7%20systemd-lightgrey">
   <img alt="media" src="https://img.shields.io/badge/media-Movies%20%C2%B7%20TV%20%C2%B7%20Music-8a63d2">
@@ -424,6 +424,10 @@ TypeScript on Fastify and SQLite for the backend; a dependency-free vanilla Java
 
 Highlights. The complete per-version log is in [docs/RELEASE-HISTORY.md](./docs/RELEASE-HISTORY.md).
 
+### Version 2.0.1
+
+- Security: fixed all `npm audit` findings. Updated `@fastify/static` to 10.1.8 and pinned patched `glob` (14.0.3), `minimatch` (11.0.3) and `fast-uri` (3.1.9). No functional, API, database or settings changes.
+
 ### Version 2.0.0
 
 - Added the theme engine and a theme picker in the top bar: Modern Light, Modern Dark, Windows 95 Classic and DOS Terminal. The choice is stored per browser and earlier Light/Dark preferences migrate automatically.
@@ -435,6 +439,7 @@ Earlier releases:
 
 | Version | Highlights |
 | --- | --- |
+| 2.0.1 | Dependency security update (`npm audit` clean). |
 | 2.0.0 (above) | Theme engine: Modern Light, Modern Dark, Windows 95 Classic, DOS Terminal. UI-only, parity-tested against 1.37.0. |
 | 1.37.0 | Movie, TV and Music metadata providers are first-class in Settings, with disabled reasons and skip counts. |
 | 1.36.x | Media-agnostic dashboard and settings; Media Identification and Provider Usage cards; absolute MakeMKV timeout. |

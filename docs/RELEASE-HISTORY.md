@@ -2,6 +2,10 @@
 
 The full per-version change log. For an overview, see the [README](../README.md).
 
+### Version 2.0.1
+
+- Security: fixed all `npm audit` findings. Updated `@fastify/static` to 10.1.8 and pinned patched `glob` (14.0.3), `minimatch` (11.0.3) and `fast-uri` (3.1.9). No functional, API, database or settings changes.
+
 ### Version 2.0.0
 
 - **UI-only release.** Added a theme engine and a theme picker in the top bar, where the Light/Dark button used to be: Modern Light, Modern Dark, Windows 95 Classic and DOS Terminal. The choice is a per-browser preference (`localStorage`, key `autodisc-theme`); earlier `light`/`dark` values are migrated automatically.
