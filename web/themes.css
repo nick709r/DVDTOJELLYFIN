@@ -1,0 +1,185 @@
+/* AutoDisc themes. Presentation only: colours, borders, fonts, spacing, glyphs and arrangement.
+   Modern Light / Modern Dark live in style.css. This file adds the retro skins (Windows 95, DOS). */
+
+/* ---------- theme variables ---------- */
+:root[data-theme="win95"]{
+  --r-font:Tahoma,"MS Sans Serif","Microsoft Sans Serif",Arial,sans-serif;--r-size:12px;
+  --r-desktop:#008080;--r-face:#c0c0c0;--r-inset:#fff;--r-text:#000;--r-muted:#404040;--r-line:#808080;
+  --r-accent:#000080;--r-accent-text:#fff;--r-good:#006400;--r-bad:#b00000;--r-warn:#7a5200;--r-info:#000080;
+  --r-raised:inset -1px -1px #0a0a0a,inset 1px 1px #fff,inset -2px -2px #808080,inset 2px 2px #dfdfdf;
+  --r-sunken:inset -1px -1px #fff,inset 1px 1px #808080,inset -2px -2px #dfdfdf,inset 2px 2px #0a0a0a;
+  --r-border:0 solid transparent;--r-title:linear-gradient(90deg,#000080,#1084d0);
+  --muted:#404040;--line:#808080;--surface:#c0c0c0;--surface2:#c0c0c0;--accent:#000080;--red:#b00000;--blue:#000080;
+  color:#000;background:#008080
+}
+:root[data-theme="dos"]{
+  --r-font:"Perfect DOS VGA 437","Px437 IBM VGA 8x16","Cascadia Mono","Lucida Console",Consolas,"Courier New",monospace;--r-size:14px;
+  --r-desktop:#000;--r-face:#000;--r-inset:#000;--r-text:#c0c0c0;--r-muted:#8a8a8a;--r-line:#c0c0c0;
+  --r-accent:#c0c0c0;--r-accent-text:#000;--r-good:#55ff55;--r-bad:#ff5555;--r-warn:#ffff55;--r-info:#55ffff;
+  --r-raised:none;--r-sunken:none;--r-border:1px solid #c0c0c0;--r-title:#c0c0c0;
+  --muted:#8a8a8a;--line:#c0c0c0;--surface:#000;--surface2:#000;--accent:#55ff55;--red:#ff5555;--blue:#55ffff;
+  color:#c0c0c0;background:#000
+}
+
+/* ---------- shared retro structure ---------- */
+:root[data-skin="retro"] body{font-family:var(--r-font);font-size:var(--r-size);color:var(--r-text);background:var(--r-desktop);-webkit-font-smoothing:none;font-smooth:never}
+:root[data-skin="retro"] *{border-radius:0!important;text-shadow:none}
+:root[data-skin="retro"] .muted,:root[data-skin="retro"] .hint{color:var(--r-muted)}
+:root[data-skin="retro"] .eyebrow{color:var(--r-muted);letter-spacing:0;font-weight:400}
+:root[data-skin="retro"] h1,:root[data-skin="retro"] h2,:root[data-skin="retro"] h3,:root[data-skin="retro"] .stat strong,:root[data-skin="retro"] dialog h2,
+:root[data-skin="retro"] .topbar h1,:root[data-skin="retro"] .card h2,:root[data-skin="retro"] .brand{font-family:var(--r-font)}
+:root[data-skin="retro"] .stat strong{font-size:22px;font-weight:700}
+:root[data-skin="retro"] a{color:var(--r-info)}
+
+/* panels */
+:root[data-skin="retro"] .card,:root[data-skin="retro"] .sidebar,:root[data-skin="retro"] dialog,
+:root[data-skin="retro"] .release-notes,:root[data-skin="retro"] .inline-info,:root[data-skin="retro"] .path-check-list,
+:root[data-skin="retro"] .policy-panel,:root[data-skin="retro"] .tv-plan-card,:root[data-skin="retro"] .tv-detail pre,
+:root[data-skin="retro"] .tv-metadata-provider,:root[data-skin="retro"] .provider-card,:root[data-skin="retro"] .classification-queue,
+:root[data-skin="retro"] .library-health,:root[data-skin="retro"] .review-queue-section,:root[data-skin="retro"] .dashboard-attention,
+:root[data-skin="retro"] .diagnostic-pairs>div,:root[data-skin="retro"] .diagnostic-criteria>div,:root[data-skin="retro"] .diagnostic-metadata,
+:root[data-skin="retro"] .pipeline-event,:root[data-skin="retro"] .review-item pre,:root[data-skin="retro"] .identify-result,
+:root[data-skin="retro"] .tv-disc-label-evidence,:root[data-skin="retro"] .storage-warning,:root[data-skin="retro"] .diagnostic-warning{
+  background:var(--r-face);color:var(--r-text);border-color:var(--r-line);box-shadow:var(--r-raised)}
+:root[data-skin="retro"] .card{border:var(--r-border)}
+:root[data-skin="retro"] .card h2{color:var(--r-text)}
+:root[data-skin="retro"] .release-notes h3,:root[data-skin="retro"] .release-notes pre,:root[data-skin="retro"] .tv-assignment-meta,
+:root[data-skin="retro"] .settings-card label,:root[data-skin="retro"] .resource,:root[data-skin="retro"] .resource b,
+:root[data-skin="retro"] .progress-meta,:root[data-skin="retro"] .stage-row,:root[data-skin="retro"] .chart-day small{color:var(--r-text)}
+:root[data-skin="retro"] .list-row{border-color:var(--r-line)}
+:root[data-skin="retro"] .provider-card{border:var(--r-border)}
+:root[data-skin="retro"] .provider-reason{color:var(--r-warn)}
+
+/* sunken inputs */
+:root[data-skin="retro"] input:not([type=checkbox]):not([type=radio]),:root[data-skin="retro"] select,:root[data-skin="retro"] textarea,
+:root[data-skin="retro"] .settings-card input:not([type=checkbox]),:root[data-skin="retro"] .settings-card select,
+:root[data-skin="retro"] .login-input,:root[data-skin="retro"] dialog input,:root[data-skin="retro"] .review-queue-section select{
+  background:var(--r-inset);color:var(--r-text);border:var(--r-border);border-color:var(--r-line);box-shadow:var(--r-sunken);padding:4px 6px;font-family:var(--r-font);font-size:var(--r-size)}
+:root[data-skin="retro"] .settings-card input:focus,:root[data-skin="retro"] .settings-card select:focus,:root[data-skin="retro"] input:focus,:root[data-skin="retro"] select:focus{outline:1px dotted var(--r-text);outline-offset:-4px;border-color:var(--r-line)}
+:root[data-skin="retro"] .check input,:root[data-skin="retro"] input[type=checkbox],:root[data-skin="retro"] input[type=radio]{accent-color:var(--r-accent)}
+
+/* buttons */
+:root[data-skin="retro"] .button,:root[data-skin="retro"] .button.secondary,:root[data-skin="retro"] .button.primary,:root[data-skin="retro"] .button.danger,
+:root[data-skin="retro"] .text-button,:root[data-skin="retro"] .range,:root[data-skin="retro"] dialog button{
+  background:var(--r-face);color:var(--r-text);border:var(--r-border);box-shadow:var(--r-raised);padding:5px 14px;font-weight:400;font-family:var(--r-font);font-size:var(--r-size);min-height:23px}
+:root[data-skin="retro"] .button:active,:root[data-skin="retro"] .range:active,:root[data-skin="retro"] .text-button:active{box-shadow:var(--r-sunken);padding:6px 13px 4px 15px}
+:root[data-skin="retro"] .button.primary{font-weight:700}
+:root[data-skin="retro"] .button.danger{color:var(--r-bad)}
+:root[data-skin="retro"] .button:focus-visible,:root[data-skin="retro"] .nav-link:focus-visible,:root[data-skin="retro"] .range:focus-visible{outline:1px dotted var(--r-text);outline-offset:-4px}
+:root[data-skin="retro"] .button:disabled{color:var(--r-line);text-shadow:1px 1px #fff}
+:root[data-skin="retro"] .segmented{border:var(--r-border);padding:2px;background:var(--r-face)}
+:root[data-skin="retro"] .range.active{background:var(--r-accent);color:var(--r-accent-text);box-shadow:var(--r-sunken)}
+
+/* badges / status */
+:root[data-skin="retro"] .badge,:root[data-skin="retro"] .confidence-pill,:root[data-skin="retro"] .provider-health,:root[data-skin="retro"] .tv-match-status{
+  background:var(--r-face);color:var(--r-text);border:1px solid var(--r-line);padding:2px 6px;font-size:11px;font-weight:700;text-transform:uppercase}
+:root[data-skin="retro"] .badge.completed,:root[data-skin="retro"] .confidence-pill.high,:root[data-skin="retro"] .provider-health.healthy,:root[data-skin="retro"] .tv-match-status.fully-matched{color:var(--r-good)}
+:root[data-skin="retro"] .badge.failed,:root[data-skin="retro"] .badge.interrupted,:root[data-skin="retro"] .confidence-pill,:root[data-skin="retro"] .provider-health.authentication_failure,
+:root[data-skin="retro"] .provider-health.unavailable,:root[data-skin="retro"] .tv-match-status.unidentified,:root[data-skin="retro"] .diagnostic-error,:root[data-skin="retro"] .error-text{color:var(--r-bad)}
+:root[data-skin="retro"] .confidence-pill.high{color:var(--r-good)}
+:root[data-skin="retro"] .confidence-pill.medium,:root[data-skin="retro"] .provider-health.rate_limited,:root[data-skin="retro"] .provider-health.not_configured,
+:root[data-skin="retro"] .provider-health.unverified,:root[data-skin="retro"] .tv-match-status.partially-matched{color:var(--r-warn)}
+:root[data-skin="retro"] .badge.ripping,:root[data-skin="retro"] .badge.converting,:root[data-skin="retro"] .badge.publishing{color:var(--r-info)}
+:root[data-skin="retro"] .provider-health.disabled{color:var(--r-muted)}
+:root[data-skin="retro"] .notice,:root[data-skin="retro"] .warning{background:var(--r-face);border:var(--r-border);border-color:var(--r-line);box-shadow:var(--r-raised);color:var(--r-text)}
+:root[data-skin="retro"] .notice:before{content:"i  ";font-weight:700;color:var(--r-info)}
+:root[data-skin="retro"] .warning:before{content:"!  ";font-weight:700;color:var(--r-bad)}
+
+/* progress and charts */
+:root[data-skin="retro"] .progress-track,:root[data-skin="retro"] .mini-track{height:16px;background:var(--r-inset);box-shadow:var(--r-sunken);border:var(--r-border);padding:2px}
+:root[data-skin="retro"] .mini-track{height:10px;padding:1px}
+:root[data-skin="retro"] .progress-track div,:root[data-skin="retro"] .mini-track i{background:var(--r-accent);transition:none}
+:root[data-skin="retro"] .pulse{background:var(--r-good);box-shadow:none;border-radius:0}
+
+/* dialogs */
+:root[data-skin="retro"] dialog{border:var(--r-border);padding:0}
+:root[data-skin="retro"] dialog::backdrop{background:#00000099;backdrop-filter:none}
+:root[data-skin="retro"] dialog h2{background:var(--r-title);color:var(--r-accent-text);margin:-25px -25px 14px;padding:4px 8px;font-size:var(--r-size)}
+:root[data-skin="retro"] .metadata-dialog h2{margin:-24px -24px 14px}
+
+/* sidebar / navigation */
+:root[data-skin="retro"] .sidebar{border:var(--r-border);border-width:0 2px 0 0;padding:10px 8px;width:235px}
+:root[data-skin="retro"] .brand{color:var(--r-text);padding:4px 4px 12px}
+:root[data-skin="retro"] .brand-icon{background:var(--r-accent);color:var(--r-accent-text)}
+:root[data-skin="retro"] .nav-link,:root[data-skin="retro"] .nav-group>summary{color:var(--r-text);font-weight:400;padding:5px 8px;background:none}
+:root[data-skin="retro"] .nav-link:hover,:root[data-skin="retro"] .nav-group>summary:hover{background:var(--r-accent);color:var(--r-accent-text)}
+:root[data-skin="retro"] .nav-link.active,:root[data-skin="retro"] .nav-group.active>summary{background:var(--r-accent);color:var(--r-accent-text)}
+:root[data-skin="retro"] .nav-link.active:before{content:"";display:none}
+:root[data-skin="retro"] .nav-group,:root[data-skin="retro"] .nav-group[open],:root[data-skin="retro"] .nav-group.active{border-color:transparent;background:none}
+:root[data-skin="retro"] .sidebar-footer{color:var(--r-text)}
+
+/* topbar + theme picker */
+:root[data-skin="retro"] .topbar{margin-bottom:14px}
+.theme-picker{display:inline-flex;align-items:center;gap:8px;font-size:12px}
+.theme-picker select{padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--surface2);color:inherit;font:inherit}
+:root[data-skin="retro"] .theme-picker{color:var(--r-text)}
+:root[data-theme="light"] .theme-picker select{background:#edf1f6;border-color:#cbd3df;color:#354154}
+
+/* ---------- Windows 95 Classic ---------- */
+:root[data-theme="win95"] main{padding:12px;max-width:none}
+:root[data-theme="win95"] .sidebar{background:var(--r-face);box-shadow:var(--r-raised)}
+:root[data-theme="win95"] .brand img{background:#fff;box-shadow:var(--r-sunken);padding:4px}
+/* title-bar styled header and panel headings */
+:root[data-theme="win95"] .topbar{background:var(--r-face);box-shadow:var(--r-raised);padding:3px;gap:12px}
+:root[data-theme="win95"] .topbar>div:first-child{flex:1;display:flex;align-items:center;gap:10px;background:var(--r-title);padding:3px 6px;min-height:22px}
+:root[data-theme="win95"] .topbar .eyebrow{display:none}
+:root[data-theme="win95"] .topbar h1{font-size:12px;font-weight:700;color:#fff;margin:0}
+:root[data-theme="win95"] .topbar h1:before{content:"▣ ";font-weight:400}
+:root[data-theme="win95"] .top-actions{padding-right:4px}
+:root[data-theme="win95"] .card>h2:first-child,:root[data-theme="win95"] .card-heading h2{background:var(--r-title);color:#fff;font-size:12px;padding:2px 6px;margin-bottom:10px}
+:root[data-theme="win95"] .card-heading{align-items:stretch}
+:root[data-theme="win95"] .nav-link:before{content:"▪ ";margin-right:2px}
+:root[data-theme="win95"] .nav-group>summary:before{content:"▸ "}
+:root[data-theme="win95"] .nav-group[open]>summary:before{content:"▾ "}
+:root[data-theme="win95"] .nav-group>summary:after{display:none}
+:root[data-theme="win95"] .sidebar-footer{border-top:2px groove #fff;padding-top:8px}
+
+/* ---------- DOS Terminal ---------- */
+:root[data-theme="dos"] body{line-height:1.35}
+:root[data-theme="dos"] main{padding:14px 18px;max-width:none}
+:root[data-theme="dos"] .card,:root[data-theme="dos"] dialog,:root[data-theme="dos"] .provider-card{border:3px double var(--r-line);padding:12px 14px}
+:root[data-theme="dos"] .sidebar{border-right:3px double var(--r-line);width:235px}
+:root[data-theme="dos"] .brand img{display:none}
+:root[data-theme="dos"] .brand:before{content:"C:\\AUTODISC>";color:var(--r-good);font-weight:700;font-size:15px}
+:root[data-theme="dos"] .brand:after{content:"_";color:var(--r-good);animation:dos-blink 1s steps(1) infinite}
+@keyframes dos-blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){:root[data-theme="dos"] .brand:after{animation:none}}
+:root[data-theme="dos"] .topbar{border-bottom:3px double var(--r-line);padding-bottom:8px}
+:root[data-theme="dos"] .topbar h1{font-size:16px;font-weight:400;text-transform:uppercase;color:var(--r-good)}
+:root[data-theme="dos"] .topbar h1:before{content:"== ";color:var(--r-line)}
+:root[data-theme="dos"] .topbar h1:after{content:" ==";color:var(--r-line)}
+:root[data-theme="dos"] .eyebrow{text-transform:uppercase}
+:root[data-theme="dos"] .card h2,:root[data-theme="dos"] .card-heading h2{background:none;color:var(--r-info);font-size:var(--r-size);font-weight:700;text-transform:uppercase;margin-bottom:8px}
+:root[data-theme="dos"] .card h2:before{content:"[ "}
+:root[data-theme="dos"] .card h2:after{content:" ]"}
+:root[data-theme="dos"] .stat strong{color:var(--r-warn);font-size:20px}
+:root[data-theme="dos"] .nav-link:before{content:"> ";color:var(--r-good)}
+:root[data-theme="dos"] .nav-link:hover:before,:root[data-theme="dos"] .nav-link.active:before{color:var(--r-accent-text)}
+:root[data-theme="dos"] .nav-link.active:before{display:inline;content:"► "}
+:root[data-theme="dos"] .nav-group>summary{text-transform:uppercase}
+:root[data-theme="dos"] .nav-group>summary:before{content:"+ "}
+:root[data-theme="dos"] .nav-group[open]>summary:before{content:"- "}
+:root[data-theme="dos"] .nav-group>summary:after{display:none}
+:root[data-theme="dos"] .button,:root[data-theme="dos"] .button.secondary,:root[data-theme="dos"] .button.primary,:root[data-theme="dos"] .button.danger,
+:root[data-theme="dos"] .text-button,:root[data-theme="dos"] dialog button{background:#000;border:1px solid var(--r-line);padding:2px 8px}
+:root[data-theme="dos"] .button:before{content:"[ "}
+:root[data-theme="dos"] .button:after{content:" ]"}
+:root[data-theme="dos"] .button:hover,:root[data-theme="dos"] .text-button:hover,:root[data-theme="dos"] .range:hover{background:var(--r-accent);color:var(--r-accent-text)}
+:root[data-theme="dos"] .button:active{padding:2px 8px}
+:root[data-theme="dos"] .button:disabled{color:var(--r-muted)}
+:root[data-theme="dos"] .progress-track,:root[data-theme="dos"] .mini-track{background:#000;border:1px solid var(--r-line);padding:0;height:14px}
+:root[data-theme="dos"] .progress-track div,:root[data-theme="dos"] .mini-track i{background:repeating-linear-gradient(90deg,var(--r-good) 0 8px,transparent 8px 10px)}
+:root[data-theme="dos"] .badge,:root[data-theme="dos"] .confidence-pill,:root[data-theme="dos"] .provider-health,:root[data-theme="dos"] .tv-match-status{background:#000;border:1px solid currentColor}
+:root[data-theme="dos"] dialog h2{background:var(--r-accent);color:var(--r-accent-text)}
+:root[data-theme="dos"] dialog h2:before,:root[data-theme="dos"] dialog h2:after{content:""}
+:root[data-theme="dos"] .notice:before{content:"INFO: "}
+:root[data-theme="dos"] .warning:before{content:"WARNING: "}
+:root[data-theme="dos"] ::selection{background:var(--r-accent);color:var(--r-accent-text)}
+:root[data-theme="dos"] ::-webkit-scrollbar{width:12px;height:12px;background:#000}
+:root[data-theme="dos"] ::-webkit-scrollbar-thumb{background:var(--r-line)}
+
+/* ---------- small screens: keep the original responsive layout ---------- */
+@media(max-width:680px){
+  :root[data-skin="retro"] .sidebar{width:100%;border-width:0 0 2px 0}
+  :root[data-theme="win95"] main,:root[data-theme="dos"] main{padding:8px}
+}

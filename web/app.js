@@ -3,19 +3,17 @@ const state = { page: "dashboard", statsRange: "7d", metricsStream: null, status
 let capabilityReportLoaded = false;
 const loginDialog = $("#login-dialog");
 const passwordChangeDialog = $("#password-change-dialog");
-const themeToggle = $("#theme-toggle");
+const themeSelect = $("#theme-select");
 
-function setTheme(theme) {
-  const isLight = theme === "light";
-  document.documentElement.dataset.theme = isLight ? "light" : "dark";
-  themeToggle.textContent = isLight ? "Dark mode" : "Light mode";
-  themeToggle.setAttribute("aria-pressed", String(isLight));
-  localStorage.setItem("autodisc-theme", isLight ? "light" : "dark");
-}
-
-setTheme(localStorage.getItem("autodisc-theme") === "light" ? "light" : "dark");
-themeToggle.addEventListener("click", () => {
-  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+// Themes are presentation-only skins; the engine lives in themes.js and themes.css.
+themeSelect.innerHTML = window.AutoDiscThemes.themes
+  .map((theme) => `<option value="${theme.id}">${theme.label}</option>`).join("");
+themeSelect.value = window.AutoDiscThemes.current();
+themeSelect.addEventListener("change", () => {
+  themeSelect.value = window.AutoDiscThemes.apply(themeSelect.value);
+});
+document.addEventListener("autodisc-theme-change", (event) => {
+  themeSelect.value = event.detail.theme;
 });
 
 function notify(message, isError = false) {
