@@ -254,3 +254,19 @@ test("TV metadata dashboard and settings render live metrics and operational con
   assert.match(script, /metrics\.lookupsAttempted/);
   assert.doesNotMatch(html, /tvMetadataAutomaticRefresh|tvMetadataIncludeSpecials|tvMetadataIncludeBonusContent|tvMetadataIncludeMultipartEpisodes/);
 });
+
+test("Metadata Providers lists movie, TV and music providers with state, counts and disabled reasons", async () => {
+  const html = await readFile(new URL("../web/index.html", import.meta.url), "utf8");
+  const script = await readFile(new URL("../web/app.js", import.meta.url), "utf8");
+  const section = html.slice(html.indexOf('id="tv-metadata-settings"'), html.indexOf('id="advanced-admin-card"'));
+  for (const name of ["metadataEnabled", "metadataApiKey", "clearMetadataKey", "musicMetadataEnabled", "musicBrainzContactEmail"]) {
+    assert.ok(section.includes(`name="${name}"`), `${name} control lives in the Metadata Providers section`);
+    assert.equal(html.split(`name="${name}"`).length, 2, `${name} control is not duplicated`);
+  }
+  assert.match(script, /metadataEnabled=false/);
+  assert.match(script, /musicMetadataEnabled=false/);
+  assert.match(script, /tvMetadataLookupEnabled=false/);
+  for (const label of ["Enabled", "Configured", "API key:", "Requests", "Matches", "Skipped", "Failures", "Last failure"]) {
+    assert.ok(script.includes(label), label);
+  }
+});

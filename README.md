@@ -17,6 +17,7 @@ Run it as a web dashboard for hands-on control, or as a headless Linux service f
 - [Automation Modes](#automation-modes)
 - [Review Centre](#review-centre)
 - [TV Matching](#tv-matching)
+- [Metadata & Identification](#metadata--identification)
 - [Destination Profiles](#destination-profiles)
 - [Explainable Classification](#explainable-classification)
 - [Disc Fingerprinting](#disc-fingerprinting)
@@ -183,6 +184,36 @@ optionally add disc information, preview provider metadata, and confirm. AutoDis
 then presents the staged tracks for review. Automatic suggestions remain
 unconfirmed until saved. Partially matched discs remain in Review Centre with
 their saved mappings; fully matched discs resume publishing automatically.
+
+Movie and TV reviews use the same search-and-select workflow and the same
+**Confirm & Continue** action. Manual title entry is only a fallback when search
+results cannot identify the media. See [Unified media review](./docs/UNIFIED-REVIEW.md).
+
+---
+
+## Metadata & Identification
+
+The dashboard and settings treat Movies, TV and Music CDs equally:
+
+- **Media Identification** dashboard card and **Media Statistics** page: movies, TV
+  episodes and music CDs identified, plus automatic, review-required and manual matches.
+  Counts come from saved disc identifications (`disc_recovery`) and the pending review
+  queues; `GET /api/v1/identification/stats`.
+- **Provider usage**: requests, successful matches, no-result lookups, failures, success
+  rate and average lookup time for every provider (TMDB movies, MusicBrainz, TVDB/TMDB TV);
+  `GET /api/v1/metadata/usage`. Lookups made through `MetadataResolver` are recorded in the
+  `metadata_provider_usage` table (migration 28); TV provider rows come from the existing
+  lookup audit. Statistics only begin accumulating after upgrading.
+- **Settings → Metadata & Identification** groups provider status and usage, MakeMKV
+  identification timeouts, and the Movies (TMDB), Music CDs (MusicBrainz) and TV
+  (TVDB/TMDB TV) provider controls and API keys in one place. The provider list shows every
+  registered provider with Enabled/Disabled, Configured/Not configured, API key status,
+  media type, request, match, skip and failure counts and the last failure. A disabled
+  provider states its reason directly (for example `Reason: metadataEnabled=false`,
+  `musicMetadataEnabled=false` or `tvMetadataLookupEnabled=false`). The older Integrations
+  entry now just links here; setting names and behaviour are unchanged.
+
+Existing `tvMetadata*` setting names and `/api/v1/tv/metadata*` endpoints are unchanged.
 
 ---
 
@@ -377,6 +408,7 @@ sudo journalctl -u autodisc.service -f
 - [Library Metadata & Organization](./docs/METADATA-LIBRARY-ORGANIZATION.md)
 - [TV workflow integration](./docs/TV-WORKFLOW-INTEGRATION.md)
 - [TV manual recovery guide](./docs/TV-MANUAL-RECOVERY.md)
+- [Unified media review](./docs/UNIFIED-REVIEW.md)
 - [Version 2 architecture](./docs/V2-ARCHITECTURE.md)
 - [Roadmap](./docs/ROADMAP.md)
 
@@ -399,6 +431,38 @@ sudo journalctl -u autodisc.service -f
 ---
 
 ## Release History
+
+### Version 1.37.0
+
+- Movie (TMDB), TV (TVDB, TMDB TV) and music CD (MusicBrainz) metadata are now first-class in Settings ? Metadata & Identification: one provider list shows Enabled/Disabled, Configured/Not configured, API key status, media type, request/match/skip/failure counts, last failure and the reason a provider is disabled.
+- The separate movie and music integration cards were folded into that section. Setting names, lookup behaviour and APIs are unchanged.
+- Metadata lookups are logged with media type, provider, query, result count, selection and failure reason; skipped lookups are recorded separately (migration 29).
+
+### Version 1.36.1
+
+- Made the dashboard and settings media-type agnostic: "TV Metadata" is now "Metadata Providers", "TV statistics" is now "Media Statistics", and "TV Matching & Analysis" is now "Identification & Matching".
+- Added a Media Identification dashboard card (movies, TV episodes, Music CDs; automatic, review-required and manual matches), a Provider usage card (requests, matches, failures, average lookup time) and a Metadata & Identification settings section.
+- Added read-only `GET /api/v1/metadata/usage` and `GET /api/v1/identification/stats` and a `metadata_provider_usage` table (migration 28). Existing APIs and settings are unchanged.
+
+### Version 1.36.0
+
+- Added a hard upper limit to MakeMKV disc discovery, `makemkvDiscoveryAbsoluteTimeoutMs` (default 900000 ms). Discovery now ends when MakeMKV is silent for `makemkvDiscoveryTimeoutMs` or when the absolute limit elapses, so continuous output can no longer keep it running forever. Timeout kills are logged as "inactivity" or "absolute".
+
+### Version 1.35.0
+
+- MakeMKV disc discovery no longer uses a fixed 2-minute limit. It is terminated only after the configurable `makemkvDiscoveryTimeoutMs` setting (default 300000 ms) passes with no output, so large, dual-layer, CSS-protected and damaged discs that are still being analysed can finish.
+- Added `makemkv` logging for command start (command, drive, timeout), completion (elapsed time, exit code) and timeout kills (elapsed time, timeout, last-output age).
+
+### Version 1.34.1
+
+- Fixed a TypeScript build error (TS2741) by populating the required `source` field on unified review items created for staged TV discs.
+
+### Version 1.34.0
+
+- Unified Movie, TV and TV-plan reviews behind a single `MediaReviewItem` model, queue and search workflow, with media-specific behaviour isolated in adapters.
+- Movie and TV reviews now complete through one endpoint, `POST /api/v1/review/items/:id/complete`; the legacy TV matching and review-job continue endpoints are compatibility wrappers.
+- Fixed movie metadata searches silently returning no results when the movie provider was disabled or had no API key, and added logging for provider requests, responses, filtering and empty results.
+- Fixed concurrent completions starting processing twice, completed TV tasks reporting "started", movie reviews resuming without a title, blank titles overriding a selected candidate, and invalid candidate ids being ignored. See [Unified media review](./docs/UNIFIED-REVIEW.md).
 
 ### Version 1.33.0
 

@@ -23,7 +23,8 @@
         </details>
         <details class="nav-group">
           <summary>Identification</summary>
-          <button class="nav-link" data-page="tv-analysis">TV Matching &amp; Analysis</button>
+          <button class="nav-link" data-page="tv-analysis">Identification &amp; Matching</button>
+          <button class="nav-link" data-page="settings" data-scroll="#tv-metadata-settings">Metadata &amp; Identification</button>
         </details>
         <details class="nav-group">
           <summary>Storage</summary>
@@ -110,12 +111,21 @@
         </article>
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">RECENT</p><h2>Latest discs</h2></div><button class="text-button" data-page="history">View history →</button></div><div id="recent-list"></div></article>
         <article class="card tv-intelligence-card">
-          <div class="card-heading"><div><p class="eyebrow">VERSION 2</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-analysis">View reports →</button></div>
+          <div class="card-heading"><div><p class="eyebrow">IDENTIFICATION</p><h2>Media Identification</h2></div><button class="text-button" data-page="tv-validation">Media statistics →</button></div>
+          <div id="media-identification-stats" class="tv-stat-grid"></div>
+          <p id="media-identification-status" class="hint" role="status">Loading identification statistics…</p>
+        </article>
+        <article class="card tv-intelligence-card">
+          <div class="card-heading"><div><p class="eyebrow">METADATA</p><h2>Provider usage</h2></div><button class="text-button" data-page="settings" data-scroll="#tv-metadata-settings">Configure providers →</button></div>
+          <div id="provider-usage-dashboard" class="tv-metadata-provider-activity">Loading provider usage…</div>
+        </article>
+        <article class="card tv-intelligence-card">
+          <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-analysis">View reports →</button></div>
           <div id="tv-dashboard-stats" class="tv-stat-grid"></div>
           <div class="card-heading"><h3>TV disc trend · 30 days</h3></div><div id="tv-trend" class="tv-trend"></div>
         </article>
         <article class="card tv-intelligence-card">
-          <div class="card-heading"><div><p class="eyebrow">TV METADATA</p><h2>Lookup activity</h2></div><button class="text-button" data-page="settings" data-scroll="#tv-metadata-settings">Configure providers →</button></div>
+          <div class="card-heading"><div><p class="eyebrow">METADATA LOOKUPS</p><h2>Lookup activity</h2></div><button class="text-button" data-page="settings" data-scroll="#tv-metadata-settings">Configure providers →</button></div>
           <div id="tv-metadata-dashboard-stats" class="tv-stat-grid"></div>
           <p id="tv-metadata-dashboard-status" class="hint" role="status">Loading metadata provider metrics…</p>
           <div id="tv-metadata-provider-activity" class="tv-metadata-provider-activity"></div>
@@ -232,8 +242,9 @@
       </section>
       <section id="page-tv-validation" class="page hidden">
         <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
-        <article class="card"><p class="eyebrow">TV WORKFLOW</p><h2>TV statistics</h2><div id="tv-statistics" class="tv-stat-grid"></div>
-          <p class="hint">Automatic TV suggestions never publish files. Confirm series metadata and episode-to-track mappings in the Review Queue to process TV episodes.</p>
+        <article class="card"><p class="eyebrow">IDENTIFICATION</p><h2>Media Statistics</h2><div id="media-statistics" class="tv-stat-grid"></div>
+          <p class="hint">Movies, TV and music are counted from the same identification records. Automatic suggestions for TV never publish files; confirm series metadata and episode-to-track mappings in the Review Queue to process TV episodes.</p>
+          <h3>TV episode analysis</h3><div id="tv-statistics" class="tv-stat-grid"></div>
         </article>
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EVIDENCE & DATASETS</p><h2>TV validation</h2></div>
           <button id="export-tv-validation" class="button secondary" type="button">Export validation dataset</button>
@@ -347,20 +358,9 @@
             <label class="check"><input name="autoEject" type="checkbox"> Eject disc after successful conversion</label>
             <div id="encoder-capability" class="inline-info">Checking FFmpeg encoders…</div>
           </article>
-          <article id="integrations-settings-card" class="card settings-card"><p class="eyebrow">TITLE MATCHING</p><h2>Optional online metadata</h2>
-            <label class="check"><input name="metadataEnabled" type="checkbox"> Enable TMDB title lookup</label>
-            <label>Minimum confidence for automatic movie identification<input name="movieIdentificationMinimumConfidence" type="number" min="0" max="1" step="0.01" required></label>
-            <label>TMDB API key<input name="metadataApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key"></label>
-            <label class="check"><input name="clearMetadataKey" type="checkbox"> Clear saved API key</label>
-            <p id="metadata-key-status" class="inline-info"></p>
-            <p class="hint">Lookup is off by default. The filesystem volume name is used as the movie search and fallback title; it is sent to TMDB only when enabled and a key is configured. Movies below the configured confidence are held for title confirmation.</p>
-          </article>
-          <article class="card settings-card"><p class="eyebrow">MUSIC CDS</p><h2>Album details</h2>
-            <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
-            <label>Contact email for MusicBrainz<input name="musicBrainzContactEmail" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com (optional)"></label>
-            <p class="hint">MusicBrainz read-only lookups do not require an API key. AutoDisc identifies itself with a User-Agent; adding a contact email helps MusicBrainz reach you if there is an issue.</p>
-            <p class="hint">When enabled, a successful automatic match continues without interruption. If no usable match is found, the CD job waits for you to enter a release ID or provide album and track names in the dashboard. With lookup disabled, CDs keep processing unattended with generic track names.</p>
-            <p class="hint">MusicBrainz provides album and track names for the FLAC tags and filenames. Lidarr needs these details to identify and categorize albums.</p>
+          <article id="integrations-settings-card" class="card settings-card"><p class="eyebrow">TITLE MATCHING</p><h2>Online metadata</h2>
+            <p class="hint">Movie (TMDB), TV (TVDB, TMDB TV) and music CD (MusicBrainz) metadata are configured together under Metadata &amp; Identification, which shows whether each provider is enabled and working.</p>
+            <button class="text-button" type="button" data-page="settings" data-scroll="#tv-metadata-settings">Open Metadata Providers →</button>
           </article>
           <article class="card settings-card"><p class="eyebrow">LIBRARY METADATA</p><h2>Metadata, artwork & organization</h2>
             <label class="check"><input name="automaticImport" type="checkbox"> Automatically import available metadata and artwork when a workflow is identified</label>
@@ -421,9 +421,27 @@
             </div>
           </article>
           <article id="tv-metadata-settings" class="card settings-card tv-metadata-settings">
-            <p class="eyebrow">VERSION 2 · PROVIDERS</p><h2>TV Metadata</h2>
-            <p class="hint">When enabled, TV analysis looks up series and episode candidates using the selected providers. Results inform suggestions only; no episodes are automatically assigned or published.</p>
-            <label class="check"><input name="tvMetadataLookupEnabled" type="checkbox"> Enable TV metadata lookup during analysis</label>
+            <p class="eyebrow">METADATA &amp; IDENTIFICATION</p><h2>Metadata Providers</h2>
+            <p class="hint">Metadata providers identify movies, TV series and episodes, and music CDs. Results inform suggestions and review candidates; TV episodes are never assigned or published without confirmation. TMDB (movies), MusicBrainz (music) and the TV providers below are monitored together.</p>
+            <h3>Provider status &amp; usage</h3>
+            <div id="metadata-usage-providers" class="tv-metadata-provider-activity" aria-live="polite">Loading provider usage…</div>
+            <h3>Movies (TMDB)</h3>
+            <label class="check"><input name="metadataEnabled" type="checkbox"> Enable TMDB title lookup</label>
+            <label>Minimum confidence for automatic movie identification<input name="movieIdentificationMinimumConfidence" type="number" min="0" max="1" step="0.01" required></label>
+            <label>TMDB API key<input name="metadataApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key"></label>
+            <label class="check"><input name="clearMetadataKey" type="checkbox"> Clear saved API key</label>
+            <p id="metadata-key-status" class="inline-info"></p>
+            <p class="hint">Lookup is off by default. The filesystem volume name is used as the movie search and fallback title; it is sent to TMDB only when enabled and a key is configured (the TMDB TV key is used if no movie key is saved). Movies below the configured confidence are held for title confirmation.</p>
+            <h3>Music CDs (MusicBrainz)</h3>
+            <label class="check"><input name="musicMetadataEnabled" type="checkbox"> Look up album and track names with MusicBrainz</label>
+            <label>Contact email for MusicBrainz<input name="musicBrainzContactEmail" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com (optional)"></label>
+            <p class="hint">MusicBrainz read-only lookups do not require an API key. AutoDisc identifies itself with a User-Agent; adding a contact email helps MusicBrainz reach you if there is an issue. When enabled, a successful automatic match continues without interruption. If no usable match is found, the CD job waits for you to enter a release ID or provide album and track names in the dashboard. With lookup disabled, CDs keep processing unattended with generic track names. Lidarr needs these details to identify and categorize albums.</p>
+            <h3>Timeouts</h3>
+            <label>Disc identification (MakeMKV) inactivity timeout (ms)<input name="makemkvDiscoveryTimeoutMs" type="number" min="10000" max="3600000" step="1000" required></label>
+            <label>Disc identification (MakeMKV) absolute timeout (ms)<input name="makemkvDiscoveryAbsoluteTimeoutMs" type="number" min="10000" max="7200000" step="1000" required></label>
+            <p class="hint">Discovery stops after MakeMKV produces no output for the first value, or when the second value elapses regardless of output, so slow large, dual-layer, protected or damaged discs can finish but a runaway process cannot run forever. Defaults 300000 (5 minutes) and 900000 (15 minutes); the absolute limit must not be shorter than the inactivity limit.</p>
+            <h3>TV providers &amp; API keys</h3>
+            <label class="check"><input name="tvMetadataLookupEnabled" type="checkbox"> Enable online TV metadata lookup (TVDB / TMDB)</label>
             <div id="tv-metadata-providers" class="tv-metadata-providers" aria-live="polite">Loading registered metadata providers…</div>
             <div class="form-row">
               <label>Preferred provider<select name="tvMetadataPreferredProviderId"></select></label>
@@ -440,7 +458,7 @@
             </div>
             <p id="tv-metadata-cache-status" class="inline-info" role="status"></p>
             <div class="policy-panel">
-              <b>Current TV matching policy (read-only)</b>
+              <b>Current TV episode matching policy (read-only)</b>
               <div id="tv-metadata-matching-policy">Loading the current policy…</div>
             </div>
           </article>

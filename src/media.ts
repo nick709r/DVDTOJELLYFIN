@@ -28,9 +28,23 @@ export function selectMainFeature(titles: DiscTitle[]): DiscTitle | undefined {
   return [...titles].sort((left, right) => right.durationSeconds - left.durationSeconds)[0];
 }
 
-export async function inspectDisc(device: string, signal?: AbortSignal): Promise<DiscInfo> {
+export const DEFAULT_MAKEMKV_DISCOVERY_TIMEOUT_MS = 300_000;
+export const DEFAULT_MAKEMKV_DISCOVERY_ABSOLUTE_TIMEOUT_MS = 900_000;
+
+/**
+ * Reads disc and title information. MakeMKV is terminated when it stays silent for `inactivityTimeoutMs`
+ * (output keeps large, dual-layer, CSS-protected or damaged discs alive) or when `absoluteTimeoutMs` elapses.
+ */
+export async function inspectDisc(
+  device: string,
+  signal?: AbortSignal,
+  inactivityTimeoutMs: number = DEFAULT_MAKEMKV_DISCOVERY_TIMEOUT_MS,
+  absoluteTimeoutMs: number = DEFAULT_MAKEMKV_DISCOVERY_ABSOLUTE_TIMEOUT_MS
+): Promise<DiscInfo> {
   const result = await runProcess(makeMkv, ["--robot", "--noscan", "info", device], {
-    timeoutMs: 120_000,
+    inactivityTimeoutMs,
+    timeoutMs: absoluteTimeoutMs,
+    logging: { component: "makemkv", fields: { operation: "discovery", drive: device } },
     ...(signal ? { signal } : {})
   });
   const titleValues = new Map<number, { name: string; durationSeconds: number }>();
@@ -84,6 +98,7 @@ export async function ripTitle(device: string, titleId: number, workDir: string,
   await mkdir(ripDir, { recursive: true, mode: 0o750 });
   await runProcess(makeMkv, ["--robot", "--noscan", "mkv", device, String(titleId), ripDir], {
     timeoutMs: 8 * 60 * 60 * 1000,
+    logging: { component: "makemkv", fields: { operation: "rip", drive: device, titleId } },
     ...(signal ? { signal } : {})
   });
   const files = await readdir(ripDir);

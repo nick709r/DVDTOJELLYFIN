@@ -19,8 +19,10 @@ import { TvWorkflowService } from "../application/tv-workflow-service.js";
 import { TvReviewService } from "../application/tv-review-service.js";
 import { TvValidationService } from "../application/tv-validation-service.js";
 import { ConfiguredTvMetadataProvider } from "../application/tv-metadata-lookup-service.js";
-import { tvMetadataLookupService } from "./tv-metadata-runtime.js";
+import { metadataUsageService, tvMetadataLookupService } from "./tv-metadata-runtime.js";
 import { ReviewWorkspaceService } from "../application/review-workspace-service.js";
+import { MediaReviewSearchService } from "../application/media-review-search-service.js";
+import { MovieReviewAdapter, TvReviewAdapter } from "../application/media-review-adapters.js";
 
 function isMediaSourceProvider(provider: Provider): provider is MediaSourceProvider {
   return provider.describe().kind === "source" &&
@@ -42,6 +44,7 @@ export async function createProviderRuntime(
   tvValidation: TvValidationService;
   tvReview: TvReviewService;
   reviewWorkspaces: ReviewWorkspaceService;
+  reviewSearch: MediaReviewSearchService;
   dvdWorkflow: DvdWorkflow;
   jobs: JobCoordinator;
 }> {
@@ -54,7 +57,13 @@ export async function createProviderRuntime(
   });
   const sourceProviders: MediaSourceProvider[] = [
     new CdParanoiaSourceProvider(),
-    new MakeMkvDvdSourceProvider()
+    new MakeMkvDvdSourceProvider(() => {
+      const settings = getSettings();
+      return {
+        inactivityMs: settings.makemkvDiscoveryTimeoutMs,
+        absoluteMs: settings.makemkvDiscoveryAbsoluteTimeoutMs
+      };
+    })
   ];
   const metadataProviders = new MetadataProviderRegistry();
   const configuredMetadataProviders = [
@@ -80,7 +89,8 @@ export async function createProviderRuntime(
         { providerId: result.providerId, status: result.health.status });
     }
   }
-  const metadata = new MetadataResolver(metadataProviders.list());
+  const metadata = new MetadataResolver(metadataProviders.list(), metadataUsageService);
+  metadataUsageService.setProviderStatusSource(() => metadataProviders.healthCheckAll());
   const tvValidation = new TvValidationService(
     repositories.tvValidationEvidence,
     repositories.tvEpisodeFeedback,
@@ -105,6 +115,9 @@ export async function createProviderRuntime(
     repositories.tvProcessingPlans
   );
   const reviewWorkspaces = new ReviewWorkspaceService(repositories.reviewJobs);
+  const reviewSearch = new MediaReviewSearchService();
+  reviewSearch.register(new MovieReviewAdapter(metadata));
+  reviewSearch.register(new TvReviewAdapter(tvMetadataLookupService));
   const workflows = new MediaWorkflowRegistry();
   workflows.register(new AudioCdWorkflow());
   const dvdWorkflow = new DvdWorkflow(tvWorkflow, reviewWorkspaces, undefined, undefined, jobs);
@@ -120,6 +133,7 @@ export async function createProviderRuntime(
     tvValidation,
     tvReview,
     reviewWorkspaces,
+    reviewSearch,
     dvdWorkflow,
     jobs
   };

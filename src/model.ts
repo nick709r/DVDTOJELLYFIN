@@ -91,6 +91,10 @@ export interface AppSettings {
   automationMode: AutomationMode;
   metadataEnabled: boolean;
   movieIdentificationMinimumConfidence: number;
+  /** Longest MakeMKV disc discovery may stay silent before it is terminated. */
+  makemkvDiscoveryTimeoutMs: number;
+  /** Hard upper limit for MakeMKV disc discovery, regardless of output. */
+  makemkvDiscoveryAbsoluteTimeoutMs: number;
   metadataProvider: "tmdb";
   metadataApiKey: string;
   musicMetadataEnabled: boolean;

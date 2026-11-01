@@ -15,6 +15,8 @@ export const defaultSettings: AppSettings = {
   automationMode: "regular_auto",
   metadataEnabled: false,
   movieIdentificationMinimumConfidence: 0.9,
+  makemkvDiscoveryTimeoutMs: 300_000,
+  makemkvDiscoveryAbsoluteTimeoutMs: 900_000,
   metadataProvider: "tmdb",
   metadataApiKey: "",
   musicMetadataEnabled: false,

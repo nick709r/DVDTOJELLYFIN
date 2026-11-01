@@ -171,7 +171,9 @@ These authenticated routes expose the recovery workflow:
   disc details and confirmed match counts.
 - `PUT /api/v1/tv/matching/:id/assignments` saves confirmed matches; empty
   `episodeNumbers` leaves that track unmatched. Fully matched tasks resume
-  publishing automatically.
+  publishing automatically. This and the `identification` and `continue`
+  endpoints are wrappers over `POST /api/v1/review/items/tv-matching-task:ID/complete`
+  (see [Unified media review](./UNIFIED-REVIEW.md)); completed tasks return 409.
 - `GET /api/v1/tv/matching/:id/preview/:trackId` serves a short authenticated
   video preview with byte-range support.
 - `DELETE /api/v1/tv/matching/:id/unmatched` deletes only explicitly confirmed

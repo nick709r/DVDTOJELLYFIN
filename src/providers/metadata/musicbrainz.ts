@@ -1,5 +1,6 @@
 import type {
   MetadataIdentificationInput,
+  MetadataLookupAvailability,
   MetadataProvider,
   MetadataProviderCandidate
 } from "../../contracts/metadata-provider.js";
@@ -29,6 +30,21 @@ export class MusicBrainzMetadataProvider implements MetadataProvider {
 
   async dispose(): Promise<void> {
     return Promise.resolve();
+  }
+
+  lookupAvailability(input: MetadataIdentificationInput): MetadataLookupAvailability {
+    if (input.entityType !== "album") return { applicable: false };
+    if (!this.getSettings().musicMetadataEnabled) {
+      return { applicable: true, skipReason: "music metadata lookup is disabled (Settings → Look up album and track names with MusicBrainz)" };
+    }
+    if (!input.identifiers?.musicBrainzDiscId) {
+      return { applicable: true, skipReason: "no MusicBrainz disc ID was read from the disc" };
+    }
+    const trackNumbers = input.attributes?.trackNumbers;
+    if (!Array.isArray(trackNumbers) || trackNumbers.length === 0) {
+      return { applicable: true, skipReason: "no track numbers were supplied" };
+    }
+    return { applicable: true };
   }
 
   async identify(input: MetadataIdentificationInput, signal?: AbortSignal): Promise<readonly MetadataProviderCandidate[]> {

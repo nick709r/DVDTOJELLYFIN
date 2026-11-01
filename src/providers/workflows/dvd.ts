@@ -32,7 +32,7 @@ import type { TvSavedIdentification } from "../../domain/tv-identification.js";
 import { tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingContinuationSource, type TvMatchingTask } from "../../domain/tv-matching.js";
 import { outputPath } from "../../output-destinations.js";
 import { pathsOverlap, tvStagingConflictMessage, tvStagingConflicts, tvStagingDirectory } from "../../storage-paths.js";
-import { normalizeDiscName } from "../../application/tv-name-normalization.js";
+import { normalizeDiscName, searchVariants } from "../../application/tv-name-normalization.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -1366,6 +1366,19 @@ async function processMappedTvEpisodes(
       } else {
         const movieQuery = normalizeVolumeTitle(filesystemVolumeName || info.label.trim() || selectedTitle.name);
         title = await metadata.resolve({ entityType: "movie", query: movieQuery }, signal);
+        // Match the TV search behaviour: retry progressively looser variants when the first query finds nothing.
+        for (const variant of searchVariants(movieQuery)) {
+          if (title.selected || title.candidates.length > 0) break;
+          if (variant.toLocaleLowerCase() === movieQuery.toLocaleLowerCase()) continue;
+          log("info", "metadata", "Retrying movie search with a looser query variant", { query: movieQuery, variant });
+          title = await metadata.resolve({ entityType: "movie", query: variant }, signal);
+        }
+        if (!title.selected && title.candidates.length === 0) {
+          log("warn", "metadata", "Automatic movie search produced no candidates", {
+            query: movieQuery,
+            providerFailures: title.providerFailures
+          });
+        }
       }
       for (const providerFailure of title.providerFailures) {
         log("warn", "metadata", providerFailure.message, { providerId: providerFailure.providerId });

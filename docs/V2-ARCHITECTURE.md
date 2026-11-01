@@ -116,7 +116,8 @@ suggested actions. Authenticated REST endpoints at `/api/v1/reviews` provide
 summary counts, category/severity/status/date filters, item details and job
 logs, resolve/dismiss operations, and safe retry requests. The dashboard keeps
 TV plan approvals while presenting these cross-workflow items in the Review
-Centre.
+Centre. Movie, TV-disc and TV-plan reviews are additionally exposed as
+`MediaReviewItem`s at `/api/v1/review/items`; see [UNIFIED-REVIEW.md](./UNIFIED-REVIEW.md).
 
 Audio CD publishing recursively creates and verifies the configured Music
 root and sanitized artist directory. Tracks remain in a private staging

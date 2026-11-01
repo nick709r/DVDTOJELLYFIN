@@ -20,6 +20,8 @@ export interface MetadataResult {
   selected?: MetadataCandidate;
   candidates: readonly MetadataCandidate[];
   providerFailures: readonly { providerId: string; message: string }[];
+  /** Providers that handle the entity type but did not query it, with the reason. */
+  providerSkips?: readonly { providerId: string; reason: string }[];
 }
 
 export function normalizeConfidence(value: number): MetadataConfidence {

@@ -890,6 +890,7 @@ async function loadTvSummary() {
     ["Commentary tracks", summary.commentaryTracksIdentified]
   ];
   $("#tv-dashboard-stats").innerHTML = stats.map(([label, value]) => tvStat(label, value)).join("");
+  loadMediaIdentification();
   renderTvTrend(summary.daily);
   $("#tv-statistics").innerHTML = [
     ["TV series analyzed", summary.totalSeriesProcessed],
@@ -934,8 +935,9 @@ async function loadTvMetadataMetrics() {
           <span>Last success ${provider.lastSuccessfulLookup ? escapeHtml(new Date(provider.lastSuccessfulLookup).toLocaleString()) : "—"}</span>
           <span>Last failure ${provider.lastFailure ? `${escapeHtml(provider.lastFailure)}${provider.lastFailureAt ? ` · ${escapeHtml(new Date(provider.lastFailureAt).toLocaleString())}` : ""}` : "—"}</span>
         </div>`).join("")
-      : '<div class="empty-state">No TV metadata providers are registered.</div>';
-    status.textContent = `Preferred provider: ${metrics.activeProvider?.name || "None"}. Provider usage counts include live API lookups; cached results are counted separately.`;
+      : '<div class="empty-state">No metadata providers are registered.</div>';
+    status.textContent = `Preferred TV provider: ${metrics.activeProvider?.name || "None"}. TV provider usage counts include live API lookups; cached results are counted separately.`;
+    await loadProviderUsage();
   } catch (error) {
     target.innerHTML = "";
     $("#tv-metadata-provider-activity").innerHTML = "";
@@ -958,7 +960,7 @@ function renderTvMetadataProviders(providers) {
       unverified: "Unverified"
     }[provider.health] || provider.health;
     return `<section class="tv-metadata-provider">
-      <div class="card-heading"><div><h3>${escapeHtml(provider.name)}</h3><span class="provider-health ${escapeHtml(provider.health)}">${escapeHtml(healthLabel)}</span></div><span class="muted">${provider.lookupImplemented ? "TV lookup enabled" : "Lookup unavailable"}</span></div>
+      <div class="card-heading"><div><h3>${escapeHtml(provider.name)}</h3><span class="provider-health ${escapeHtml(provider.health)}">${escapeHtml(healthLabel)}</span></div><span class="muted">${provider.lookupImplemented ? "Lookup enabled" : "Lookup unavailable"}</span></div>
       <p class="hint">${escapeHtml(provider.healthMessage)}</p>
       <p class="hint">Usage ${provider.usageCount} · Last successful lookup ${provider.lastSuccessfulLookup ? escapeHtml(new Date(provider.lastSuccessfulLookup).toLocaleString()) : "—"} · Last failure ${provider.lastFailure ? `${escapeHtml(provider.lastFailure)}${provider.lastFailureAt ? ` · ${escapeHtml(new Date(provider.lastFailureAt).toLocaleString())}` : ""}` : "—"}</p>
       <label class="check"><input class="tv-metadata-provider-enabled" type="checkbox" data-provider-id="${escapeHtml(provider.id)}"${provider.enabled ? " checked" : ""}> Enable provider for lookup</label>
@@ -968,7 +970,7 @@ function renderTvMetadataProviders(providers) {
       <button class="button secondary test-tv-metadata-provider" type="button" data-provider-id="${escapeHtml(provider.id)}">Test ${escapeHtml(provider.name)} connection</button>
       <p class="inline-info tv-metadata-validation" data-provider-validation="${escapeHtml(provider.id)}" role="status">${escapeHtml(validation)}</p>
     </section>`;
-  }).join("") : '<div class="empty-state">No TV metadata providers are registered.</div>';
+  }).join("") : '<div class="empty-state">No metadata providers are registered.</div>';
   $("#tv-metadata-providers").innerHTML = providerMarkup;
 
   const options = providers.map((provider) =>
@@ -985,6 +987,8 @@ async function loadTvMetadataSettings() {
   const settings = data.settings;
   const form = $("#settings-form");
   renderTvMetadataProviders(data.providers);
+  providerView.tvProviders = data.providers;
+  providerView.tvLookupEnabled = settings.lookupEnabled;
   form.elements.namedItem("tvMetadataLookupEnabled").checked = settings.lookupEnabled;
   form.elements.namedItem("tvMetadataPreferredProviderId").value = settings.preferredProviderId;
   form.elements.namedItem("tvMetadataFallbackProviderId").value = settings.fallbackProviderId;
@@ -996,6 +1000,146 @@ async function loadTvMetadataSettings() {
     <p>High confidence: ≥ ${thresholds.high.toFixed(2)} · Medium confidence: ≥ ${thresholds.medium.toFixed(2)} · Below medium: review required.</p>
     <p>Episode match minimum: ${matching.minimumConfidence.toFixed(2)} · Ambiguity margin: ${matching.minimumMargin.toFixed(2)}.</p>
     <p>${escapeHtml(data.matchingPolicy.reviewPolicy)}</p><p>${escapeHtml(data.matchingPolicy.matchingPolicy)}</p>`;
+  await loadProviderUsage();
+}
+
+const providerUsageLabels = {
+  "metadata.tmdb.movie": "TMDB Movies",
+  "metadata.musicbrainz.release": "MusicBrainz",
+  tvdb: "TVDB",
+  tmdb: "TMDB TV",
+  "tmdb-tv": "TMDB TV"
+};
+
+const providerView = { overview: [], tvProviders: [], settings: null, tvLookupEnabled: true };
+
+// One row per registered provider (movie, TV, music and any future provider) with its state and usage.
+function providerRows() {
+  const { overview, tvProviders, settings, tvLookupEnabled } = providerView;
+  const usageOf = (...ids) => overview.find((row) => ids.includes(row.providerId));
+  const used = new Set();
+  const rowFor = (id, base, usage) => {
+    if (usage) used.add(usage.providerId);
+    return {
+      id, ...base,
+      requests: usage?.requests ?? 0, matches: usage?.successfulMatches ?? 0, skipped: usage?.skipped ?? 0,
+      failures: usage?.failures ?? 0, lastFailure: usage?.lastFailure ?? null, lastSkipReason: usage?.lastSkipReason ?? null,
+      averageLookupTimeMs: usage?.averageLookupTimeMs ?? null
+    };
+  };
+  const rows = [];
+  const movie = usageOf("metadata.tmdb.movie");
+  if (movie || settings) {
+    const keySaved = Boolean(settings?.metadataApiKeyConfigured);
+    const keyViaTv = !keySaved && Boolean(settings?.tvMetadataProviderApiKeysConfigured?.["tmdb-tv"]);
+    const enabled = settings ? Boolean(settings.metadataEnabled) : movie.status === "available";
+    const configured = settings ? keySaved || keyViaTv : movie.status === "available";
+    const reasons = [];
+    if (settings && !enabled) reasons.push("metadataEnabled=false");
+    if (settings && !configured) reasons.push("no TMDB API key (metadataApiKey is empty)");
+    rows.push(rowFor("metadata.tmdb.movie", {
+      name: "TMDB Movies", mediaType: "Movies", enabled, configured, reasons,
+      apiKey: keySaved ? "Saved" : keyViaTv ? "Using the TMDB TV key" : "Not set"
+    }, movie));
+  }
+  const music = usageOf("metadata.musicbrainz.release");
+  if (music || settings) {
+    const enabled = settings ? Boolean(settings.musicMetadataEnabled) : music.status === "available";
+    rows.push(rowFor("metadata.musicbrainz.release", {
+      name: "MusicBrainz", mediaType: "Music", enabled, configured: true,
+      reasons: settings && !enabled ? ["musicMetadataEnabled=false"] : [], apiKey: "Not required"
+    }, music));
+  }
+  for (const provider of tvProviders) {
+    const usage = usageOf(provider.id, provider.id === "tmdb-tv" ? "tmdb" : provider.id);
+    const configured = !provider.apiKeyRequired || provider.apiKeyConfigured;
+    const reasons = [];
+    if (!tvLookupEnabled) reasons.push("tvMetadataLookupEnabled=false");
+    if (!provider.enabled) reasons.push("provider enabled=false");
+    if (!configured) reasons.push("API key is not set");
+    if (!provider.lookupImplemented) reasons.push("lookup is not available for this provider");
+    rows.push(rowFor(provider.id, {
+      name: providerUsageLabels[provider.id] || provider.name, mediaType: "TV",
+      enabled: tvLookupEnabled && provider.enabled && provider.lookupImplemented, configured, reasons,
+      apiKey: !provider.apiKeyRequired ? "Not required" : provider.apiKeyConfigured ? "Saved" : "Not set"
+    }, usage));
+  }
+  for (const usage of overview) {
+    if (used.has(usage.providerId)) continue;
+    const enabled = usage.status === "available";
+    rows.push(rowFor(usage.providerId, {
+      name: providerUsageLabels[usage.providerId] || usage.providerId, mediaType: usage.mediaType || "Other",
+      enabled, configured: enabled, reasons: enabled || !usage.statusMessage ? [] : [usage.statusMessage], apiKey: "Unknown"
+    }, usage));
+  }
+  const order = { Movies: 0, TV: 1, Music: 2 };
+  return rows.sort((left, right) => (order[left.mediaType] ?? 3) - (order[right.mediaType] ?? 3));
+}
+
+function providerUsageMarkup() {
+  const rows = providerRows();
+  if (!rows.length) return '<div class="empty-state">No metadata providers are registered.</div>';
+  return rows.map((provider) => `<div class="provider-card">
+      <div class="provider-card-head">
+        <b>${escapeHtml(provider.name)}</b>
+        <span class="muted">${escapeHtml(provider.mediaType)}</span>
+        <span class="provider-health ${provider.enabled ? "healthy" : "disabled"}">${provider.enabled ? "Enabled" : "Disabled"}</span>
+        <span class="provider-health ${provider.configured ? "healthy" : "not_configured"}">${provider.configured ? "Configured" : "Not configured"}</span>
+      </div>
+      ${provider.reasons.length ? `<p class="provider-reason">Reason: ${escapeHtml(provider.reasons.join("; "))}</p>` : ""}
+      <div class="provider-metrics">
+        <span>API key: ${escapeHtml(provider.apiKey)}</span>
+        <span>Requests ${provider.requests}</span>
+        <span>Matches ${provider.matches}</span>
+        <span>Skipped ${provider.skipped}</span>
+        <span>Failures ${provider.failures}</span>
+        <span>Avg lookup ${provider.averageLookupTimeMs === null ? "—" : `${provider.averageLookupTimeMs} ms`}</span>
+      </div>
+      ${provider.lastSkipReason ? `<p class="hint">Last skipped: ${escapeHtml(provider.lastSkipReason)}</p>` : ""}
+      <p class="hint">Last failure: ${provider.lastFailure ? escapeHtml(provider.lastFailure) : "—"}</p>
+    </div>`).join("");
+}
+
+function renderProviderRegistry() {
+  for (const selector of ["#provider-usage-dashboard", "#metadata-usage-providers"]) {
+    const target = $(selector);
+    if (target) target.innerHTML = providerUsageMarkup();
+  }
+}
+
+async function loadProviderUsage() {
+  try {
+    const { overview, providers } = await api("/api/v1/metadata/usage");
+    providerView.overview = overview || providers || [];
+    renderProviderRegistry();
+  } catch (error) {
+    for (const selector of ["#provider-usage-dashboard", "#metadata-usage-providers"]) {
+      const target = $(selector);
+      if (target) target.innerHTML = `<div class="empty-state">Provider usage could not be loaded: ${escapeHtml(error.message)}</div>`;
+    }
+  }
+}
+
+async function loadMediaIdentification() {
+  const status = $("#media-identification-status");
+  try {
+    const { stats } = await api("/api/v1/identification/stats");
+    const markup = [
+      ["Movies identified", stats.moviesIdentified],
+      ["TV episodes identified", stats.tvEpisodesIdentified],
+      ["Music CDs identified", stats.musicCdsIdentified],
+      ["Automatic matches", stats.automaticMatches],
+      ["Review-required matches", stats.reviewRequiredMatches],
+      ["Manual matches", stats.manualMatches]
+    ].map(([label, value]) => tvStat(label, value)).join("");
+    $("#media-identification-stats").innerHTML = markup;
+    $("#media-statistics").innerHTML = markup + tvStat("TV series identified", stats.tvSeriesIdentified);
+    status.textContent = "Counts come from saved disc identifications; review-required matches are items still waiting in the Review Queue.";
+  } catch (error) {
+    $("#media-identification-stats").innerHTML = "";
+    $("#media-statistics").innerHTML = "";
+    status.textContent = `Identification statistics could not be loaded: ${error.message}`;
+  }
 }
 
 const identificationStatusLabels = {
@@ -1065,34 +1209,80 @@ function showIdentifySelection(selected, season, disc, discName) {
   $("#identify-save").disabled = false;
 }
 
-function renderIdentifyResults(candidates) {
-  $("#identify-results").innerHTML = candidates.map((candidate, index) => `
+const REVIEW_LABELS = {
+  search: "Search",
+  searching: "Searching metadata providers...",
+  results: "Search results",
+  noResults: "No matches found.",
+  manualToggle: "Can't find it? Enter a title manually",
+  manualLabel: "Manual title (fallback)",
+  confirm: "Confirm Selection",
+  confirmContinue: "Confirm & Continue",
+  match: "match",
+  resumed: "Processing resumed from preserved media; no disc is required.",
+  queued: "Saved. Processing will resume after the active job.",
+  blocked: "Saved, but the manual media classification must be set to TV Series before publishing."
+};
+
+// The single completion path for every review item, whatever its media type.
+async function completeReviewItem(itemId, body) {
+  return api(`/api/v1/review/items/${encodeURIComponent(itemId)}/complete`, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+function notifyReviewCompletion(result, savedMessage) {
+  if (result.continuation === "started") notify(REVIEW_LABELS.resumed);
+  else if (result.continuation === "queued") notify(REVIEW_LABELS.queued);
+  else if (result.continuation === "blocked") notify(REVIEW_LABELS.blocked, true);
+  else notify(savedMessage);
+}
+
+function renderReviewCandidates(candidates) {
+  return candidates.map((candidate, index) => `
     <button type="button" class="identify-result" data-index="${index}">
       ${candidate.posterUrl ? `<img src="${escapeHtml(candidate.posterUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="identify-poster-missing">No poster</span>'}
       <span class="identify-result-body">
         <b>${escapeHtml(candidate.title)}</b>
-        <small>${candidate.year ? escapeHtml(candidate.year) : "Year unknown"} · ${candidate.seasonCount ? `${escapeHtml(candidate.seasonCount)} season${candidate.seasonCount === 1 ? "" : "s"}` : "Seasons not reported"}</small>
-        <small>${escapeHtml(candidate.providerName)} · ${diagnosticConfidence(candidate.confidence)} match</small>
+        <small>${candidate.year ? escapeHtml(candidate.year) : "Year unknown"}${candidate.detail ? ` · ${escapeHtml(candidate.detail)}` : ""}</small>
+        <small>${escapeHtml(candidate.providerName)} · ${diagnosticConfidence(candidate.confidence)} ${REVIEW_LABELS.match}</small>
         ${candidate.overview ? `<small class="identify-overview">${escapeHtml(candidate.overview.slice(0, 160))}</small>` : ""}
       </span>
     </button>`).join("");
+}
+
+function reviewSearchSummary(data) {
+  const summary = data.queries.map((entry) => `${entry.providerId}: ${entry.failure ? `failed (${entry.failure})` : `${entry.matches} matches`} for "${entry.query}"`).join("; ");
+  return data.candidates.length ? summary : `${REVIEW_LABELS.noResults} ${data.emptyReason || summary}`;
+}
+
+/** Shared search step for every media type's review workflow. */
+async function runReviewSearch(mediaType, query, statusElement, resultsElement) {
+  statusElement.textContent = REVIEW_LABELS.searching;
+  resultsElement.innerHTML = "";
+  try {
+    const data = await api("/api/v1/review/search", { method: "POST", body: JSON.stringify({ mediaType, query }) });
+    resultsElement.innerHTML = renderReviewCandidates(data.candidates);
+    statusElement.textContent = reviewSearchSummary(data);
+    return data.candidates;
+  } catch (error) {
+    statusElement.textContent = error.message;
+    return [];
+  }
+}
+
+function renderIdentifyResults(candidates) {
   identifyState.candidates = candidates;
 }
 
 async function runIdentifySearch() {
   const query = $("#identify-search").value.trim();
   if (!query) return;
-  const status = $("#identify-status");
-  status.textContent = "Searching metadata providers...";
-  $("#identify-results").innerHTML = "";
-  try {
-    const data = await api("/api/v1/tv/identify/search", { method: "POST", body: JSON.stringify({ query }) });
-    renderIdentifyResults(data.candidates);
-    const summary = data.queries.map((entry) => `${entry.providerId}: ${entry.failure ? `failed (${entry.failure})` : `${entry.matches} matches`} for "${entry.query}"`).join("; ");
-    status.textContent = data.candidates.length ? summary : `No series found. ${summary}`;
-  } catch (error) {
-    status.textContent = error.message;
-  }
+  const candidates = await runReviewSearch("tv", query, $("#identify-status"), $("#identify-results"));
+  renderIdentifyResults(candidates.map((candidate) => ({
+    ...candidate, seriesId: candidate.id, seasonCount: candidate.attributes?.seasonCount || 0
+  })));
 }
 
 async function openIdentifyDialog({ planId = null, taskId = null, fingerprint = null, suggested = "", focus = "series" }) {
@@ -1185,10 +1375,7 @@ $("#identify-disc-form").addEventListener("submit", async (event) => {
       ? `/api/v1/tv/plans/${encodeURIComponent(identifyState.planId)}/identification`
       : `/api/v1/discs/${encodeURIComponent(identifyState.fingerprint)}/identification`;
     if (identifyState.taskId) {
-      await api(`/api/v1/tv/matching/${encodeURIComponent(identifyState.taskId)}/identification`, {
-        method: "PUT", body: JSON.stringify(body)
-      });
-      await api(`/api/v1/tv/matching/${encodeURIComponent(identifyState.taskId)}/continue`, { method: "POST" });
+      await completeReviewItem(`tv-matching-task:${identifyState.taskId}`, { identification: body, publish: "required" });
     } else {
       await api(path, { method: "PUT", body: JSON.stringify(body) });
     }
@@ -1849,19 +2036,16 @@ async function saveTvTaskAssignments(button) {
         episodeTitles: selectedOptions.map((option) => option.dataset.title || "")
       };
     });
-    const result = await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/assignments`, {
-      method: "PUT",
-      body: JSON.stringify({ assignments })
-    });
-    const progress = result.progress;
+    const result = await completeReviewItem(`tv-matching-task:${taskId}`, { assignments });
+    const progress = result.item.tv.progress;
     if (result.continuation === "started") {
-      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Publishing has resumed automatically.`);
+      notify(`Saved ${progress.matched} of ${progress.total} matches. Publishing has resumed automatically.`);
     } else if (result.continuation === "queued") {
-      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Publishing will resume after the active job.`);
+      notify(`Saved ${progress.matched} of ${progress.total} matches. Publishing will resume after the active job.`);
     } else if (result.continuation === "blocked") {
-      notify("Matches were saved, but the manual media classification must be set to TV Series before publishing.", true);
+      notify(REVIEW_LABELS.blocked, true);
     } else {
-      notify(`Saved ${progress.matchedCount} of ${progress.totalCount} matches. Unmatched tracks remain safely staged.`);
+      notify(`Saved ${progress.matched} of ${progress.total} matches. Unmatched tracks remain safely staged.`);
     }
     await loadTvReviews();
   } catch (error) {
@@ -2125,24 +2309,36 @@ function renderReviewItem(item) {
   </article>`;
 }
 
-function renderReviewJob(item, storage = {}) {
+const reviewJobUi = new Map();
+
+function renderReviewJob(item, storage = {}, unified = undefined) {
   const title = typeof item.metadata?.title === "string" && item.metadata.title
     ? item.metadata.title
     : item.metadata?.suggestedTitle || item.discLabel || item.originalJobId;
   const movieTitleConfirmed = item.metadata?.movieIdentificationConfirmed === true;
-  const generatedUnknownTitle = typeof item.metadata?.title === "string" &&
-    /^Unknown Title \d{4}-\d{2}-\d{2}$/i.test(item.metadata.title.trim());
-  const needsMovieConfirmation = item.metadata?.movieIdentificationRequiresConfirmation === true ||
-    generatedUnknownTitle ||
-    (typeof item.metadata?.title === "string" && item.metadata.title.trim() &&
-      item.metadata.namingSource !== "Metadata match" && !movieTitleConfirmed);
+  const needsMovieConfirmation = unified
+    ? unified.kind === "identification"
+    : item.metadata?.movieIdentificationRequiresConfirmation === true;
   const movieCandidates = Array.isArray(item.metadata?.movieCandidates)
     ? item.metadata.movieCandidates.filter((candidate) =>
       candidate && typeof candidate.title === "string" && candidate.title.trim())
     : [];
+  const awaitingConfirmation = item.status === "pending" && needsMovieConfirmation && !movieTitleConfirmed;
+  const reviewCandidates = movieCandidates.map((candidate) => ({
+    mediaType: "movie",
+    provider: candidate.providerId || "metadata",
+    providerName: candidate.providerId === "metadata.tmdb.movie" ? "TMDB" : (candidate.providerId || "Metadata"),
+    id: String(candidate.id ?? candidate.title),
+    title: candidate.metadataTitle || candidate.title,
+    ...(candidate.year ? { year: candidate.year } : {}),
+    confidence: Number(candidate.confidence || 0),
+    attributes: { confirmTitle: candidate.title }
+  }));
+  if (awaitingConfirmation) reviewJobUi.set(item.id, { candidates: reviewCandidates, selected: null });
   const actions = item.status === "pending"
-    ? `${needsMovieConfirmation && !movieTitleConfirmed ? "" :
-      `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Edit Title</button>
+    ? `${awaitingConfirmation
+      ? `<button class="button primary review-job-action" data-action="confirm-continue" data-id="${escapeHtml(item.id)}">${REVIEW_LABELS.confirmContinue}</button>`
+      : `<button class="button secondary review-job-action" data-action="open" data-id="${escapeHtml(item.id)}">Edit Title</button>
       <button class="button primary review-job-action" data-action="continue" data-id="${escapeHtml(item.id)}">${needsMovieConfirmation ? "Publish Confirmed Movie" : "Approve &amp; Continue"}</button>`}
       <button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete</button>
       <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
@@ -2150,6 +2346,9 @@ function renderReviewJob(item, storage = {}) {
       ? `<button class="button danger review-job-action" data-action="delete" data-id="${escapeHtml(item.id)}">Delete</button>
         <button class="button secondary review-job-action" data-action="clear" data-id="${escapeHtml(item.id)}">Clear Notification</button>`
       : "";
+  const suggestedTitle = typeof item.metadata?.title === "string" && item.metadata.title
+    ? item.metadata.title
+    : item.metadata?.suggestedTitle || title;
   return `<article class="review-item">
     <div class="review-heading"><div><h3>${escapeHtml(title)}</h3>
       <span class="list-sub">${escapeHtml(item.discType)}${item.discLabel ? ` · ${escapeHtml(item.discLabel)}` : ""} · ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div>
@@ -2159,18 +2358,27 @@ function renderReviewJob(item, storage = {}) {
     ${needsMovieConfirmation ? `<section class="movie-review-evidence">
       <h4>Movie Evidence</h4>
       <p>✓ Disc volume name: ${escapeHtml(item.metadata.filesystemVolumeName || "Unavailable")}</p>
-      ${movieCandidates.length ? `<label>Metadata candidates<select class="movie-review-candidate" data-id="${escapeHtml(item.id)}">
-        <option value="">Choose a candidate or enter a title</option>
-        ${movieCandidates.map((candidate, index) => `<option value="${index}" data-title="${escapeHtml(candidate.title)}">${escapeHtml(candidate.title)} · ${Math.round(Number(candidate.confidence || 0) * 100)}%</option>`).join("")}
-      </select></label><p>✓ Metadata candidate: ${escapeHtml(movieCandidates[0].title)}</p>` : "<p>✗ No metadata candidates found</p>"}
+      ${movieCandidates.length ? `<p>✓ Metadata candidate: ${escapeHtml(movieCandidates[0].title)}</p>` : "<p>✗ No metadata candidates found</p>"}
       <p>✗ Confidence below threshold (${escapeHtml(Number(item.metadata.movieIdentificationEvidence?.confidence ?? 0).toFixed(2))} &lt; ${escapeHtml(Number(item.metadata.movieIdentificationEvidence?.minimumConfidence ?? 0).toFixed(2))})</p>
       <p>Action: ${movieTitleConfirmed ? "Title confirmed by user" : "Manual confirmation required"}</p>
       <p class="list-sub">Naming source: ${escapeHtml(item.metadata.namingSource || "Fallback")}</p>
     </section>` : ""}
+    ${awaitingConfirmation ? `<section class="review-search" data-media-type="movie">
+      <div class="form-row">
+        <label>${REVIEW_LABELS.search}<input data-review-query autocomplete="off" maxlength="200" placeholder="Movie title" value="${escapeHtml(item.metadata?.movieIdentificationEvidence?.metadataQuery || suggestedTitle)}"></label>
+        <button class="button secondary review-job-action" type="button" data-action="search" data-id="${escapeHtml(item.id)}">${REVIEW_LABELS.search}</button>
+      </div>
+      <p class="inline-info" data-review-status role="status">${reviewCandidates.length ? `${reviewCandidates.length} candidate${reviewCandidates.length === 1 ? "" : "s"} found during processing. Select one, refine the search, or enter a title manually.` : "No candidates were found during processing. Refine the search or enter a title manually."}</p>
+      <div class="identify-results" data-review-results>${renderReviewCandidates(reviewCandidates)}</div>
+      <button class="button secondary review-job-action" type="button" data-action="manual" data-id="${escapeHtml(item.id)}">${REVIEW_LABELS.manualToggle}</button>
+      <div class="hidden" data-review-manual>
+        <label>${REVIEW_LABELS.manualLabel}<input data-review-title type="text" maxlength="200" value="${escapeHtml(suggestedTitle)}"></label>
+      </div>
+    </section>` : ""}
     <div class="tv-actions">${actions}</div>
-    ${item.status === "pending" ? `<div class="review-job-editor${needsMovieConfirmation && !movieTitleConfirmed ? "" : " hidden"}" data-review-editor="${escapeHtml(item.id)}">
-      <label>${needsMovieConfirmation ? "Confirmed movie title" : "Title"}<input data-review-title type="text" maxlength="200" value="${escapeHtml(typeof item.metadata?.title === "string" ? item.metadata.title : item.metadata?.suggestedTitle || title)}"></label>
-      <button class="button ${needsMovieConfirmation ? "primary" : "secondary"} review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">${needsMovieConfirmation ? "Confirm Title" : "Save Metadata"}</button>
+    ${item.status === "pending" && !awaitingConfirmation ? `<div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
+      <label>Title<input data-review-title type="text" maxlength="200" value="${escapeHtml(suggestedTitle)}"></label>
+      <button class="button secondary review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">Save Metadata</button>
     </div>` : ""}
   </article>`;
 }
@@ -2178,6 +2386,13 @@ function renderReviewJob(item, storage = {}) {
 async function loadReviewJobs() {
   const requestId = ++state.reviewJobsRequestId;
   const { reviewJobs } = await api("/api/v1/review-jobs");
+  let unifiedById = new Map();
+  try {
+    const { items: unifiedItems } = await api("/api/v1/review/items?source=review-job");
+    unifiedById = new Map(unifiedItems.map((entry) => [entry.source.id, entry]));
+  } catch (error) {
+    notify(`Unified review queue is unavailable: ${error.message}`, true);
+  }
   if (requestId !== state.reviewJobsRequestId) return;
   let sizes = [];
   try {
@@ -2188,7 +2403,7 @@ async function loadReviewJobs() {
   if (requestId !== state.reviewJobsRequestId) return;
   const sizesById = new Map(sizes.map((item) => [item.reviewId, item]));
   $("#review-jobs-list").innerHTML = reviewJobs.length
-    ? reviewJobs.map((item) => renderReviewJob(item, sizesById.get(item.id))).join("")
+    ? reviewJobs.map((item) => renderReviewJob(item, sizesById.get(item.id), unifiedById.get(item.id))).join("")
     : '<div class="empty-state">No extracted media is waiting for review.</div>';
 }
 
@@ -2444,6 +2659,8 @@ async function loadSettings() {
   form.elements.namedItem("metadataEnabled").checked = data.settings.metadataEnabled;
   form.elements.namedItem("movieIdentificationMinimumConfidence").value =
     data.settings.movieIdentificationMinimumConfidence;
+  form.elements.namedItem("makemkvDiscoveryTimeoutMs").value = data.settings.makemkvDiscoveryTimeoutMs ?? 300000;
+  form.elements.namedItem("makemkvDiscoveryAbsoluteTimeoutMs").value = data.settings.makemkvDiscoveryAbsoluteTimeoutMs ?? 900000;
   form.elements.namedItem("musicMetadataEnabled").checked = data.settings.musicMetadataEnabled;
   form.elements.namedItem("lidarrEnabled").checked = data.settings.lidarrEnabled;
   state.outputDestinations = data.settings.outputDestinations;
@@ -2471,6 +2688,7 @@ async function loadSettings() {
     "albumFolderTemplate"
   ]) form.elements.namedItem(key).value = libraryMetadata[key];
   updateLibraryTemplateFields(form);
+  providerView.settings = data.settings;
   await loadTvMetadataSettings();
   $("#lidarr-key-status").textContent = data.settings.lidarrApiKeyConfigured
     ? "A Lidarr API key is saved. It is never displayed."
@@ -2892,7 +3110,7 @@ function showPage(page, activeNavButton = null) {
     dashboard: "Dashboard",
     diagnostics: "Disc Diagnostics",
     history: "History",
-    "tv-analysis": "TV Identification",
+    "tv-analysis": "Identification & Matching",
     "tv-reviews": "Review Queue",
     "tv-validation": "Activity & Insights",
     "storage-manager": "Storage Manager",
@@ -3045,7 +3263,32 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
       card.querySelector(".review-job-editor").classList.toggle("hidden");
       return;
     }
-    if (action === "save") {
+    if (action === "manual") {
+      card.querySelector("[data-review-manual]").classList.toggle("hidden");
+      return;
+    }
+    if (action === "search") {
+      const query = card.querySelector("[data-review-query]").value.trim();
+      if (!query) return;
+      const ui = reviewJobUi.get(id) ?? { candidates: [], selected: null };
+      ui.selected = null;
+      ui.candidates = await runReviewSearch("movie", query,
+        card.querySelector("[data-review-status]"), card.querySelector("[data-review-results]"));
+      reviewJobUi.set(id, ui);
+      return;
+    }
+    if (action === "confirm-continue") {
+      const manual = card.querySelector("[data-review-manual]");
+      const selected = reviewJobUi.get(id)?.selected;
+      const manualTitle = card.querySelector("[data-review-title]").value.trim();
+      const title = !manual.classList.contains("hidden") ? manualTitle : (selected?.attributes?.confirmTitle ?? selected?.title ?? "");
+      if (!title) {
+        notify("Select a search result or enter a title manually before confirming.", true);
+        return;
+      }
+      const result = await completeReviewItem(`review-job:${id}`, { title });
+      notifyReviewCompletion(result, REVIEW_LABELS.resumed);
+    } else if (action === "save") {
       const title = card.querySelector("[data-review-title]").value.trim();
       await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
         method: "POST",
@@ -3054,15 +3297,9 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
       notify("Review metadata saved.");
     } else if (action === "continue") {
       const editor = card.querySelector(".review-job-editor");
-      if (!editor.classList.contains("hidden")) {
-        const title = card.querySelector("[data-review-title]").value.trim();
-        await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/metadata`, {
-          method: "POST",
-          body: JSON.stringify({ title })
-        });
-      }
-      const result = await api(`/api/v1/review-jobs/${encodeURIComponent(id)}/continue`, { method: "POST" });
-      notify(result.message);
+      const title = !editor.classList.contains("hidden") ? card.querySelector("[data-review-title]").value.trim() : "";
+      const result = await completeReviewItem(`review-job:${id}`, title ? { title } : {});
+      notifyReviewCompletion(result, REVIEW_LABELS.resumed);
     } else if (action === "delete") {
       await requestReviewDeletion("review-job", id);
       return;
@@ -3078,14 +3315,21 @@ $("#review-jobs-list").addEventListener("click", async (event) => {
   }
 });
 
-$("#review-jobs-list").addEventListener("change", (event) => {
-  const select = event.target.closest(".movie-review-candidate");
-  if (!select) return;
-  const title = select.selectedOptions[0]?.dataset.title;
-  if (!title) return;
-  const card = select.closest(".review-item");
-  const titleInput = card.querySelector("[data-review-title]");
-  if (titleInput) titleInput.value = title;
+$("#review-jobs-list").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !event.target.matches("[data-review-query]")) return;
+  event.preventDefault();
+  event.target.closest(".review-search").querySelector('[data-action="search"]').click();
+});
+
+$("#review-jobs-list").addEventListener("click", (event) => {
+  const result = event.target.closest(".identify-result");
+  if (!result) return;
+  const card = result.closest(".review-item");
+  const ui = reviewJobUi.get(card.querySelector("[data-id]")?.dataset.id);
+  if (!ui) return;
+  ui.selected = ui.candidates[Number(result.dataset.index)] ?? null;
+  card.querySelectorAll(".identify-result").forEach((item) => item.classList.toggle("selected", item === result));
+  card.querySelector("[data-review-manual]")?.classList.add("hidden");
 });
 
 document.addEventListener("click", async (event) => {
@@ -3660,6 +3904,8 @@ $("#settings-form").addEventListener("submit", async (event) => {
     automationMode: values.get("automationMode"),
     metadataEnabled: form.elements.namedItem("metadataEnabled").checked,
     movieIdentificationMinimumConfidence: Number(values.get("movieIdentificationMinimumConfidence")),
+    makemkvDiscoveryTimeoutMs: Number(values.get("makemkvDiscoveryTimeoutMs")),
+    makemkvDiscoveryAbsoluteTimeoutMs: Number(values.get("makemkvDiscoveryAbsoluteTimeoutMs")),
     musicMetadataEnabled: form.elements.namedItem("musicMetadataEnabled").checked,
     musicBrainzContactEmail: values.get("musicBrainzContactEmail"),
     libraryMetadata: {

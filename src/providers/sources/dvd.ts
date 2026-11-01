@@ -1,6 +1,12 @@
 import type { MediaSourceCandidate, MediaSourceProvider, SourceAcquisitionOptions } from "../../contracts/media-source.js";
 import type { ProviderDescriptor } from "../../contracts/provider.js";
-import { inspectDisc, readFilesystemVolumeName, ripTitle } from "../../media.js";
+import {
+  DEFAULT_MAKEMKV_DISCOVERY_ABSOLUTE_TIMEOUT_MS,
+  DEFAULT_MAKEMKV_DISCOVERY_TIMEOUT_MS,
+  inspectDisc,
+  readFilesystemVolumeName,
+  ripTitle
+} from "../../media.js";
 import { executableAvailable } from "../../executable.js";
 
 const descriptor: ProviderDescriptor = {
@@ -12,6 +18,13 @@ const descriptor: ProviderDescriptor = {
 const makeMkv = process.env.MAKEMKV_COMMAND ?? "makemkvcon";
 
 export class MakeMkvDvdSourceProvider implements MediaSourceProvider {
+  constructor(
+    private readonly discoveryTimeouts: () => { inactivityMs: number; absoluteMs: number } = () => ({
+      inactivityMs: DEFAULT_MAKEMKV_DISCOVERY_TIMEOUT_MS,
+      absoluteMs: DEFAULT_MAKEMKV_DISCOVERY_ABSOLUTE_TIMEOUT_MS
+    })
+  ) {}
+
   describe(): ProviderDescriptor {
     return descriptor;
   }
@@ -26,7 +39,8 @@ export class MakeMkvDvdSourceProvider implements MediaSourceProvider {
   async dispose(): Promise<void> {}
 
   async inspect(sourceId: string, signal?: AbortSignal): Promise<MediaSourceCandidate> {
-    const disc = await inspectDisc(`dev:${sourceId}`, signal);
+    const timeouts = this.discoveryTimeouts();
+    const disc = await inspectDisc(`dev:${sourceId}`, signal, timeouts.inactivityMs, timeouts.absoluteMs);
     const filesystemVolumeName = await readFilesystemVolumeName(sourceId, signal);
     const attributes: Record<string, string> = {
       ...(filesystemVolumeName ? { filesystemVolumeName } : {}),

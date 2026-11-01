@@ -26,10 +26,14 @@ import { resolveMusicBrainzRelease, type MusicAlbumMetadata } from "./music-meta
 import { checkForUpdate, clearUpdatePending, getInstalledVersion, getReleaseNotes, getUpdateDiagnostics, getUpdateStatus, isUpdatePending, queueUpdate, verifyRunningVersion, type UpdateCheck } from "./updater.js";
 import type { AppSettings, EncoderChoice, Job, LibraryMetadataSettings, OutputFormat } from "./model.js";
 import { tvMetadataProviderRegistry } from "./bootstrap/tv-metadata-providers.js";
-import { tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
+import { metadataUsageService, tvMetadataLookupService } from "./bootstrap/tv-metadata-runtime.js";
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
 import { tvWorkflowPolicy } from "./application/tv-workflow-service.js";
-import { normalizeDiscName, searchVariants } from "./application/tv-name-normalization.js";
+import { normalizeDiscName } from "./application/tv-name-normalization.js";
+import type { MediaReviewSearchService } from "./application/media-review-search-service.js";
+import { MediaReviewQueueService } from "./application/media-review-queue-service.js";
+import { ReviewJobItemAdapter, TvMatchingTaskItemAdapter, TvPlanItemAdapter, parseTvIdentification, type TvIdentification } from "./application/media-review-item-adapters.js";
+import { MediaReviewError } from "./domain/media-review.js";
 import { repositories } from "./db.js";
 import { KNOWN_DISK_TYPES, OVERRIDE_REASONS, CLASSIFICATION_REVIEW_STATUSES } from "./domain/classification.js";
 import { exportClassificationJson, exportClassificationText } from "./application/classification-export.js";
@@ -61,7 +65,7 @@ import {
   tvStagingDirectory,
   tvStagingPathSource
 } from "./storage-paths.js";
-import { tvMatchingProgress, tvMatchingReviewStatus, type TvMatchingContinuationSource, type TvMatchingTask } from "./domain/tv-matching.js";
+import { tvMatchingProgress, tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingContinuationSource, type TvMatchingTask } from "./domain/tv-matching.js";
 import { ReviewQueueCleanupService } from "./application/review-queue-cleanup-service.js";
 import {
   StorageLifecycleService,
@@ -103,6 +107,11 @@ let tvMatchingActions: TvMatchingActions | undefined;
 
 export function setReviewJobActions(actions: ReviewJobActions): void {
   reviewJobActions = actions;
+}
+
+let reviewSearchService: MediaReviewSearchService | undefined;
+export function setReviewSearchService(service: MediaReviewSearchService): void {
+  reviewSearchService = service;
 }
 
 export function setDiscApprovalAction(action: (item: ReviewItem) => Promise<void>): void {
@@ -923,32 +932,31 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review-jobs/:id/met
 app.post<{ Params: { id: string } }>("/api/v1/review-jobs/:id/continue", {
   config: { rateLimit: { max: 120, timeWindow: "1 minute" } }
 }, async (request, reply) => {
-  const reviewJob = repositories.reviewJobs.get(request.params.id);
-  if (!reviewJob) return reply.code(404).send({ error: "Review job not found" });
-  if (reviewJob.status !== "pending") return reply.code(409).send({ error: `Cannot continue a ${reviewJob.status} review job` });
-  const generatedUnknownTitle = typeof reviewJob.metadata.title === "string" &&
-    /^Unknown Title \d{4}-\d{2}-\d{2}$/i.test(reviewJob.metadata.title);
-  const storedTitle = typeof reviewJob.metadata.title === "string" ? reviewJob.metadata.title.trim() : "";
-  const needsMovieConfirmation = reviewJob.metadata.movieIdentificationRequiresConfirmation === true ||
-    generatedUnknownTitle ||
-    (storedTitle.length > 0 && reviewJob.metadata.namingSource !== "Metadata match" &&
-      reviewJob.metadata.movieIdentificationConfirmed !== true);
-  if (needsMovieConfirmation &&
-    reviewJob.metadata.movieIdentificationConfirmed !== true) {
-    return reply.code(409).send({ error: "Confirm the movie title before publishing" });
+  try {
+    await mediaReviewQueue.complete(`review-job:${request.params.id}`, {});
+  } catch (error) {
+    return sendMediaReviewError(reply, error);
   }
-  if (!reviewJobActions) return reply.code(503).send({ error: "Review processing service is unavailable" });
-  if (activeJob()) return reply.code(409).send({ error: "Another media job is already active" });
-  repositories.reviewJobs.update(reviewJob.id, { status: "retrying" });
+  return reply.code(202).send({ reviewJob: repositories.reviewJobs.get(request.params.id), message: "Processing resumed from preserved media; no disc is required." });
+});
+
+/** Shared by the legacy review-job continue route and unified review completion. */
+function resumeReviewJob(id: string): void {
+  if (!reviewJobActions) throw new MediaReviewError("unavailable", "Review processing service is unavailable");
+  if (repositories.reviewJobs.get(id)?.status !== "pending") {
+    throw new MediaReviewError("conflict", "Review job is no longer pending");
+  }
+  if (activeJob()) throw new MediaReviewError("conflict", "Another media job is already active");
+  const actions = reviewJobActions;
+  repositories.reviewJobs.update(id, { status: "retrying" });
   events.emit("status");
-  void reviewJobActions.continue(reviewJob.id).catch((error: unknown) => {
+  void actions.continue(id).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "Review processing failed";
-    repositories.reviewJobs.update(reviewJob.id, { status: "pending", failureReason: message });
-    app.log.error({ err: error, reviewJobId: reviewJob.id }, "Review processing could not be continued");
+    repositories.reviewJobs.update(id, { status: "pending", failureReason: message });
+    app.log.error({ err: error, reviewJobId: id }, "Review processing could not be continued");
     events.emit("status");
   });
-  return reply.code(202).send({ reviewJob: repositories.reviewJobs.get(reviewJob.id), message: "Processing resumed from preserved media; no disc is required." });
-});
+}
 
 async function clearReviewJobNotification(id: string, reply: FastifyReply) {
   const reviewJob = repositories.reviewJobs.get(id);
@@ -1259,117 +1267,226 @@ app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/plans/:id/recover
   }
 });
 
-function saveIdentification(
-  fingerprint: string,
-  rawBody: unknown
-): { error: string; status: number } | { recovery: DiscRecovery } {
-  if (typeof rawBody !== "object" || rawBody === null || Array.isArray(rawBody)) {
-    return { status: 400, error: "Identification must be an object" };
-  }
-  const body = rawBody as Record<string, unknown>;
-  const allowed = ["seriesName", "provider", "providerId", "seasonNumber", "discNumber", "discName", "year", "posterUrl", "overview"];
-  if (Object.keys(body).some((key) => !allowed.includes(key))) {
-    return { status: 400, error: "Identification contains unsupported fields" };
-  }
-  const providerMap: Record<string, MetadataProviderId> = { tvdb: "tvdb", tmdb: "tmdb", "tmdb-tv": "tmdb", imdb: "imdb", manual: "manual" };
-  const provider = typeof body.provider === "string" ? providerMap[body.provider] : undefined;
-  if (typeof body.seriesName !== "string" || !body.seriesName.trim() || body.seriesName.length > 200) {
-    return { status: 400, error: "Series name is required (1 to 200 characters)" };
-  }
-  if (!provider) return { status: 400, error: "Provider must be tvdb, tmdb, imdb, or manual" };
-  if (body.providerId !== undefined && body.providerId !== null &&
-    (typeof body.providerId !== "string" || !body.providerId.trim() || body.providerId.length > 200)) {
-    return { status: 400, error: "Provider ID must contain 1 to 200 characters" };
-  }
-  if (!Number.isInteger(body.seasonNumber) || Number(body.seasonNumber) < 0 || Number(body.seasonNumber) > 100) {
-    return { status: 400, error: "Season number must be an integer from 0 to 100" };
-  }
-  if (body.discNumber !== undefined && body.discNumber !== null &&
-    (!Number.isInteger(body.discNumber) || Number(body.discNumber) < 1 || Number(body.discNumber) > 100)) {
-    return { status: 400, error: "Disc number must be an integer from 1 to 100 when provided" };
-  }
-  if (body.discName !== undefined && body.discName !== null &&
-    (typeof body.discName !== "string" || body.discName.length > 200)) {
-    return { status: 400, error: "Disc name must not exceed 200 characters" };
-  }
-  if (body.year !== undefined && body.year !== null &&
-    (!Number.isInteger(body.year) || Number(body.year) < 1900 || Number(body.year) > 2200)) {
-    return { status: 400, error: "Year is invalid" };
-  }
-  if (body.overview !== undefined && body.overview !== null &&
-    (typeof body.overview !== "string" || body.overview.length > 4000)) {
-    return { status: 400, error: "Overview is too long" };
-  }
-  const posterReferences = typeof body.posterUrl === "string" && body.posterUrl
-    ? [{ kind: "poster", url: body.posterUrl }] : [];
-  if (posterReferences.length > 0 && !validArtworkReferences(posterReferences)) {
-    return { status: 400, error: "Poster URL is not an allowed artwork source" };
-  }
+function allowedPosterUrl(url: string): boolean {
+  return validArtworkReferences([{ kind: "poster", url }]);
+}
+
+function persistTvIdentification(fingerprint: string, identification: TvIdentification): DiscRecovery {
   try {
     repositories.discRecovery.recordDetection(fingerprint, "dvd", "tv_series");
     const username = repositories.setup.get().adminUsername;
-    if (!username) return { status: 503, error: "Administrator identity is unavailable" };
+    if (!username) throw new MediaReviewError("unavailable", "Administrator identity is unavailable");
     const recovery = repositories.discRecovery.update(fingerprint, {
       finalMediaType: "tv_series",
       mediaTypeOverrideAudit: {
         username,
         reason: "Confirmed guided TV identification"
       },
-      metadataProvider: provider,
-      providerId: (body.providerId as string | null | undefined) ?? null,
-      seriesName: body.seriesName.trim(),
-      seasonNumber: Number(body.seasonNumber),
-      discNumber: body.discNumber === undefined || body.discNumber === null ? null : Number(body.discNumber),
-      discName: typeof body.discName === "string" && body.discName.trim() ? body.discName.trim() : null,
+      metadataProvider: identification.provider,
+      providerId: identification.providerId,
+      seriesName: identification.seriesName,
+      seasonNumber: identification.seasonNumber,
+      discNumber: identification.discNumber,
+      discName: identification.discName,
       identifiedBy: "user",
       importedMetadata: {
         entityType: "series",
-        title: body.seriesName.trim(),
-        ...(typeof body.year === "number" ? { year: body.year } : {}),
-        ...(typeof body.overview === "string" ? { overview: body.overview } : {})
+        title: identification.seriesName,
+        ...(identification.year === undefined ? {} : { year: identification.year }),
+        ...(identification.overview === undefined ? {} : { overview: identification.overview })
       },
-      artworkReferences: posterReferences
+      artworkReferences: identification.posterUrl ? [{ kind: "poster", url: identification.posterUrl }] : []
     });
-    if (!recovery) return { status: 404, error: "Disc recovery record not found" };
+    if (!recovery) throw new MediaReviewError("not-found", "Disc recovery record not found");
     repositories.recovery.clearInsertedDisc();
-    return { recovery };
+    return recovery;
   } catch (error) {
-    return { status: 400, error: error instanceof Error ? error.message : "Identification could not be saved" };
+    if (error instanceof MediaReviewError) throw error;
+    throw new MediaReviewError("invalid", error instanceof Error ? error.message : "Identification could not be saved");
   }
+}
+
+function saveIdentification(
+  fingerprint: string,
+  rawBody: unknown
+): { error: string; status: number } | { recovery: DiscRecovery } {
+  try {
+    return { recovery: persistTvIdentification(fingerprint, parseTvIdentification(rawBody, allowedPosterUrl)) };
+  } catch (error) {
+    if (error instanceof MediaReviewError) return { status: mediaReviewErrorStatus[error.code], error: error.message };
+    throw error;
+  }
+}
+
+/** Persists a TV task identification, discarding episode matches when the series or season changed. */
+function persistTaskIdentification(task: TvMatchingTask, identification: TvIdentification) {
+  const priorRecovery = repositories.discRecovery.get(task.fingerprint);
+  const recovery = persistTvIdentification(task.fingerprint, identification);
+  const identityChanged = priorRecovery?.seriesName !== recovery.seriesName ||
+    priorRecovery?.providerId !== recovery.providerId ||
+    priorRecovery?.seasonNumber !== recovery.seasonNumber;
+  const filesystemVolumeName = task.source.manifest.attributes?.filesystemVolumeName;
+  const volumeName = typeof filesystemVolumeName === "string" ? filesystemVolumeName.trim() : "";
+  const metadata = recovery.importedMetadata ?? {};
+  const knownLabels = new Set(Array.isArray(metadata.knownLabels)
+    ? metadata.knownLabels.filter((value): value is string => typeof value === "string") : []);
+  const knownVolumeNames = new Set(Array.isArray(metadata.knownVolumeNames)
+    ? metadata.knownVolumeNames.filter((value): value is string => typeof value === "string") : []);
+  if (task.source.label.trim()) knownLabels.add(task.source.label.trim());
+  if (volumeName) knownVolumeNames.add(volumeName);
+  const learnedRecovery = repositories.discRecovery.update(task.fingerprint, {
+    ...(identityChanged ? { mappings: [] } : {}),
+    importedMetadata: { ...metadata, knownLabels: [...knownLabels], knownVolumeNames: [...knownVolumeNames] }
+  });
+  if (!learnedRecovery) throw new MediaReviewError("conflict", "Identification was saved but series evidence could not be stored");
+  const assignments = identityChanged
+    ? task.assignments.map((assignment) => {
+      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = assignment;
+      return { ...unmatched, confirmed: false };
+    })
+    : task.assignments;
+  const updatedTask = repositories.tvMatchingTasks.update(task.jobId, {
+    assignments,
+    status: assignments.length ? "awaiting-mapping" : "awaiting-identification"
+  });
+  if (!updatedTask) throw new MediaReviewError("conflict", "Identification was saved but the staged disc could not be updated");
+  events.emit("status");
+  return { recovery: learnedRecovery, task: updatedTask };
+}
+
+function persistTaskAssignments(task: TvMatchingTask, assignments: TvMatchingAssignment[]): TvMatchingTask {
+  const updated = repositories.tvMatchingTasks.update(task.jobId, {
+    assignments,
+    status: tvMatchingReviewStatus(assignments),
+    failure: null
+  });
+  if (!updated) throw new MediaReviewError("not-found", "TV matching task could not be updated");
+  const mappings = assignments.flatMap((assignment) =>
+    assignment.confirmed && assignment.selectedEpisodes?.length
+      ? [{ trackId: assignment.trackId, episodes: assignment.selectedEpisodes }]
+      : []);
+  if (!repositories.discRecovery.update(task.fingerprint, { mappings })) {
+    throw new MediaReviewError("conflict", "Episode selections were saved, but disc recovery mappings could not be updated");
+  }
+  events.emit("status");
+  return updated;
+}
+
+const mediaReviewQueue = new MediaReviewQueueService();
+mediaReviewQueue.register(new ReviewJobItemAdapter(repositories.reviewJobs, () => reviewJobActions
+  ? { updateMetadata: async (id, patch) => {
+      if (repositories.reviewJobs.get(id)?.status !== "pending") {
+        throw new MediaReviewError("conflict", "Review job is no longer pending; its title can no longer change");
+      }
+      return reviewJobActions!.updateMetadata(id, patch);
+    }, resume: (id) => resumeReviewJob(id) }
+  : undefined));
+mediaReviewQueue.register(new TvMatchingTaskItemAdapter(repositories.tvMatchingTasks, repositories.discRecovery, {
+  saveIdentification: persistTaskIdentification,
+  saveAssignments: persistTaskAssignments,
+  hasActiveJob: () => Boolean(activeJob()),
+  continueTask: (jobId, source) => {
+    if (!tvMatchingActions) throw new MediaReviewError("unavailable", "TV matching service is unavailable");
+    void tvMatchingActions.continue(jobId, source).catch((error: unknown) => {
+      app.log.error({ err: error, jobId, source }, "TV matching continuation failed");
+    });
+  },
+  isAllowedPoster: allowedPosterUrl
+}));
+mediaReviewQueue.register(new TvPlanItemAdapter(repositories.tvProcessingPlans, (planId, reviewer) => {
+  const username = reviewer?.trim() || repositories.setup.get().adminUsername;
+  if (!username) throw new MediaReviewError("unavailable", "Administrator identity is unavailable");
+  try {
+    tvReview.applyApproval({ type: "approve-plan", planId, reviewer: username });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "TV plan approval failed";
+    throw new MediaReviewError(message.includes("not found") ? "not-found" : "conflict", message);
+  }
+  events.emit("status");
+}));
+
+const mediaReviewErrorStatus = { "not-found": 404, conflict: 409, invalid: 400, unsupported: 422, unavailable: 503 } as const;
+
+function sendMediaReviewError(reply: FastifyReply, error: unknown) {
+  if (error instanceof MediaReviewError) return reply.code(mediaReviewErrorStatus[error.code]).send({ error: error.message });
+  throw error;
 }
 
 app.post<{ Body: unknown }>("/api/v1/tv/identify/search", async (request, reply) => {
   const body = request.body as Record<string, unknown> | null;
   const query = typeof body?.query === "string" ? body.query.trim() : "";
   if (!query || query.length > 200) return reply.code(400).send({ error: "Search text is required (1 to 200 characters)" });
-  const variants = searchVariants(query);
-  const searchTerms = /^(?:tvdb|tmdb)\s*[:=#-]?\s*\d+$/i.test(query) || /^tt\d{5,}$/i.test(query)
-    ? [query] : [query, ...variants.filter((variant) => variant.toLocaleLowerCase() !== query.toLocaleLowerCase())].slice(0, 3);
-  const results = [];
-  for (const term of searchTerms) {
-    results.push(...await tvMetadataLookupService.searchSeries(term));
-    if (results.some((entry) => entry.candidates.length > 0)) break;
-  }
-  const seen = new Set<string>();
-  const candidates = results.flatMap((entry) => entry.candidates)
-    .filter((candidate) => {
-      const key = `${candidate.provider}:${candidate.seriesId}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((left, right) => right.confidence - left.confidence);
+  if (!reviewSearchService) return reply.code(503).send({ error: "Review search is unavailable" });
+  const outcome = await reviewSearchService.search("tv", query);
+  // Legacy response shape kept for existing API consumers; new clients use /api/v1/review/search.
   return {
     query,
-    candidates,
-    queries: results.map((entry) => ({
-      query: entry.query,
-      providerId: entry.providerId,
-      matches: entry.candidates.length,
-      durationMs: entry.durationMs,
-      ...(entry.failure ? { failure: entry.failure } : {})
-    }))
+    candidates: outcome.candidates.map((candidate) => ({
+      provider: candidate.provider,
+      providerName: candidate.providerName,
+      seriesId: candidate.id,
+      title: candidate.title,
+      ...(candidate.year === undefined ? {} : { year: candidate.year }),
+      ...(candidate.overview === undefined ? {} : { overview: candidate.overview }),
+      ...(candidate.posterUrl === undefined ? {} : { posterUrl: candidate.posterUrl }),
+      seasonCount: candidate.attributes.seasonCount,
+      confidence: candidate.confidence,
+      identifiers: candidate.attributes.identifiers
+    })),
+    queries: outcome.queries
   };
+});
+
+app.get("/api/v1/review/media-types", async (_request, reply) => {
+  if (!reviewSearchService) return reply.code(503).send({ error: "Review search is unavailable" });
+  return { mediaTypes: reviewSearchService.mediaTypes() };
+});
+
+app.post<{ Body: unknown }>("/api/v1/review/search", {
+  config: { rateLimit: { max: 60, timeWindow: "1 minute" } }
+}, async (request, reply) => {
+  const body = request.body as Record<string, unknown> | null;
+  const mediaType = typeof body?.mediaType === "string" ? body.mediaType : "";
+  const query = typeof body?.query === "string" ? body.query.trim() : "";
+  if (!query || query.length > 200) return reply.code(400).send({ error: "Search text is required (1 to 200 characters)" });
+  if (!reviewSearchService) return reply.code(503).send({ error: "Review search is unavailable" });
+  if (!reviewSearchService.has(mediaType)) return reply.code(400).send({ error: "Unsupported media type" });
+  return reviewSearchService.search(mediaType, query);
+});
+
+app.get<{ Querystring: { mediaType?: string; status?: string; source?: string } }>("/api/v1/review/items", async (request) => {
+  const { mediaType, status, source } = request.query;
+  const items = mediaReviewQueue.list({
+    ...(mediaType ? { mediaType } : {}),
+    ...(status ? { status: status as never } : {}),
+    ...(source ? { sourceKind: source as never } : {})
+  });
+  return { items, summary: mediaReviewQueue.summary() };
+});
+
+app.get<{ Params: { id: string } }>("/api/v1/review/items/:id", async (request, reply) => {
+  const item = mediaReviewQueue.get(request.params.id);
+  if (!item) return reply.code(404).send({ error: "Review item not found" });
+  return { item };
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/review/items/:id/complete", async (request, reply) => {
+  const body = (request.body ?? {}) as Record<string, unknown>;
+  const publish = body.publish === "never" || body.publish === "when-ready" || body.publish === "required"
+    ? body.publish : undefined;
+  try {
+    const { item, continuation } = await mediaReviewQueue.complete(request.params.id, {
+      ...(typeof body.candidateId === "string" ? { candidateId: body.candidateId } : {}),
+      ...(typeof body.title === "string" ? { title: body.title } : {}),
+      ...(typeof body.reviewer === "string" ? { reviewer: body.reviewer } : {}),
+      ...(body.identification === undefined ? {} : { identification: body.identification }),
+      ...(body.assignments === undefined ? {} : { assignments: body.assignments }),
+      ...(publish ? { publish } : {})
+    });
+    return reply.code(continuation === "started" || continuation === "queued" ? 202 : 200).send({ item, continuation });
+  } catch (error) {
+    return sendMediaReviewError(reply, error);
+  }
 });
 
 function completedTvDiscHistoryForTask(task: TvMatchingTask) {
@@ -1546,166 +1663,35 @@ app.get<{ Params: { id: string; trackId: string } }>("/api/v1/tv/matching/:id/pr
 });
 
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/identification", async (request, reply) => {
-  const task = repositories.tvMatchingTasks.get(request.params.id);
-  if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
-  if (task.status === "processing") return reply.code(409).send({ error: "TV matching task is already processing" });
-  const priorRecovery = repositories.discRecovery.get(task.fingerprint);
-  const outcome = saveIdentification(task.fingerprint, request.body);
-  if ("error" in outcome) return reply.code(outcome.status).send({ error: outcome.error });
-  const identityChanged = priorRecovery?.seriesName !== outcome.recovery.seriesName ||
-    priorRecovery?.providerId !== outcome.recovery.providerId ||
-    priorRecovery?.seasonNumber !== outcome.recovery.seasonNumber;
-  const filesystemVolumeName = task.source.manifest.attributes?.filesystemVolumeName;
-  const volumeName = typeof filesystemVolumeName === "string" ? filesystemVolumeName.trim() : "";
-  const metadata = outcome.recovery.importedMetadata ?? {};
-  const knownLabels = new Set(Array.isArray(metadata.knownLabels)
-    ? metadata.knownLabels.filter((value): value is string => typeof value === "string") : []);
-  const knownVolumeNames = new Set(Array.isArray(metadata.knownVolumeNames)
-    ? metadata.knownVolumeNames.filter((value): value is string => typeof value === "string") : []);
-  if (task.source.label.trim()) knownLabels.add(task.source.label.trim());
-  if (volumeName) knownVolumeNames.add(volumeName);
-  const learnedRecovery = repositories.discRecovery.update(task.fingerprint, {
-    ...(identityChanged ? { mappings: [] } : {}),
-    importedMetadata: { ...metadata, knownLabels: [...knownLabels], knownVolumeNames: [...knownVolumeNames] }
-  });
-  if (!learnedRecovery) return reply.code(409).send({ error: "Identification was saved but series evidence could not be stored" });
-  const assignments = identityChanged
-    ? task.assignments.map((assignment) => {
-      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = assignment;
-      return { ...unmatched, confirmed: false };
-    })
-    : task.assignments;
-  const updatedTask = repositories.tvMatchingTasks.update(task.jobId, {
-    assignments,
-    status: assignments.length ? "awaiting-mapping" : "awaiting-identification"
-  });
-  if (!updatedTask) return reply.code(409).send({ error: "Identification was saved but the staged disc could not be updated" });
-  events.emit("status");
-  return { recovery: learnedRecovery, task: updatedTask };
+  try {
+    const { details } = await mediaReviewQueue.complete(`tv-matching-task:${request.params.id}`,
+      { identification: request.body, publish: "never" });
+    return { recovery: details?.recovery, task: details?.task };
+  } catch (error) {
+    return sendMediaReviewError(reply, error);
+  }
 });
 
 app.put<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/assignments", async (request, reply) => {
-  const task = repositories.tvMatchingTasks.get(request.params.id);
-  if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
-  if (task.status === "processing" || task.status === "completed") {
-    return reply.code(409).send({ error: "TV matching task is not available for episode changes" });
-  }
   if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
     return reply.code(400).send({ error: "Episode assignments must be an object" });
   }
-  const rawAssignments = (request.body as Record<string, unknown>).assignments;
-  if (!Array.isArray(rawAssignments)) return reply.code(400).send({ error: "Episode assignments must be an array" });
-  const recovery = repositories.discRecovery.get(task.fingerprint);
-  if (!recovery?.seriesName || recovery.seasonNumber === null) {
-    return reply.code(409).send({ error: "Identify the series and season before assigning episodes" });
+  try {
+    const { continuation, details } = await mediaReviewQueue.complete(`tv-matching-task:${request.params.id}`,
+      { assignments: (request.body as Record<string, unknown>).assignments ?? null, publish: "when-ready" });
+    return { task: details?.task, progress: details?.progress, continuation };
+  } catch (error) {
+    return sendMediaReviewError(reply, error);
   }
-  const requested = new Map<string, { episodeNumbers: number[]; episodeTitles?: string[]; title?: string }>();
-  for (const value of rawAssignments) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return reply.code(400).send({ error: "Each episode assignment must be an object" });
-    }
-    const assignment = value as Record<string, unknown>;
-    if (typeof assignment.trackId !== "string" || !task.assignments.some((item) => item.trackId === assignment.trackId) ||
-      requested.has(assignment.trackId)) {
-      return reply.code(400).send({ error: "Episode assignment references an unknown or duplicate track" });
-    }
-    const episodeNumbers = Array.isArray(assignment.episodeNumbers)
-      ? assignment.episodeNumbers : [assignment.episodeNumber];
-    if (episodeNumbers.length > 3 ||
-      episodeNumbers.some((number) => !Number.isInteger(number) || Number(number) < 0 || Number(number) > 1000)) {
-      return reply.code(400).send({ error: "Provide up to three episode numbers from 0 to 1000" });
-    }
-    if (new Set(episodeNumbers).size !== episodeNumbers.length) {
-      return reply.code(400).send({ error: "A track cannot be matched to the same episode more than once" });
-    }
-    if (assignment.episodeTitles !== undefined &&
-      (!Array.isArray(assignment.episodeTitles) || assignment.episodeTitles.length !== episodeNumbers.length ||
-        assignment.episodeTitles.some((title) => typeof title !== "string" || title.length > 200))) {
-      return reply.code(400).send({ error: "Episode titles must match the selected episodes and be at most 200 characters" });
-    }
-    if (assignment.title !== undefined &&
-      (typeof assignment.title !== "string" || assignment.title.length > 200)) {
-      return reply.code(400).send({ error: "Episode title must not exceed 200 characters" });
-    }
-    requested.set(assignment.trackId, {
-      episodeNumbers: episodeNumbers.map(Number),
-      ...(Array.isArray(assignment.episodeTitles)
-        ? { episodeTitles: assignment.episodeTitles as string[] } : {}),
-      ...(typeof assignment.title === "string" && assignment.title.trim() ? { title: assignment.title.trim() } : {})
-    });
-  }
-  const seriesId = recovery.providerId || recovery.seriesName;
-  const assignments = task.assignments.map((item) => {
-    const selected = requested.get(item.trackId);
-    if (!selected) return item;
-    if (selected.episodeNumbers.length === 0) {
-      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = item;
-      return { ...unmatched, confirmed: false };
-    }
-    return {
-      ...item,
-      confirmed: true,
-      selectedEpisodes: selected.episodeNumbers.map((episodeNumber, index) => ({
-        seriesId,
-        seasonNumber: recovery.seasonNumber!,
-        episodeNumber,
-        ...(selected.episodeTitles?.[index] ? { title: selected.episodeTitles[index] } :
-          selected.title ? { title: selected.title } : {})
-      }))
-    };
-  });
-  const updated = repositories.tvMatchingTasks.update(task.jobId, {
-    assignments,
-    status: tvMatchingReviewStatus(assignments),
-    failure: null
-  });
-  if (!updated) return reply.code(404).send({ error: "TV matching task could not be updated" });
-  const mappings = assignments.flatMap((assignment) =>
-    assignment.confirmed && assignment.selectedEpisodes?.length
-      ? [{ trackId: assignment.trackId, episodes: assignment.selectedEpisodes }]
-      : []);
-  const updatedRecovery = repositories.discRecovery.update(task.fingerprint, { mappings });
-  if (!updatedRecovery) {
-    return reply.code(409).send({ error: "Episode selections were saved, but disc recovery mappings could not be updated" });
-  }
-  let continuation: "not-ready" | "queued" | "started" | "blocked" = "not-ready";
-  const progress = tvMatchingProgress(updated.assignments);
-  if (progress.fullyMatched) {
-    const currentRecovery = repositories.discRecovery.get(task.fingerprint);
-    if (currentRecovery?.mediaTypeOverridden && currentRecovery.finalMediaType !== "tv_series") {
-      continuation = "blocked";
-    } else if (activeJob()) {
-      continuation = "queued";
-    } else if (tvMatchingActions) {
-      continuation = "started";
-      void tvMatchingActions.continue(task.jobId, "assignment-save").catch((error: unknown) => {
-        request.log.error({ err: error, jobId: task.jobId }, "Automatic TV publishing continuation failed");
-      });
-    } else {
-      return reply.code(503).send({ error: "TV matching service is unavailable; saved matches remain ready to resume" });
-    }
-  }
-  events.emit("status");
-  return { task: updated, progress, continuation };
 });
 
 app.post<{ Params: { id: string } }>("/api/v1/tv/matching/:id/continue", async (request, reply) => {
-  const task = repositories.tvMatchingTasks.get(request.params.id);
-  if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
-  if (task.status === "processing") return reply.code(409).send({ error: "TV matching task is already processing" });
-  if (task.status === "partially-matched") {
-    return reply.code(409).send({ error: "Save matches for every remaining track before publishing; unmatched tracks are still safely staged" });
+  try {
+    await mediaReviewQueue.complete(`tv-matching-task:${request.params.id}`, { publish: "required" });
+    return reply.code(202).send({ accepted: true, jobId: request.params.id });
+  } catch (error) {
+    return sendMediaReviewError(reply, error);
   }
-  const recovery = repositories.discRecovery.get(task.fingerprint);
-  if (recovery?.mediaTypeOverridden && recovery.finalMediaType !== "tv_series") {
-    return reply.code(409).send({ error: "The manual media classification is not TV Series; this staged TV workflow cannot be published" });
-  }
-  if (activeJob()) return reply.code(409).send({ error: "Wait until the active disc job finishes before continuing this TV task" });
-  if (!tvMatchingActions) return reply.code(503).send({ error: "TV matching service is unavailable" });
-  void tvMatchingActions.continue(task.jobId, "continue-action").catch((error: unknown) => {
-    request.log.error({ err: error, jobId: task.jobId }, "TV matching continuation failed");
-  });
-  return reply.code(202).send({ accepted: true, jobId: task.jobId });
 });
 
 app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/unmatched", async (request, reply) => {
@@ -2490,6 +2476,17 @@ app.get("/api/v1/tv/metadata/metrics", async () => {
   return tvMetadataLookupService.metrics();
 });
 
+app.get("/api/v1/metadata/usage", async () => ({
+  providers: metadataUsageService.providerUsage(),
+  overview: await metadataUsageService.providerOverview()
+}));
+
+app.get("/api/v1/identification/stats", async () => {
+  const tvEpisodesIdentified = repositories.tvProcessingPlans.list(1000).reduce((count, plan) =>
+    count + plan.assignments.reduce((total, assignment) => total + assignment.episodes.length, 0), 0);
+  return { stats: metadataUsageService.identificationStats(tvEpisodesIdentified) };
+});
+
 app.post<{ Params: { id: string } }>("/api/v1/tv/metadata/providers/:id/test", async (request, reply) => {
   const { id } = request.params;
   if (!tvMetadataProviderRegistry.isLookupImplemented(id)) {
@@ -2876,6 +2873,28 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "Movie identification confidence threshold must be between 0 and 1" });
     }
     patch.movieIdentificationMinimumConfidence = threshold;
+  }
+  if ("makemkvDiscoveryTimeoutMs" in body) {
+    const value = body.makemkvDiscoveryTimeoutMs;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 10_000 || value > 3_600_000) {
+      return reply.code(400).send({ error: "MakeMKV discovery timeout must be an integer from 10000 to 3600000 milliseconds" });
+    }
+    patch.makemkvDiscoveryTimeoutMs = value;
+  }
+  if ("makemkvDiscoveryAbsoluteTimeoutMs" in body) {
+    const value = body.makemkvDiscoveryAbsoluteTimeoutMs;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 10_000 || value > 7_200_000) {
+      return reply.code(400).send({ error: "MakeMKV discovery absolute timeout must be an integer from 10000 to 7200000 milliseconds" });
+    }
+    patch.makemkvDiscoveryAbsoluteTimeoutMs = value;
+  }
+  if (patch.makemkvDiscoveryTimeoutMs !== undefined || patch.makemkvDiscoveryAbsoluteTimeoutMs !== undefined) {
+    const current = getSettings();
+    const inactivity = patch.makemkvDiscoveryTimeoutMs ?? current.makemkvDiscoveryTimeoutMs;
+    const absolute = patch.makemkvDiscoveryAbsoluteTimeoutMs ?? current.makemkvDiscoveryAbsoluteTimeoutMs;
+    if (absolute < inactivity) {
+      return reply.code(400).send({ error: "The MakeMKV absolute timeout must not be shorter than the inactivity timeout" });
+    }
   }
   if ("metadataProvider" in body) {
     if (body.metadataProvider !== "tmdb") return reply.code(400).send({ error: "Unsupported metadata provider" });

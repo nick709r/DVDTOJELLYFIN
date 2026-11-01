@@ -4,6 +4,7 @@ import { startDiscMonitor } from "./disc-monitor.js";
 import {
   setDiscApprovalAction,
   setReviewJobActions,
+  setReviewSearchService,
   setTvMatchingActions,
   startServer,
   stopServer,
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
     getSettings,
     providerRuntime.metadata
   );
+  setReviewSearchService(providerRuntime.reviewSearch);
   setReviewJobActions({
     continue: (id) => reviewProcessor.continue(id),
     updateMetadata: (id, patch) => providerRuntime!.reviewWorkspaces.updateMetadata(id, patch)

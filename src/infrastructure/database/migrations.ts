@@ -483,4 +483,30 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
         .run(new Date().toISOString());
     })();
   }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 28").get()) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS metadata_provider_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        attempted_at TEXT NOT NULL,
+        success INTEGER NOT NULL CHECK (success IN (0, 1)),
+        matches INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT
+      );
+      CREATE INDEX IF NOT EXISTS metadata_provider_usage_provider_time
+        ON metadata_provider_usage(provider_id, attempted_at);
+    `);
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (28, ?)")
+      .run(new Date().toISOString());
+  }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 29").get()) {
+    const usageColumns = db.prepare("PRAGMA table_info(metadata_provider_usage)").all() as Array<{ name: string }>;
+    if (!usageColumns.some((column) => column.name === "skipped")) {
+      db.exec("ALTER TABLE metadata_provider_usage ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0");
+    }
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (29, ?)")
+      .run(new Date().toISOString());
+  }
 }
