@@ -738,3 +738,34 @@ test("TV analysis rejects invalid IDs, duplicate manifest items, and non-finite 
     }
   })), /finite number/);
 });
+
+test("an explicit Disc 1 label starts the season instead of continuing from imported episodes", () => {
+  const input = baseInput({
+    fingerprint: "disc-one",
+    disc: { seasonNumber: 2, discNumber: 1 },
+    discStructureHints: [{ source: "Filesystem volume name", confidence: 0.92, seasonNumber: 2, discNumber: 1 }],
+    completedDiscHistory: [completedDisc(episodeNumbers(1, 2), { fingerprint: "other-disc", discNumber: 2 })]
+  });
+  const report = engine.analyze(input);
+  const first = report.items.find((item) => item.itemId === "1");
+
+  assert.equal(first.candidates[0].episode.episodeNumber, 1);
+  assert.equal(report.episodeAssignment.anchoredToDiscStart, true);
+  assert.equal(report.episodeAssignment.discNumber, 1);
+  assert.equal(report.episodeAssignment.discSource, "Filesystem volume name");
+  assert.deepEqual(report.episodeAssignment.previousImportedDiscs, [2]);
+  assert.deepEqual(report.episodeAssignment.previousImportedEpisodes, ["1-2"]);
+  assert.match(report.episodeAssignment.decision, /explicitly Disc 1/);
+});
+
+test("a later disc keeps continuation and reports it in the decision", () => {
+  const report = engine.analyze(baseInput({
+    fingerprint: "disc-two",
+    disc: { seasonNumber: 2, discNumber: 2 },
+    discStructureHints: [{ source: "Filesystem volume name", confidence: 0.92, seasonNumber: 2, discNumber: 2 }],
+    completedDiscHistory: [completedDisc(episodeNumbers(1, 1))]
+  }));
+
+  assert.equal(report.episodeAssignment.anchoredToDiscStart, false);
+  assert.match(report.episodeAssignment.decision, /continuing after imported episodes|No disc-ordered/);
+});

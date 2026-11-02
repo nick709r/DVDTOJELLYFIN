@@ -8,6 +8,7 @@ import type {
   Series,
   TvAnalysisInput,
   TvEpisodeContinuity,
+  TvEpisodeAssignmentDiagnostics,
   TvDiscAnalysisReport,
   TvDiscItemKind,
   TvDiscItemResult,
@@ -905,15 +906,51 @@ interface DiscOrderedEpisodeTarget {
   evidence: string;
 }
 
+function buildAssignmentDiagnostics(
+  input: TvAnalysisInput,
+  season: TvSeasonMatchCandidate | undefined,
+  disc: TvDiscPositionCandidate | undefined,
+  continuity: TvEpisodeContinuity | undefined,
+  decision: string,
+  anchoredToDiscStart: boolean
+): TvEpisodeAssignmentDiagnostics {
+  const seasonNumber = season?.season.number;
+  const sourceOf = (key: "seasonNumber" | "discNumber", value: number | undefined): string => {
+    if (value === undefined) return "not detected";
+    const userConfirmed = key === "seasonNumber" ? input.seasonNumberUserConfirmed : input.discNumberUserConfirmed;
+    if (userConfirmed) return "user-confirmed identification";
+    const hint = (input.discStructureHints ?? []).find((entry) => entry[key] === value);
+    return hint ? hint.source : input.disc?.[key] === value ? "disc structure" : "inferred";
+  };
+  const history = (input.completedDiscHistory ?? []).filter((record) => record.seasonNumber === seasonNumber);
+  const importedDiscs = [...new Set(history.flatMap((record) => record.discNumber === null ? [] : [record.discNumber]))]
+    .sort((left, right) => left - right);
+  return {
+    ...(seasonNumber === undefined ? {} : { seasonNumber }),
+    ...(disc === undefined ? {} : { discNumber: disc.discNumber }),
+    seasonSource: sourceOf("seasonNumber", seasonNumber),
+    discSource: sourceOf("discNumber", disc?.discNumber),
+    previousImportedEpisodes: continuity?.importedEpisodeRanges.map((range) =>
+      range.start === range.end ? `${range.start}` : `${range.start}-${range.end}`) ?? [],
+    previousImportedDiscs: importedDiscs,
+    anchoredToDiscStart,
+    decision
+  };
+}
+
 function discOrderedEpisodeTargets(
   input: TvAnalysisInput,
   series: TvSeriesMatchCandidate | undefined,
   season: TvSeasonMatchCandidate | undefined,
   disc: TvDiscPositionCandidate | undefined,
   continuity: TvEpisodeContinuity | undefined
-): Map<string, DiscOrderedEpisodeTarget> {
+): { targets: Map<string, DiscOrderedEpisodeTarget>; diagnostics: TvEpisodeAssignmentDiagnostics } {
+  const none = (decision: string) => ({
+    targets: new Map<string, DiscOrderedEpisodeTarget>(),
+    diagnostics: buildAssignmentDiagnostics(input, season, disc, continuity, decision, false)
+  });
   if (!series || series.confidence < 0.9 || !season || season.confidence < 0.9 ||
-    !disc || disc.confidence < 0.9) return new Map();
+    !disc || disc.confidence < 0.9) return none("No disc-ordered assignment: series, season or disc confidence below 0.9");
   const primaryItems = primaryEpisodeItems(input.manifest.items)
     .map((item, index) => ({ item, index }))
     .sort((left, right) =>
@@ -921,7 +958,14 @@ function discOrderedEpisodeTargets(
       left.index - right.index
     )
     .map(({ item }) => item);
-  if (primaryItems.length === 0 || !continuity) return new Map();
+  // An explicit Disc 1 label is authoritative: the disc starts the season, so imported history must not shift it.
+  const explicitFirstDisc = disc.discNumber === 1 && (input.discNumberUserConfirmed === true ||
+    (input.discStructureHints ?? []).some((hint) => hint.discNumber === 1 &&
+      (hint.seasonNumber === undefined || hint.seasonNumber === season.season.number)));
+  if (primaryItems.length === 0) return none("No disc-ordered assignment: no primary episode items");
+  if (!continuity && !explicitFirstDisc) {
+    return none("No disc-ordered assignment: no imported episodes to continue from and disc is not explicitly Disc 1");
+  }
   const catalog = new Map<string, TvEpisodeMetadataCandidate["episode"]>();
   for (const episode of [
     ...(input.metadata.episodeCandidates ?? []).map((candidate) => candidate.episode),
@@ -932,7 +976,7 @@ function discOrderedEpisodeTargets(
     catalog.set(`${episode.seriesId}:${episode.seasonNumber}:${episode.episodeNumber}`, episode);
   }
   const nextMissingEpisodes = [...catalog.entries()]
-    .filter(([, episode]) => !continuity.importedEpisodeRanges.some((range) =>
+    .filter(([, episode]) => explicitFirstDisc || !continuity?.importedEpisodeRanges.some((range) =>
       episode.episodeNumber >= range.start && episode.episodeNumber <= range.end
     ))
     .map(([, episode]) => episode)
@@ -952,10 +996,18 @@ function discOrderedEpisodeTargets(
     targets.set(item.id, {
       episode,
       confidence,
-      evidence: `${positionEvidence} and imported episode continuity suggest ${episodeCode(episode.seasonNumber, episode.episodeNumber)} at playback position ${playbackPosition}`
+      evidence: explicitFirstDisc
+        ? `${positionEvidence}; Disc 1 starts the season, so ${episodeCode(episode.seasonNumber, episode.episodeNumber)} is suggested at playback position ${playbackPosition}`
+        : `${positionEvidence} and imported episode continuity suggest ${episodeCode(episode.seasonNumber, episode.episodeNumber)} at playback position ${playbackPosition}`
     });
   });
-  return targets;
+  const first = nextMissingEpisodes[0];
+  const decision = targets.size === 0
+    ? "No disc-ordered assignment: no episode metadata is available for this season"
+    : explicitFirstDisc
+      ? `Assignment starts at ${first ? episodeCode(first.seasonNumber, first.episodeNumber) : "?"} because the disc is explicitly Disc 1 of Season ${season.season.number}; continuation from imported episodes was not used`
+      : `Assignment starts at ${first ? episodeCode(first.seasonNumber, first.episodeNumber) : "?"} by continuing after imported episodes (Disc ${disc.discNumber} is not an explicit first disc)`;
+  return { targets, diagnostics: buildAssignmentDiagnostics(input, season, disc, continuity, decision, explicitFirstDisc) };
 }
 
 function rankEpisodes(
@@ -1278,7 +1330,7 @@ export class TvAnalysisEngine {
         input, detectedSeries, detectedSeason, disc.discNumber
     );
     const seasonContinuity = discPosition?.confidenceBreakdown.continuity;
-    const episodeOrderTargets = discOrderedEpisodeTargets(
+    const { targets: episodeOrderTargets, diagnostics: episodeAssignment } = discOrderedEpisodeTargets(
       input,
       detectedSeries,
       detectedSeason,
@@ -1343,6 +1395,7 @@ export class TvAnalysisEngine {
       seasonCandidates,
       disc,
       discPositionCandidates,
+      episodeAssignment,
       items: classifiedItems,
       probableEpisodes,
       probableDuplicates: relationships.duplicates,

@@ -973,6 +973,7 @@ export class TvWorkflowService {
         confidence: candidate.confidence
       })),
       discPositionCandidates: analysis.discPositionCandidates,
+      ...(analysis.episodeAssignment ? { episodeAssignment: analysis.episodeAssignment } : {}),
       ...(discLabelSuggestion ? { discLabelSuggestion } : {}),
       selected: topDetected ? {
         title: topDetected.series.title,

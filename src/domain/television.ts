@@ -394,6 +394,17 @@ export interface TvAnalysisRecommendation {
   relatedItemIds?: readonly string[];
 }
 
+export interface TvEpisodeAssignmentDiagnostics {
+  seasonNumber?: number;
+  discNumber?: number;
+  seasonSource: string;
+  discSource: string;
+  previousImportedEpisodes: readonly string[];
+  previousImportedDiscs: readonly number[];
+  anchoredToDiscStart: boolean;
+  decision: string;
+}
+
 export interface TvDiscAnalysisReport {
   sourceId: string;
   manifestId: string;
@@ -404,6 +415,7 @@ export interface TvDiscAnalysisReport {
   seasonCandidates: readonly TvSeasonMatchCandidate[];
   disc: DiscAnalysisStructure;
   discPositionCandidates: readonly TvDiscPositionCandidate[];
+  episodeAssignment?: TvEpisodeAssignmentDiagnostics;
   items: readonly TvDiscItemResult[];
   probableEpisodes: readonly EpisodeCandidate[];
   probableDuplicates: readonly TvDiscRelationship[];

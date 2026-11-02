@@ -1,4 +1,4 @@
-import type { TvDiscPositionCandidate } from "./television.js";
+import type { TvDiscPositionCandidate, TvEpisodeAssignmentDiagnostics } from "./television.js";
 
 export type TvIdentificationStepId =
   | "user-specified"
@@ -69,6 +69,7 @@ export interface TvIdentificationDiagnostics {
   seriesCandidates: readonly { title: string; year?: number; providerId: string; seriesId: string; confidence: number }[];
   seasonCandidates: readonly { seasonNumber: number; providerId: string; confidence: number }[];
   discPositionCandidates: readonly TvDiscPositionCandidate[];
+  episodeAssignment?: TvEpisodeAssignmentDiagnostics;
   discLabelSuggestion?: {
     seriesName?: string;
     seasonNumber?: number;
