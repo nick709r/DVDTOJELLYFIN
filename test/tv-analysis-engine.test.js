@@ -249,19 +249,20 @@ test("disc-position confidence exposes positive evidence and score impacts", () 
       providerId: "tvdb",
       discNumber: 2,
       discOrder: 1,
-      confidence: 1
+      confidence: 0.3
     }]
   }));
   const candidate = report.discPositionCandidates.find((entry) => entry.discNumber === 2);
   const evidence = candidate.confidenceBreakdown.evidence;
 
+  assert.ok(candidate.confidenceBreakdown.finalScore > candidate.confidenceBreakdown.baseScore);
   assert.ok(evidence.some((entry) =>
     entry.type === "positive" && entry.category === "disc-label" &&
-    entry.message === "Disc label suggests Season 2 Disc 2"
+    entry.message === "Disc label suggests Season 2 Disc 2" && entry.scoreImpact > 0
   ));
   assert.ok(evidence.some((entry) =>
     entry.type === "positive" && entry.category === "missing-episodes" &&
-    entry.message.includes("episodes not found")
+    entry.message.includes("episodes not found") && entry.scoreImpact > 0
   ));
   assert.ok(evidence.some((entry) =>
     entry.type === "neutral" && entry.category === "metadata"
