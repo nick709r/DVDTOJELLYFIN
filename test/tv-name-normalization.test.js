@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeDiscName, parseDiscStructureHints } from "../dist/application/tv-name-normalization.js";
+import { normalizeDiscName, parseDiscName, parseDiscStructureHints } from "../dist/application/tv-name-normalization.js";
+
+test("volume names yield title, season and disc together", () => {
+  for (const name of [
+    "FRESH_OFF_THE_BOAT_S6_D1",
+    "FRESH_OFF_THE_BOAT_S06_D01",
+    "Fresh-Off-The-Boat-Season-6-Disc-1",
+    "Fresh.Off.The.Boat.S06.D01"
+  ]) {
+    assert.deepEqual(parseDiscName(name), { seriesName: "Fresh Off The Boat", seasonNumber: 6, discNumber: 1 }, name);
+  }
+  for (const suffix of ["SEASON_6_DISC_1", "SEASON6_DISC1", "S6_D1", "S06_D01"]) {
+    assert.deepEqual(parseDiscName(`Show_${suffix}`), { seriesName: "Show", seasonNumber: 6, discNumber: 1 }, suffix);
+  }
+  assert.deepEqual(parseDiscName("Show_SEASON-6"), { seriesName: "Show", seasonNumber: 6 });
+  assert.deepEqual(parseDiscName("Show_DISC-1"), { seriesName: "Show", discNumber: 1 });
+});
 
 test("disc labels recognize compact and explicit season and disc numbering", () => {
   const cases = [

@@ -898,7 +898,12 @@ export class TvWorkflowService {
       const nameSource = nameSources.find((entry) => entry.stepId === id);
       if (!nameSource?.raw) return "Not available for this disc";
       if (!nameSource.normalized) return `"${nameSource.raw}" is a generic name and was ignored`;
-      return `"${nameSource.raw}" normalized to "${nameSource.normalized}"`;
+      const { seasonNumber, discNumber } = nameSource.structure;
+      const extracted = [
+        seasonNumber === undefined ? "" : `Season: ${seasonNumber}`,
+        discNumber === undefined ? "" : `Disc: ${discNumber}`
+      ].filter(Boolean).join(", ");
+      return `"${nameSource.raw}" -> Title: ${nameSource.normalized}${extracted ? `, ${extracted}` : ""}`;
     };
     const providerStep = (providerPattern: RegExp): TvIdentificationStep["status"] => {
       const relevant = queries.filter((query) => providerPattern.test(query.providerId));
@@ -912,11 +917,14 @@ export class TvWorkflowService {
       return `${relevant.length} quer${relevant.length === 1 ? "y" : "ies"}, ${relevant.reduce((sum, query) => sum + query.matches, 0)} matches`;
     };
     const assessment = assessTvDisc(source);
-    const volumeLabelStructure = nameSources.find((entry) => entry.stepId === "volume-label")?.structure;
+    const volumeLabelStructure = ["volume-label", "filesystem-volume-name"]
+      .map((id) => nameSources.find((entry) => entry.stepId === id))
+      .find((entry) => entry?.structure.discNumber !== undefined)?.structure;
+    const suggestionSource = nameSources.find((entry) => entry.structure === volumeLabelStructure);
     const discLabelSuggestion = volumeLabelStructure?.discNumber === undefined
       ? undefined
       : {
-        ...(normalizeDiscName(source.label) ? { seriesName: normalizeDiscName(source.label) } : {}),
+        ...(suggestionSource?.normalized ? { seriesName: suggestionSource.normalized } : {}),
         ...(volumeLabelStructure.seasonNumber === undefined
           ? {} : { seasonNumber: volumeLabelStructure.seasonNumber }),
         discNumber: volumeLabelStructure.discNumber

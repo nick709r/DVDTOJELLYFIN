@@ -31,6 +31,22 @@ export function parseDiscStructureHints(value: string): DiscStructureHints {
   };
 }
 
+export interface ParsedDiscName {
+  seriesName: string;
+  seasonNumber?: number;
+  discNumber?: number;
+}
+
+/** Extracts season/disc tokens from the raw name before the title is normalized. */
+export function parseDiscName(raw: string | null | undefined): ParsedDiscName {
+  const { seasonNumber, discNumber } = parseDiscStructureHints(raw ?? "");
+  return {
+    seriesName: normalizeDiscName(raw),
+    ...(seasonNumber === undefined ? {} : { seasonNumber }),
+    ...(discNumber === undefined ? {} : { discNumber })
+  };
+}
+
 function titleCase(value: string): string {
   return value.split(" ").map((word) => {
     const lower = word.toLocaleLowerCase();
