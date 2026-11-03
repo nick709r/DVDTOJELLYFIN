@@ -83,6 +83,11 @@ function stripMarkers(value: string): string {
 }
 
 /** Produces a metadata-search friendly series name from a raw disc or volume name. */
+/** Spacing-insensitive identity so SHREK_2, SHREK2 and SHREK_2_DISC1 resolve to the same stored movie match. */
+export function discNameKey(raw: string | null | undefined): string {
+  return normalizeDiscName(raw).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
 export function normalizeDiscName(raw: string | null | undefined): string {
   if (!raw) return "";
   const stripped = stripMarkers(separateWords(raw));

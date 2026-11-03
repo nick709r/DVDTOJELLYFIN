@@ -145,7 +145,10 @@ export class ReviewJobItemAdapter implements MediaReviewItemAdapter {
       await actions.updateMetadata(job.id, {
         title,
         movieIdentificationConfirmed: true,
-        namingSource: "User review"
+        namingSource: "User review",
+        // A manually typed title has no provider id, so it must not inherit a previous candidate's match.
+        movieMatchId: chosen && chosen.title === title ? chosen.id : null,
+        movieMatchYear: chosen?.year ?? null
       });
     } catch (error) {
       if (error instanceof MediaReviewError) throw error;

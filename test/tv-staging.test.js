@@ -81,6 +81,7 @@ test("unknown TV discs stage, resume without reacquiring the disc, and delete on
   };
   let analysisCalls = 0;
   const tvWorkflow = {
+    hasCompletedTvHistory: () => false,
     async prepare() {
       analysisCalls += 1;
       if (analysisCalls === 1) return undefined;

@@ -45,3 +45,10 @@ test("ambiguous labels do not invent a disc number", () => {
   assert.deepEqual(parseDiscStructureHints("Fresh Off the Boat Season 3"), { seasonNumber: 3 });
   assert.deepEqual(parseDiscStructureHints("Fresh Off the Boat 2021"), {});
 });
+
+test("discNameKey treats SHREK_2, SHREK2 and SHREK_2_DISC1 as the same movie", async () => {
+  const { discNameKey } = await import("../dist/application/tv-name-normalization.js");
+  const keys = ["SHREK_2", "SHREK2", "SHREK_2_DISC1", "Shrek 2"].map(discNameKey);
+  assert.deepEqual([...new Set(keys)], ["shrek2"]);
+  assert.notEqual(discNameKey("SHREK"), discNameKey("SHREK_2"));
+});

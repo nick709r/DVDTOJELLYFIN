@@ -32,7 +32,7 @@ import type { TvSavedIdentification } from "../../domain/tv-identification.js";
 import { tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingContinuationSource, type TvMatchingTask } from "../../domain/tv-matching.js";
 import { outputPath } from "../../output-destinations.js";
 import { pathsOverlap, tvStagingConflictMessage, tvStagingConflicts, tvStagingDirectory } from "../../storage-paths.js";
-import { normalizeDiscName, searchVariants } from "../../application/tv-name-normalization.js";
+import { discNameKey, normalizeDiscName, searchVariants } from "../../application/tv-name-normalization.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -1062,13 +1062,44 @@ async function processMappedTvEpisodes(
         }));
       }
     }
+    if (!recovery.seriesName && !(recovery.metadataProvider && recovery.importedMetadata?.movieMatchConfirmed === true)) {
+      const labelKey = discNameKey(info.label);
+      const volumeKey = discNameKey(filesystemVolumeName);
+      const keyMatches = (names: unknown, key: string): boolean =>
+        Boolean(key) && evidenceNames(names).some((name) => discNameKey(name) === key);
+      const learnedMovie = jobs.listDiscRecoveries(1000).find((candidate) =>
+        candidate.fingerprint !== fingerprint && !candidate.seriesName &&
+        candidate.importedMetadata?.movieMatchConfirmed === true && candidate.providerId &&
+        (keyMatches(candidate.importedMetadata?.knownLabels, labelKey) ||
+          keyMatches(candidate.importedMetadata?.knownVolumeNames, volumeKey)));
+      if (learnedMovie) {
+        const matched = jobs.updateDiscRecovery(fingerprint, {
+          finalMediaType: "movie",
+          metadataProvider: learnedMovie.metadataProvider,
+          providerId: learnedMovie.providerId,
+          importedMetadata: withNameEvidence(learnedMovie.importedMetadata, info.label, filesystemVolumeName),
+          artworkReferences: learnedMovie.artworkReferences
+        });
+        if (matched) {
+          recovery = matched;
+          jobs.record(context, "movie-learned-evidence", "info", JSON.stringify({
+            matchedFingerprint: learnedMovie.fingerprint,
+            matchedMovie: learnedMovie.importedMetadata?.title ?? null,
+            discLabel: info.label || null,
+            filesystemVolumeName: filesystemVolumeName || null
+          }));
+        }
+      }
+    }
+    const hasKnownMovieRecovery = !recovery.seriesName && recovery.importedMetadata?.entityType === "movie" &&
+      recovery.importedMetadata?.movieMatchConfirmed === true && Boolean(recovery.providerId);
     const hasKnownTvRecovery = Boolean(recovery.seriesName &&
       (recovery.finalMediaType === "tv_series" || recovery.mappings.length > 0));
     const finalMediaType = recovery.mediaTypeOverridden ? recovery.finalMediaType :
-      hasKnownTvRecovery ? "tv_series" : detectedMediaType;
+      hasKnownTvRecovery ? "tv_series" : hasKnownMovieRecovery ? "movie" : detectedMediaType;
     const isTvWorkflow = finalMediaType === "tv_series" ||
-      (!recovery.mediaTypeOverridden && tvAssessment.classification === "tv");
-    const classificationReviewRequired = !recovery.mediaTypeOverridden &&
+      (!recovery.mediaTypeOverridden && !hasKnownMovieRecovery && tvAssessment.classification === "tv");
+    const classificationReviewRequired = !recovery.mediaTypeOverridden && !hasKnownMovieRecovery &&
       !isTvWorkflow && tvAssessment.classification === "review";
     const unsupportedOverride = (recovery.mediaTypeOverridden &&
       !["movie", "tv_series"].includes(recovery.finalMediaType)) ||
@@ -1095,6 +1126,7 @@ async function processMappedTvEpisodes(
       classificationEvidence: tvAssessment.classificationEvidence,
       criteria: tvAssessment.criteria,
       reasons: tvAssessment.reasons,
+      reviewReasons: tvAssessment.reviewReasons,
       tvDetectionEnabled: tvEnabled
     });
     const scoreWeights = [0.55, 0.2, 0.1, 0.1, 0.05];
@@ -1112,6 +1144,7 @@ async function processMappedTvEpisodes(
         contribution: criterion.passed ? scoreWeights[index] ?? 0 : 0
       })),
       reasons: tvAssessment.reasons,
+      reviewReasons: tvAssessment.reviewReasons,
       tvDetectionEnabled: tvEnabled
     }));
 
@@ -1120,7 +1153,7 @@ async function processMappedTvEpisodes(
         ? `The manually selected ${recovery.discTypeOverridden && recovery.finalDiscType !== "dvd"
           ? `disc type ${recovery.finalDiscType}` : `media type ${finalMediaType}`} is not supported by the DVD processing workflow; held for review.`
         : classificationReviewRequired
-          ? "Disc lacks sufficient movie or TV structure evidence; held for review before TV metadata lookup."
+          ? `Disc lacks sufficient movie or TV structure evidence; held for review before TV metadata lookup. ${tvAssessment.reviewReasons.join("; ")}`
         : `Disc matched ${tvAssessment.classification === "tv" ? "TV-series" : "possible TV-series"} criteria (heuristic confidence ${tvAssessment.confidence.toFixed(2)}), but TV detection is disabled; held for review instead of movie processing.`;
       jobs.holdForReview(context, message, {
         classification: tvAssessment.classification,
@@ -1132,6 +1165,7 @@ async function processMappedTvEpisodes(
         classificationEvidence: tvAssessment.classificationEvidence,
         criteria: tvAssessment.criteria,
         reasons: tvAssessment.reasons,
+        reviewReasons: tvAssessment.reviewReasons,
         tvDetectionEnabled: tvEnabled
       });
       setRuntimeStatus("idle");
@@ -1399,8 +1433,8 @@ async function processMappedTvEpisodes(
           ? "Filesystem volume name"
           : "Fallback";
         const message = selectedCandidate
-          ? `Movie candidate confidence ${selectedCandidate.confidence.toFixed(2)} is below the configured ${confidenceThreshold.toFixed(2)} threshold. Manual confirmation is required.`
-          : `No movie metadata candidate met the configured ${confidenceThreshold.toFixed(2)} confidence threshold. Manual confirmation is required.`;
+          ? `Movie Match Required: candidate confidence ${selectedCandidate.confidence.toFixed(2)} is below the configured ${confidenceThreshold.toFixed(2)} threshold. Manual confirmation is required.`
+          : `Movie Match Required: no movie metadata candidate met the configured ${confidenceThreshold.toFixed(2)} confidence threshold. Manual confirmation is required.`;
         movieIdentificationReviewRequired = true;
         movieReviewEvidence = {
           namingSource,
@@ -1410,6 +1444,7 @@ async function processMappedTvEpisodes(
           confidence: selectedCandidate?.confidence ?? null,
           minimumConfidence: confidenceThreshold,
           candidates,
+          action: "Manual confirmation required",
           evidence: [
             {
               type: "positive",
@@ -1427,6 +1462,7 @@ async function processMappedTvEpisodes(
             },
             { type: "neutral", message: "Action: Manual confirmation required" }
           ],
+          reviewReasons: [...tvAssessment.reviewReasons, "Movie metadata confidence below threshold"],
           providerFailures: title.providerFailures
         };
         if (reviewWorkspace) {
@@ -1462,7 +1498,11 @@ async function processMappedTvEpisodes(
       }
       if (selectedMetadata && !restoredMovieMetadata) {
         const providerId = selectedMetadata.identifiers?.tmdbMovieId ?? selectedMetadata.id;
-        const importedMetadata = { ...selectedMetadata.metadata, entityType: "movie" };
+        const importedMetadata = withNameEvidence(
+          { ...recovery.importedMetadata, ...selectedMetadata.metadata, entityType: "movie", movieMatchConfirmed: true },
+          info.label,
+          filesystemVolumeName
+        );
         jobs.updateDiscRecovery(fingerprint, {
           metadataProvider: "tmdb",
           providerId,

@@ -123,11 +123,13 @@ test("completing a review selects a candidate, confirms the title and resumes pr
   const { queue, calls } = setup([job("j1")]);
   await queue.complete("review-job:j1", { candidateId: "7" });
   assert.deepEqual(calls.metadata, [["j1", {
-    title: "The Break-Up (2006)", movieIdentificationConfirmed: true, namingSource: "User review"
+    title: "The Break-Up (2006)", movieIdentificationConfirmed: true, namingSource: "User review",
+    movieMatchId: "7", movieMatchYear: 2006
   }]]);
   assert.deepEqual(calls.resumed, ["j1"]);
   await queue.complete("review-job:j1", { title: "Manual Title" });
   assert.equal(calls.metadata[1][1].title, "Manual Title");
+  assert.equal(calls.metadata[1][1].movieMatchId, null);
 });
 
 test("review completion rejects invalid, conflicting, unsupported and unknown items", async () => {

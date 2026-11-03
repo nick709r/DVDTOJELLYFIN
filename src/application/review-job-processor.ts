@@ -130,6 +130,7 @@ export class ReviewJobProcessor {
         progress: 100
       });
       this.jobs.complete(context);
+      this.persistMovieMatch(review.originalJobId, review.metadata, title, namingSource);
       this.jobs.resolveJobReviews(context.id, "Preserved media was processed successfully");
       this.reviewJobs.update(id, { status: "completed", notificationActive: false });
       await this.workspaces.remove(id).catch(() => undefined);
@@ -157,5 +158,38 @@ export class ReviewJobProcessor {
       this.jobs.endOperation(controller);
       notifyStatus();
     }
+  }
+
+  /** Stores a user-confirmed movie match so later inserts of the same disc skip review. */
+  private persistMovieMatch(
+    originalJobId: string,
+    metadata: Readonly<Record<string, unknown>>,
+    title: string,
+    namingSource: string
+  ): void {
+    const providerId = typeof metadata.movieMatchId === "string" ? metadata.movieMatchId : undefined;
+    if (!providerId || namingSource !== "User review") return;
+    const fingerprint = this.jobs.getJob(originalJobId)?.discFingerprint;
+    if (!fingerprint) return;
+    const names = (value: unknown): string[] => typeof value === "string" && value.trim() ? [value.trim()] : [];
+    const existing = this.jobs.getDiscRecovery(fingerprint);
+    const merge = (key: string, additions: string[]): string[] => [...new Set([
+      ...(Array.isArray(existing?.importedMetadata?.[key]) ? existing.importedMetadata[key] as string[] : []),
+      ...additions
+    ])];
+    this.jobs.updateDiscRecovery(fingerprint, {
+      finalMediaType: "movie",
+      metadataProvider: "tmdb",
+      providerId,
+      importedMetadata: {
+        ...(existing?.importedMetadata ?? {}),
+        entityType: "movie",
+        title,
+        year: metadata.movieMatchYear,
+        movieMatchConfirmed: true,
+        knownLabels: merge("knownLabels", names(metadata.sourceLabel)),
+        knownVolumeNames: merge("knownVolumeNames", names(metadata.filesystemVolumeName))
+      }
+    });
   }
 }

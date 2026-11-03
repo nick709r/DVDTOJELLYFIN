@@ -203,10 +203,17 @@ test("THE_BREAK_UP filesystem volume name is normalized and low-confidence candi
     await workspaces.updateMetadata(reviewJob.id, {
       title: "The Break-Up (2006)",
       movieIdentificationConfirmed: true,
-      namingSource: "User review"
+      namingSource: "User review",
+      movieMatchId: "tmdb-1",
+      movieMatchYear: 2006
     });
     assert.equal(repositories.reviewJobs.get(reviewJob.id).metadata.movieIdentificationConfirmed, true);
     await processor.continue(reviewJob.id);
+    const storedMatch = jobs.getDiscRecovery(jobs.getJob(reviewJob.originalJobId).discFingerprint);
+    assert.equal(storedMatch.providerId, "tmdb-1");
+    assert.equal(storedMatch.finalMediaType, "movie");
+    assert.equal(storedMatch.importedMetadata.movieMatchConfirmed, true);
+    assert.ok(storedMatch.importedMetadata.knownVolumeNames.includes("THE_BREAK_UP"));
     const publishedMovie = repositories.history.get(reviewJob.originalJobId);
     assert.equal(publishedMovie.status, "completed");
     assert.equal(publishedMovie.title, "The Break-Up (2006)");
@@ -373,6 +380,103 @@ test("review retry resumes metadata from saved media without a source provider",
     assert.equal(repositories.reviewJobs.get(jobId).status, "pending");
     assert.equal((await stat((await workspaces.mediaFiles(jobId))[0])).size, 4096);
     assert.equal(repositories.history.get(jobId).status, "review");
+  } finally {
+    repositories.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a user-confirmed movie match is stored and reused for SHREK2 after SHREK_2 was matched", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dvd-movie-match-persistence-"));
+  const db = new Database(":memory:");
+  migrateDatabase(db, defaultSettings);
+  const repositories = createSqliteRepositories(db, defaultSettings);
+  try {
+    repositories.settings.save({
+      workDir: join(root, "working"),
+      moviesDir: join(root, "movies"),
+      metadataEnabled: true,
+      autoEject: false,
+      libraryMetadata: { ...defaultSettings.libraryMetadata, downloadArtwork: false }
+    });
+    const jobs = new JobCoordinator(repositories, { publish() {} }, {
+      begin() {}, end() {}, register() {}, cancel() { return false; }, wasCancelled() { return false; }
+    });
+    const workspaces = new ReviewWorkspaceService(repositories.reviewJobs);
+    const converter = async (_input, target, _title, _settings, onPublishing, onProgress) => {
+      await writeFile(target, Buffer.alloc(4096, 6));
+      const encoder = { name: "Test encoder", codec: "libx264", hardware: false };
+      onPublishing(encoder);
+      onProgress(1);
+      return { encoder, outputBytes: 4096 };
+    };
+    const workflow = new DvdWorkflow(undefined, workspaces, converter, async () => {});
+    const discSource = (volume, durations) => ({
+      provider: {},
+      candidate: {
+        providerId: "source.video-dvd.makemkv",
+        sourceId: "drive-1",
+        mediaKind: "dvd",
+        label: "",
+        manifest: {
+          mediaKind: "dvd",
+          attributes: { filesystemVolumeName: volume },
+          items: durations.map((durationSeconds, index) => ({
+            id: String(index + 1), kind: "title", title: "", durationSeconds
+          }))
+        }
+      }
+    });
+    const sources = {
+      acquire: async (_source, workspacePath) => {
+        const mediaPath = join(workspacePath, "extracted.mkv");
+        await writeFile(mediaPath, Buffer.alloc(4096, 5));
+        return {
+          source: { id: "drive-1", providerId: "source.video-dvd.makemkv", kind: "dvd" },
+          artifacts: [{ id: "video-1", kind: "video", path: mediaPath }]
+        };
+      }
+    };
+    let lookups = 0;
+    const candidate = {
+      id: "tmdb-shrek2", providerId: "metadata.tmdb.movie", entityType: "movie",
+      title: "Shrek 2 (2004)", confidence: 0.41, metadata: { title: "Shrek 2", year: 2004 }
+    };
+    const metadata = {
+      resolve: async () => {
+        lookups += 1;
+        return { selected: candidate, candidates: [candidate], providerFailures: [] };
+      }
+    };
+    const run = (source) => workflow.process({
+      source, sources, jobs, metadata, signal: new AbortController().signal, devicePath: "/dev/sr0"
+    });
+
+    assert.equal(await run(discSource("SHREK_2", [5580, 1500, 1440, 1320, 1200, 240])), true);
+    const reviewJob = repositories.reviewJobs.list()[0];
+    assert.equal(reviewJob.status, "pending");
+    assert.match(String(reviewJob.metadata.movieIdentificationEvidence.reviewReasons), /Movie metadata confidence below threshold/);
+
+    await workspaces.updateMetadata(reviewJob.id, {
+      title: "Shrek 2 (2004)",
+      movieIdentificationRequiresConfirmation: false,
+      movieIdentificationConfirmed: true,
+      namingSource: "User review",
+      movieMatchId: "tmdb-shrek2",
+      movieMatchYear: 2004
+    });
+    const processor = new ReviewJobProcessor(repositories.reviewJobs, workspaces, jobs,
+      () => repositories.settings.get(), { resolve: async () => ({ candidates: [], providerFailures: [] }), }, converter);
+    await processor.continue(reviewJob.id);
+
+    const lookupsBefore = lookups;
+    repositories.recovery.clearInsertedDisc();
+    assert.equal(await run(discSource("SHREK2", [5570, 1490, 1430, 1310, 1190, 230])), true);
+    assert.equal(lookups, lookupsBefore, "a stored movie match must not trigger a new metadata lookup");
+    assert.equal(repositories.reviewJobs.list().filter((job) => job.status === "pending").length, 0);
+    const completed = repositories.history.list(10).filter((job) => job.status === "completed");
+    assert.equal(completed.length, 2);
+    assert.ok(completed.every((job) => job.title === "Shrek 2 (2004)" || job.title === "Shrek 2"));
   } finally {
     repositories.close();
     await rm(root, { recursive: true, force: true });

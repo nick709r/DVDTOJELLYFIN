@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,7 +9,8 @@ import {
   assessTvDisc,
   TvWorkflowService,
   isPotentialTvDisc,
-  tvPrefilterRejectionReasons
+  tvPrefilterRejectionReasons,
+  tvWorkflowPolicy
 } from "../dist/application/tv-workflow-service.js";
 import { TvReviewService } from "../dist/application/tv-review-service.js";
 import { defaultSettings } from "../dist/infrastructure/database/default-settings.js";
@@ -504,7 +505,7 @@ test("two consistent episode-length titles remain review-only without TV structu
     }
   };
   assert.equal(assessTvDisc(sourceWithLongTitle).classification, "movie");
-  assert.equal(assessTvDisc(sourceWithLongTitle).movieConfidence, 0.8);
+  assert.equal(assessTvDisc(sourceWithLongTitle).movieConfidence, 1);
   assert.ok(assessTvDisc(sourceWithLongTitle).reasons.includes(
     "At least one title exceeds the configured maximum episode runtime"
   ));
@@ -600,9 +601,9 @@ test("movie and TV confidence distinguish feature DVDs from episodic discs befor
     }
   });
   assert.equal(breakUp.movieConfidence, 1);
-  assert.equal(breakUp.tvConfidence, 0.3);
+  assert.equal(breakUp.tvConfidence, 0);
   assert.ok(breakUp.classificationEvidence.some((entry) =>
-    entry.category === "movie" && entry.message === "Dominant title exceeds 75 minutes"
+    entry.category === "movie" && entry.message === "Dominant title exceeds 80 minutes"
   ));
 });
 
@@ -811,6 +812,7 @@ test("THE_BREAK_UP feature disc classifies as Movie and does not invoke TV analy
   const calls = [];
   let tvAnalysisCalls = 0;
   const workflow = new DvdWorkflow({
+    hasCompletedTvHistory: () => false,
     prepare: async () => {
       tvAnalysisCalls += 1;
       throw new Error("Movie classification must not invoke TV analysis");
@@ -862,9 +864,10 @@ test("THE_BREAK_UP feature disc classifies as Movie and does not invoke TV analy
     const classification = JSON.parse(classificationEvent[4]);
     assert.equal(classification.decision, "movie");
     assert.equal(classification.movieConfidence, 1);
-    assert.equal(classification.tvConfidence, 0.3);
+    assert.equal(classification.tvConfidence, 0);
+    assert.ok(classification.reviewReasons.some((reason) => /extras/.test(reason)));
     assert.ok(classification.classificationEvidence.some((entry) =>
-      entry.category === "movie" && entry.message === "Dominant title exceeds 75 minutes"
+      entry.category === "movie" && entry.message === "Dominant title exceeds 80 minutes"
     ));
     assert.ok(calls.some(([name]) => name === "fail"));
   } finally {
@@ -977,4 +980,57 @@ test("reviewer can mark a track unknown and persist the decision without affecti
   } finally {
     repositories.close();
   }
+});
+
+function discOf(label, titles) {
+  return {
+    sourceId: "drive-1", providerId: "makemkv", mediaKind: "dvd", label,
+    manifest: {
+      mediaKind: "dvd",
+      items: titles.map(([title, minutes], index) => ({
+        id: String(index), kind: "title", title, durationSeconds: minutes * 60
+      }))
+    }
+  };
+}
+
+test("a feature film with several extras is a movie and extras never count as episodes", () => {
+  const assessment = assessTvDisc(discOf("SHREK_2", [
+    ["Title 1", 93], ["Title 2", 25], ["Title 3", 24], ["Title 4", 22], ["Title 5", 20], ["Title 6", 4]
+  ]));
+
+  assert.equal(assessment.classification, "movie");
+  assert.equal(assessment.confidence, 0.95);
+  assert.equal(assessment.featureOverride, true);
+  assert.equal(assessment.tvConfidence, 0);
+  assert.ok(assessment.classificationEvidence.some((entry) => entry.message === "Feature film override"));
+  assert.ok(assessment.reviewReasons.includes("Feature-length title detected (93 minutes)"));
+  assert.ok(assessment.reviewReasons.some((reason) => /short titles classified as extras/.test(reason)));
+});
+
+test("a feature film is not a TV episode: runtime thresholds are mutually exclusive", () => {
+  assert.ok(tvWorkflowPolicy.episodeMaximumSeconds < tvWorkflowPolicy.featureMinimumSeconds);
+  const assessment = assessTvDisc(discOf("MOVIE", [["Title 1", 95], ["Title 2", 30]]));
+  const feature = assessment.criteria.find((criterion) => criterion.id === "no-feature-length-title");
+  assert.equal(feature.passed, false);
+  assert.equal(assessment.classification, "movie");
+});
+
+test("movie priority beats weak TV indicators when no explicit TV evidence exists", () => {
+  // 85-minute feature with a 60-minute companion: not 2x dominant, so only movie priority applies.
+  const assessment = assessTvDisc(discOf("SOME_MOVIE", [["Title 1", 85], ["Title 2", 60], ["Title 3", 3]]));
+  assert.equal(assessment.featureOverride, false);
+  assert.equal(assessment.classification, "movie");
+});
+
+test("explicit TV evidence still wins over a long title", () => {
+  const assessment = assessTvDisc(discOf("Example Show Season 1", [["Title 1", 90], ["Title 2", 45], ["Title 3", 45]]));
+  assert.equal(assessment.classification, "tv");
+  assert.equal(assessment.featureOverride, false);
+});
+
+test("TV season discs keep their classification", () => {
+  const assessment = assessTvDisc(discOf("UNLABELLED", [["T1", 44], ["T2", 43], ["T3", 45], ["T4", 44]]));
+  assert.equal(assessment.classification, "tv");
+  assert.deepEqual(assessment.reviewReasons, []);
 });

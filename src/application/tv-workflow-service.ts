@@ -42,7 +42,11 @@ export const tvWorkflowPolicy = {
   highConfidence: 0.9,
   mediumConfidence: 0.72,
   episodeMinimumSeconds: 10 * 60,
-  episodeMaximumSeconds: 100 * 60,
+  // Episodes must be shorter than a feature film so one title can never satisfy both runtime rules.
+  episodeMaximumSeconds: 80 * 60 - 1,
+  featureMinimumSeconds: 80 * 60,
+  featureDominanceRatio: 2,
+  extraRuntimeShare: 0.4,
   structuralTitleCount: 3,
   runtimeRatioMaximum: 1.6,
   explicitLabelPattern: seriesLabelPattern.source,
@@ -234,6 +238,10 @@ export interface TvPrefilterAssessment {
     scoreImpact: number;
   }[];
   reasons: readonly string[];
+  /** Plain-language explanation of why the disc needs attention (or how it was classified). */
+  reviewReasons: readonly string[];
+  featureOverride: boolean;
+  extrasCount: number;
 }
 
 export interface TvPrefilterContext {
@@ -256,18 +264,22 @@ export function assessTvDisc(
     ? allTitleItems.filter((item) => item.id !== dominantTitle.id)
     : [];
   const dominantShare = totalRuntime > 0 ? dominantRuntime / totalRuntime : 0;
-  const extrasCount = otherTitleItems.filter((item) =>
-    (item.durationSeconds ?? 0) <= 10 * 60 || nonEpisodeTitlePattern.test(item.title ?? "")
-  ).length;
+  const hasFeature = dominantRuntime >= tvWorkflowPolicy.featureMinimumSeconds;
+  // With a feature present, every other title is an extra unless it is long enough to plausibly be an episode.
+  const isExtra = (item: MediaManifestItem): boolean =>
+    (item.durationSeconds ?? 0) <= tvWorkflowPolicy.episodeMinimumSeconds ||
+    nonEpisodeTitlePattern.test(item.title ?? "") ||
+    (hasFeature && (item.durationSeconds ?? 0) <= dominantRuntime * tvWorkflowPolicy.extraRuntimeShare);
+  const extrasCount = otherTitleItems.filter(isExtra).length;
   const extrasPattern = otherTitleItems.length > 0 &&
     extrasCount / otherTitleItems.length >= 0.6;
   const secondLongestRuntime = otherTitleItems.reduce((longest, item) =>
     Math.max(longest, item.durationSeconds ?? 0), 0);
   const movieSignals = [
     {
-      passed: dominantRuntime > 75 * 60,
+      passed: hasFeature,
       weight: 0.35,
-      message: "Dominant title exceeds 75 minutes"
+      message: `Dominant title exceeds ${tvWorkflowPolicy.featureMinimumSeconds / 60} minutes`
     },
     {
       passed: dominantShare >= 0.55,
@@ -289,7 +301,8 @@ export function assessTvDisc(
     item.kind === "title" && item.durationSeconds !== undefined &&
     item.durationSeconds >= tvWorkflowPolicy.episodeMinimumSeconds &&
     item.durationSeconds <= tvWorkflowPolicy.episodeMaximumSeconds &&
-    !nonEpisodeTitlePattern.test(item.title ?? "")
+    !nonEpisodeTitlePattern.test(item.title ?? "") &&
+    !(hasFeature && isExtra(item))
   ).sort((left, right) => (left.durationSeconds ?? 0) - (right.durationSeconds ?? 0));
   const hasSeasonOrSeriesLabel = seriesLabelPattern.test(source.label);
   const shortestEpisodeRuntime = titleItems[0]?.durationSeconds ?? 0;
@@ -353,15 +366,26 @@ export function assessTvDisc(
   ).toFixed(2));
   const confirmedTv = hasSeasonOrSeriesLabel || context.hasCompletedTvHistory ||
     (hasThreeEpisodeTitles && runtimesAreConsistent && noFeatureLengthTitle);
+  // A clearly dominant feature film with no explicit TV evidence is a movie regardless of its extras.
+  const featureOverride = hasFeature && !confirmedTv && movieConfidence > tvConfidence &&
+    (secondLongestRuntime === 0 ||
+      dominantRuntime > secondLongestRuntime * tvWorkflowPolicy.featureDominanceRatio);
+  const featurePriority = hasFeature && !confirmedTv && movieConfidence > tvConfidence;
   const strongMovie = movieConfidence >= 0.75 && !confirmedTv;
-  const uncertainTv = !confirmedTv && !strongMovie && hasTwoEpisodeTitles;
-  const classification = confirmedTv ? "tv" : strongMovie || !uncertainTv ? "movie" : "review";
+  const uncertainTv = !confirmedTv && !strongMovie && !featurePriority && hasTwoEpisodeTitles;
+  const classification = confirmedTv ? "tv"
+    : featureOverride || featurePriority || strongMovie || !uncertainTv ? "movie" : "review";
   const classificationEvidence = [
     ...movieSignals.filter((signal) => signal.passed).map((signal) => ({
       category: "movie" as const,
       message: signal.message,
       scoreImpact: signal.weight
     })),
+    ...(featureOverride ? [{
+      category: "movie" as const,
+      message: "Feature film override",
+      scoreImpact: 0
+    }] : []),
     ...criteria.flatMap((criterion, index) => criterion.passed ? [{
       category: "tv" as const,
       message: criterion.explanation,
@@ -374,14 +398,23 @@ export function assessTvDisc(
     }] : [])
   ];
   const reasons = criteria.filter((criterion) => !criterion.passed).map((criterion) => criterion.explanation);
+  const reviewReasons = [
+    ...(hasFeature ? [`Feature-length title detected (${Math.round(dominantRuntime / 60)} minutes)`] : []),
+    ...(extrasCount > 0 ? [`${extrasCount} short title${extrasCount === 1 ? "" : "s"} classified as extras`] : []),
+    ...(classification === "review"
+      ? ["Disc lacks sufficient movie or TV structure evidence"] : [])
+  ];
   return {
     classification,
-    confidence: classification === "movie" ? movieConfidence : tvConfidence,
+    confidence: featureOverride ? 0.95 : classification === "movie" ? movieConfidence : tvConfidence,
     movieConfidence,
     tvConfidence,
     criteria,
     classificationEvidence,
-    reasons
+    reasons,
+    reviewReasons,
+    featureOverride,
+    extrasCount
   };
 }
 
