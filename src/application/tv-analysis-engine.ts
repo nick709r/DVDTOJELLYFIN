@@ -291,9 +291,13 @@ function rankSeasons(
     for (const evidence of candidate.evidence ?? []) entry.evidence.add(evidence);
     byNumber.set(candidate.season.number, entry);
   }
+  // An explicit season in the disc's own names is authoritative: history for other seasons must not compete with it.
+  const labelSeasons = new Set((input.discStructureHints ?? []).flatMap((hint) =>
+    hint.seasonNumber === undefined ? [] : [hint.seasonNumber]));
   for (const record of history) {
     if (selectedSeries && seriesKey(record.series) !== seriesKey(selectedSeries.series)) continue;
     if (record.seasonNumber === undefined) continue;
+    if (labelSeasons.size > 0 && !labelSeasons.has(record.seasonNumber)) continue;
     const entry = byNumber.get(record.seasonNumber) ?? {
       season: { seriesId: seriesKey(record.series), number: record.seasonNumber },
       metadata: [], historical: [], evidence: new Set<string>()
@@ -425,6 +429,8 @@ function rankDiscPositions(
   }
   for (const record of history) {
     if (record.discNumber === undefined) continue;
+    // A disc position from another season says nothing about this season's disc order.
+    if (seasonNumber !== undefined && record.seasonNumber !== undefined && record.seasonNumber !== seasonNumber) continue;
     const entry = candidateFor(record.discNumber);
     const exactDisc = input.fingerprint !== undefined && record.fingerprint === input.fingerprint;
     entry.historical.push(exactDisc ? 1 : 0.65);
@@ -453,10 +459,21 @@ function rankDiscPositions(
     ));
     let nextDiscNumber = 1;
     while (completedNumbers.has(nextDiscNumber)) nextDiscNumber += 1;
-    const next = candidateFor(nextDiscNumber);
-    next.historical.push(0.85);
-    next.inferredUnprocessed = true;
-    next.evidence.add(`Disc ${nextDiscNumber} is the next unprocessed position in completed-disc history`);
+    const knownDiscCount = Math.max(input.disc?.discCount ?? 0, ...discHints.map((hint) => hint.discCount ?? 0));
+    const importedEpisodes = new Set(completedHistory.flatMap((record) =>
+      record.episodes.map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`)));
+    const seasonEpisodes = (input.metadata.episodeCandidates ?? [])
+      .filter((candidate) => candidate.episode.seasonNumber === seasonNumber)
+      .map((candidate) => `${candidate.episode.seasonNumber}:${candidate.episode.episodeNumber}`);
+    const seasonComplete = (knownDiscCount > 0 && nextDiscNumber > knownDiscCount) ||
+      (seasonEpisodes.length > 0 && seasonEpisodes.every((key) => importedEpisodes.has(key)));
+    // History only advances within the confirmed season; a completed season never implies the next one.
+    if (!seasonComplete) {
+      const next = candidateFor(nextDiscNumber);
+      next.historical.push(0.85);
+      next.inferredUnprocessed = true;
+      next.evidence.add(`Disc ${nextDiscNumber} is the next unprocessed position in completed-disc history`);
+    }
   }
   const strongestDiscHint = discHints.slice().sort((left, right) =>
     right.confidence - left.confidence || left.source.localeCompare(right.source)

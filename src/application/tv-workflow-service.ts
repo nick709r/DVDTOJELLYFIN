@@ -656,17 +656,31 @@ export class TvWorkflowService {
       }];
     });
 
-    // Season, disc and disc-count hints come from the saved identification first, then any disc name.
+    // Source priority: explicit disc label, user-confirmed match, stored match, then history/heuristics later.
+    // Once the label supplies a season, stored or learned positions from another season are ignored entirely.
     const hints = nameSources.map((entry) => entry.structure);
     const firstHint = <K extends "seasonNumber" | "discNumber" | "discCount">(key: K): number | undefined =>
       hints.map((hint) => hint[key]).find((value) => value !== undefined);
+    const labelSeason = firstHint("seasonNumber");
+    const labelDisc = firstHint("discNumber");
+    const savedSeason = saved?.seasonNumber ?? undefined;
+    const savedConflictsWithLabel = labelSeason !== undefined && savedSeason !== undefined && savedSeason !== labelSeason;
+    const savedPositionUsable = saved !== undefined && !savedConflictsWithLabel;
+    const savedSourceName = saved?.origin === "user" ? "User-confirmed match" : "Stored match history";
+    const seasonSource = labelSeason !== undefined ? "Disc label"
+      : savedPositionUsable && savedSeason !== undefined ? savedSourceName : undefined;
+    const discSource = labelDisc !== undefined ? "Disc label"
+      : savedPositionUsable && saved?.discNumber != null ? savedSourceName : undefined;
     const seasonStructure: { seasonNumber?: number; discNumber?: number; discCount?: number } = {
-      ...(saved?.seasonNumber != null ? { seasonNumber: saved.seasonNumber }
-        : firstHint("seasonNumber") === undefined ? {} : { seasonNumber: firstHint("seasonNumber")! }),
-      ...(saved?.discNumber != null ? { discNumber: saved.discNumber }
-        : firstHint("discNumber") === undefined ? {} : { discNumber: firstHint("discNumber")! }),
+      ...(labelSeason !== undefined ? { seasonNumber: labelSeason }
+        : seasonSource && savedSeason !== undefined ? { seasonNumber: savedSeason } : {}),
+      ...(labelDisc !== undefined ? { discNumber: labelDisc }
+        : discSource && saved?.discNumber != null ? { discNumber: saved.discNumber } : {}),
       ...(firstHint("discCount") === undefined ? {} : { discCount: firstHint("discCount")! })
     };
+    const storedPositionIgnored = savedConflictsWithLabel
+      ? `Stored Season ${savedSeason}${saved?.discNumber == null ? "" : ` Disc ${saved.discNumber}`} ignored: the disc label says Season ${labelSeason}`
+      : undefined;
 
     const queries: TvIdentificationQuery[] = [];
     const failures: Array<{ providerId: string; query: string; message: string }> = [];
@@ -871,8 +885,8 @@ export class TvWorkflowService {
       fingerprint,
       disc: seasonStructure,
       discStructureHints,
-      discNumberUserConfirmed: saved?.origin === "user",
-      seasonNumberUserConfirmed: saved?.origin === "user" && saved.seasonNumber !== undefined,
+      discNumberUserConfirmed: discSource === "User-confirmed match",
+      seasonNumberUserConfirmed: seasonSource === "User-confirmed match",
       history,
       providerDiscEpisodes,
       completedDiscHistory,
@@ -1007,6 +1021,21 @@ export class TvWorkflowService {
       })),
       discPositionCandidates: analysis.discPositionCandidates,
       ...(analysis.episodeAssignment ? { episodeAssignment: analysis.episodeAssignment } : {}),
+      identificationSource: (() => {
+        const topDisc = analysis.discPositionCandidates[0];
+        const heuristicSeason = seasonCandidates.some((candidate) => candidate.providerId === "episode-count-match")
+          ? "Runtime/content heuristics" : "Metadata provider";
+        const discByHistory = topDisc?.evidence.some((entry) => entry.includes("next unprocessed position")) ?? false;
+        return {
+          season: seasonSource ?? (analysis.detectedSeason ? heuristicSeason : "Not identified"),
+          disc: discSource === "Disc label" ? discSource
+            : discByHistory ? "Sequencing history"
+              : discSource ?? (topDisc ? "Runtime/content heuristics" : "Not identified"),
+          ...(analysis.detectedSeason ? { seasonNumber: analysis.detectedSeason.season.number } : {}),
+          ...(topDisc ? { discNumber: topDisc.discNumber } : {}),
+          ...(storedPositionIgnored ? { note: storedPositionIgnored } : {})
+        };
+      })(),
       ...(discLabelSuggestion ? { discLabelSuggestion } : {}),
       selected: topDetected ? {
         title: topDetected.series.title,

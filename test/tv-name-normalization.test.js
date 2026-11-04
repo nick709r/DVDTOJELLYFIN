@@ -52,3 +52,7 @@ test("discNameKey treats SHREK_2, SHREK2 and SHREK_2_DISC1 as the same movie", a
   assert.deepEqual([...new Set(keys)], ["shrek2"]);
   assert.notEqual(discNameKey("SHREK"), discNameKey("SHREK_2"));
 });
+
+test("disc structure hints treat Series N and Disk N as explicit season and disc", () => {
+  assert.deepEqual(parseDiscStructureHints("Example Show Series 2 Disk 3"), { seasonNumber: 2, discNumber: 3 });
+});

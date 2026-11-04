@@ -32,7 +32,7 @@ import type { TvSavedIdentification } from "../../domain/tv-identification.js";
 import { tvMatchingReviewStatus, type TvMatchingAssignment, type TvMatchingContinuationSource, type TvMatchingTask } from "../../domain/tv-matching.js";
 import { outputPath } from "../../output-destinations.js";
 import { pathsOverlap, tvStagingConflictMessage, tvStagingConflicts, tvStagingDirectory } from "../../storage-paths.js";
-import { discNameKey, normalizeDiscName, searchVariants } from "../../application/tv-name-normalization.js";
+import { discNameKey, normalizeDiscName, parseDiscStructureHints, searchVariants } from "../../application/tv-name-normalization.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -1041,14 +1041,19 @@ async function processMappedTvEpisodes(
         (nameMatchesEvidence(info.label, candidate.importedMetadata?.knownLabels) ||
           nameMatchesEvidence(volumeName, candidate.importedMetadata?.knownVolumeNames)));
       if (learned?.seriesName) {
+        // Only the series identity is learned by name. An explicit season or disc in this disc's own names is
+        // authoritative, and a position learned from a different disc must never be carried over to it.
+        const ownStructures = [info.label, volumeName].map((name) => parseDiscStructureHints(name ?? ""));
+        const keepSeason = ownStructures.every((entry) => entry.seasonNumber === undefined);
+        const keepDisc = keepSeason && ownStructures.every((entry) => entry.discNumber === undefined);
         const matched = jobs.updateDiscRecovery(fingerprint, {
           finalMediaType: "tv_series",
           metadataProvider: learned.metadataProvider,
           providerId: learned.providerId,
           seriesName: learned.seriesName,
-          seasonNumber: learned.seasonNumber,
-          discNumber: learned.discNumber,
-          discName: learned.discName,
+          seasonNumber: keepSeason ? learned.seasonNumber : null,
+          discNumber: keepDisc ? learned.discNumber : null,
+          discName: keepDisc ? learned.discName : null,
           importedMetadata: learned.importedMetadata,
           artworkReferences: learned.artworkReferences
         });

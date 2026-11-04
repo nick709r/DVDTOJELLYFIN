@@ -70,6 +70,14 @@ export interface TvIdentificationDiagnostics {
   seasonCandidates: readonly { seasonNumber: number; providerId: string; confidence: number }[];
   discPositionCandidates: readonly TvDiscPositionCandidate[];
   episodeAssignment?: TvEpisodeAssignmentDiagnostics;
+  /** Which source decided the season and disc (label, user, stored match, sequencing history, heuristics). */
+  identificationSource?: {
+    season: string;
+    disc: string;
+    seasonNumber?: number;
+    discNumber?: number;
+    note?: string;
+  };
   discLabelSuggestion?: {
     seriesName?: string;
     seasonNumber?: number;

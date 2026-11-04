@@ -144,7 +144,7 @@ test("TV workflow creates analysis, match report, and confidence-gated processin
   assert.equal(result.matches.items.length, 2);
   assert.ok(result.matches.items.every((item) => item.decision === "suggested"));
   assert.equal(result.plan.series.title, "Example Show");
-  assert.equal(result.plan.season.number, 1);
+  assert.equal(result.analysis.detectedSeason.season.number, 1);
   assert.equal(result.plan.discPosition.discNumber, 1);
   assert.equal(result.plan.confidenceBand, "high");
   assert.equal(result.plan.automaticProcessingSafe, true);
@@ -1034,3 +1034,135 @@ test("TV season discs keep their classification", () => {
   assert.equal(assessment.classification, "tv");
   assert.deepEqual(assessment.reviewReasons, []);
 });
+
+function fotbCandidates(seasons) {
+  return [
+    {
+      id: "series-1", providerId: "metadata.test.tv", entityType: "series", title: "Fresh Off The Boat",
+      confidence: 0.96, metadata: { seriesId: "series-1", title: "Fresh Off The Boat" }
+    },
+    ...seasons.map((seasonNumber) => ({
+      id: `season-${seasonNumber}`, providerId: "metadata.test.tv", entityType: "season", title: `Season ${seasonNumber}`,
+      confidence: 0.96, metadata: { seriesId: "series-1", seasonNumber, title: `Season ${seasonNumber}` }
+    })),
+    ...seasons.flatMap((seasonNumber) => ["1", "2"].flatMap((itemId) => [1, 2, 3, 4].map((episodeNumber) => ({
+      id: `${seasonNumber}-${itemId}-${episodeNumber}`, providerId: "metadata.test.tv", entityType: "episode",
+      title: `Episode ${episodeNumber}`, confidence: 0.95,
+      metadata: { itemId, seriesId: "series-1", seasonNumber, episodeNumber, title: `Episode ${episodeNumber}`, runtimeSeconds: 1200 }
+    }))))
+  ];
+}
+
+function fotbHistory(records) {
+  const requested = [];
+  return {
+    requested,
+    listForSeason: (seasonNumber) => {
+      requested.push(seasonNumber);
+      return records.filter((record) => record.seasonNumber === seasonNumber).map((record) => ({
+        jobId: `job-${record.seasonNumber}-${record.discNumber}`,
+        fingerprint: `old-${record.seasonNumber}-${record.discNumber}`,
+        metadataProvider: "metadata.test.tv",
+        providerId: "series-1",
+        seriesName: "Fresh Off The Boat",
+        seasonNumber: record.seasonNumber,
+        discNumber: record.discNumber,
+        mappings: [],
+        episodes: record.episodes.map((episodeNumber) => ({
+          seriesId: "series-1", seasonNumber: record.seasonNumber, episodeNumber
+        })),
+        completedAt: "2026-10-24T12:00:00.000Z"
+      }));
+    }
+  };
+}
+
+const storedMatch = (seasonNumber, discNumber, origin = "fingerprint") => ({
+  seriesName: "Fresh Off The Boat", seriesId: "series-1", provider: "metadata.test.tv",
+  seasonNumber, discNumber, discName: null, origin
+});
+
+test("an explicit Season 1 Disc 1 label wins over Season 6 history and a carried-over Season 6 match", async () => {
+  const history = fotbHistory([
+    { seasonNumber: 6, discNumber: 1, episodes: [1, 2] },
+    { seasonNumber: 6, discNumber: 2, episodes: [3, 4] }
+  ]);
+  const result = await createTvService({ candidates: fotbCandidates([1, 6]), completedDiscHistory: history }).prepare(
+    tvSource("Fresh Off The Boat Season 1 Disc 1"), "new-s1d1", undefined, storedMatch(6, 2)
+  );
+
+  assert.ok(result);
+  assert.equal(result.analysis.detectedSeason.season.number, 1);
+  assert.equal(result.plan.discPosition.discNumber, 1);
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.seasonNumber), [1, 1]);
+  assert.deepEqual(result.matches.items.map((item) => item.suggestedEpisodes[0]?.episodeNumber), [1, 2]);
+  assert.ok(history.requested.every((season) => season === 1), "history for other seasons must not be read");
+  assert.equal(result.identification.identificationSource.season, "Disc label");
+  assert.equal(result.identification.identificationSource.disc, "Disc label");
+  assert.match(result.identification.identificationSource.note, /Stored Season 6 Disc 2 ignored/);
+});
+
+test("Fresh Off The Boat Season 1 Disc 1 has no Season 6 carry-over after Season 6 Disc 2 was processed", async () => {
+  const history = fotbHistory([{ seasonNumber: 6, discNumber: 2, episodes: [3, 4] }]);
+  const result = await createTvService({ candidates: fotbCandidates([1, 6]), completedDiscHistory: history }).prepare(
+    tvSource("Fresh Off The Boat Season 1 Disc 1"), "new-s1d1"
+  );
+
+  assert.ok(result);
+  assert.equal(result.analysis.detectedSeason.season.number, 1);
+  assert.equal(result.plan.discPosition.discNumber, 1);
+  assert.equal(result.analysis.seasonCandidates[0].season.number, 1);
+  assert.ok(result.matches.items.every((item) => item.suggestedEpisodes.every((episode) => episode.seasonNumber === 1)));
+});
+
+test("a Season 3 Disc 1 label ignores history from many other seasons", async () => {
+  const history = fotbHistory([
+    { seasonNumber: 1, discNumber: 1, episodes: [1, 2] },
+    { seasonNumber: 2, discNumber: 1, episodes: [1, 2] },
+    { seasonNumber: 6, discNumber: 1, episodes: [1, 2] },
+    { seasonNumber: 6, discNumber: 2, episodes: [3, 4] }
+  ]);
+  const result = await createTvService({ candidates: fotbCandidates([1, 2, 3, 6]), completedDiscHistory: history }).prepare(
+    tvSource("Fresh Off The Boat Season 3 Disc 1"), "new-s3d1", undefined, storedMatch(6, 2, "user")
+  );
+
+  assert.ok(result);
+  assert.equal(result.analysis.detectedSeason.season.number, 3);
+  assert.equal(result.plan.discPosition.discNumber, 1);
+  assert.ok(history.requested.every((season) => season === 3));
+  assert.equal(result.identification.identificationSource.season, "Disc label");
+  assert.equal(result.identification.episodeAssignment.anchoredToDiscStart, true);
+});
+
+test("history suggests the next disc only inside the confirmed season", async () => {
+  const history = fotbHistory([{ seasonNumber: 1, discNumber: 1, episodes: [1, 2] }]);
+  const result = await createTvService({ candidates: fotbCandidates([1, 2]), completedDiscHistory: history }).prepare(
+    tvSource("UNKNOWN_DISC"), "unknown-disc", undefined, storedMatch(1, 1)
+  );
+
+  assert.ok(result);
+  assert.equal(result.analysis.detectedSeason.season.number, 1);
+  assert.equal(result.analysis.discPositionCandidates[0].discNumber, 2);
+  assert.equal(result.identification.identificationSource.season, "Stored match history");
+  assert.equal(result.identification.identificationSource.disc, "Sequencing history");
+  assert.ok(history.requested.every((season) => season === 1));
+});
+
+test("a completed season never advances to the next season from history", async () => {
+  const history = fotbHistory([
+    { seasonNumber: 1, discNumber: 1, episodes: [1, 2] },
+    { seasonNumber: 1, discNumber: 2, episodes: [3, 4] }
+  ]);
+  const result = await createTvService({ candidates: fotbCandidates([1, 2]), completedDiscHistory: history }).prepare(
+    tvSource("UNKNOWN_DISC"), "unknown-disc", undefined, storedMatch(1, 2)
+  );
+
+  assert.ok(result);
+  assert.equal(result.analysis.seasonCandidates[0].season.number, 1);
+  assert.ok(result.analysis.discPositionCandidates.every((candidate) => candidate.discNumber !== 3));
+  assert.notEqual(result.identification.identificationSource.disc, "Sequencing history");
+  assert.ok(history.requested.every((season) => season === 1), "no other season is consulted");
+});
+
+
+

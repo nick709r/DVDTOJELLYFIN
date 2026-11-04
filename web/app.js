@@ -1814,6 +1814,15 @@ function renderTvMatchingTask(entry) {
     Number.isInteger(labelSuggestion?.discNumber)
     ? `Disc label suggests: Season ${labelSuggestion.seasonNumber} Disc ${labelSuggestion.discNumber}`
     : "";
+  const identificationSource = task.diagnostics?.identificationSource;
+  const identificationSourceText = identificationSource
+    ? `Identification source: ${identificationSource.season === identificationSource.disc
+      ? identificationSource.season
+      : `Season — ${identificationSource.season}; Disc — ${identificationSource.disc}`}${
+      Number.isInteger(identificationSource.seasonNumber)
+        ? ` · Detected Season ${identificationSource.seasonNumber}${Number.isInteger(identificationSource.discNumber) ? ` Disc ${identificationSource.discNumber}` : ""}`
+        : ""}${identificationSource.note ? ` (${identificationSource.note})` : ""}`
+    : "";
   const completedDiscNotices = completedDiscHistory
     .filter((record) => Number.isInteger(record.discNumber))
     .map((record) =>
@@ -1829,6 +1838,7 @@ function renderTvMatchingTask(entry) {
         <h3>${escapeHtml(series || task.source.label || "Unidentified TV disc")}</h3>
         <p class="tv-disc-season">${escapeHtml(seasonText)}${discNumber === null || discNumber === undefined ? "" : ` · ${escapeHtml(discText)}`}</p>
         ${labelSuggestionText ? `<p class="tv-disc-label-evidence">${escapeHtml(labelSuggestionText)}</p>` : ""}
+        ${identificationSourceText ? `<p class="tv-disc-label-evidence">${escapeHtml(identificationSourceText)}</p>` : ""}
         ${completedDiscNotices.map((notice) => `<p class="tv-disc-history-notice">${escapeHtml(notice)}</p>`).join("")}
         <div class="tv-disc-facts">
           ${year ? `<span>${escapeHtml(year)}</span>` : ""}

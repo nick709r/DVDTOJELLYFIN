@@ -17,8 +17,8 @@ const genericNamePattern =
 
 export function parseDiscStructureHints(value: string): DiscStructureHints {
   const text = value.replace(/[_.]+/g, " ");
-  const seasonDisc = text.match(/\b(?:seasons?|s)[\s-]*(\d{1,2})[\s-]*(?:disc|disk|d)[\s-]*(\d{1,2})\b/i);
-  const season = seasonDisc ?? text.match(/\bseasons?[\s-]*(\d+)\b/i) ??
+  const seasonDisc = text.match(/\b(?:seasons?|series|s)[\s-]*(\d{1,2})[\s-]*(?:disc|disk|d)[\s-]*(\d{1,2})\b/i);
+  const season = seasonDisc ?? text.match(/\b(?:seasons?|series)[\s-]*(\d+)\b/i) ??
     text.match(/\bs(\d{1,2})(?:[\s-]*d\d{1,2})?\b/i);
   const disc = seasonDisc ? [seasonDisc[0], seasonDisc[2]] :
     text.match(/\b(?:disc|disk|dvd)[\s-]*(\d+)\b/i) ?? text.match(/\bd(\d{1,2})\b/i);
