@@ -1,11 +1,11 @@
 import { lstat, readdir, rmdir, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { AutoDiscRepositories } from "./contracts/repositories.js";
 import { mediaDuration } from "./encoding.js";
 import { log } from "./logger.js";
 import { outputPath } from "./output-destinations.js";
 import { pathsOverlap } from "./storage-paths.js";
-import { reconcileReplacementTransactions } from "./application/tv-replacement-executor.js";
+import { reconcileReplacementTransaction, reconcileReplacementTransactions } from "./application/tv-replacement-executor.js";
 
 const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -32,6 +32,43 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
   let failedJobs = 0;
   for (const job of repositories.recovery.interruptedJobs()) {
     if (replacementJobs.has(job.id)) {
+      const task = repositories.tvMatchingTasks.get(job.id);
+      const transactions = repositories.tvConflictJournal.listTransactionsForJob(job.id)
+        .filter((transaction) => transaction.state !== "rolled_back");
+      let verified = Boolean(task && task.assignments.length && transactions.length === task.assignments.length);
+      let bytes = 0;
+      if (task && verified) {
+        for (const assignment of task.assignments) {
+          const transaction = transactions.find((entry) => entry.incoming.trackId === assignment.trackId);
+          const snapshot = transaction && repositories.tvConflictJournal.getReplacementSnapshot(transaction.id);
+          const evidence = transaction && repositories.tvConflictJournal.getCandidateEvidence(transaction.id);
+          const filename = task.files[assignment.trackId];
+          const selected = (assignment.selectedEpisodes ?? [])
+            .map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`).sort();
+          const published = snapshot?.replacementPublications
+            .map((episode) => `${episode.seasonNumber}:${episode.episodeNumber}`).sort() ?? [];
+          if (!transaction || transaction.state !== "completed" || !snapshot || !evidence ||
+            !assignment.confirmed || assignment.keepExisting?.action !== "replace_existing" || !selected.length ||
+            !filename || basename(filename) !== filename ||
+            resolve(snapshot.stagedSourcePath) !== resolve(task.stagingPath, filename) ||
+            JSON.stringify(selected) !== JSON.stringify(published) ||
+            (await reconcileReplacementTransaction(repositories.tvConflictJournal, settings, transaction.id)).outcome !== "completed") {
+            verified = false;
+            break;
+          }
+          bytes += Number(evidence.candidate.size);
+        }
+      }
+      if (verified && Number.isSafeInteger(bytes) && bytes > 0) {
+        if (!repositories.recovery.recoverPublished(job.id, bytes)) {
+          throw new Error(`Replacement job ${job.id} changed during startup recovery`);
+        }
+        if (!repositories.tvMatchingTasks.update(job.id, { status: "completed", failure: null })) {
+          throw new Error(`Replacement task ${job.id} could not be marked completed`);
+        }
+        recoveredJobs += 1;
+        continue;
+      }
       const reason = "TV replacement recovery finished; the interrupted disc requires review and staged files were retained";
       if (repositories.recovery.failInterrupted(job.id, reason)) failedJobs += 1;
       continue;

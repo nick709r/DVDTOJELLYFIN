@@ -61,7 +61,7 @@ export async function isKeepExistingValid(
 ): Promise<boolean> {
   const decision = assignment.keepExisting;
   if (!decision || !assignment.confirmed || !assignment.selectedEpisodes?.length || conflicts.length === 0 ||
-    (decision.action !== undefined && !["keep_existing", "keep_both", "mark_as_extras"].includes(decision.action)) ||
+    (decision.action !== undefined && !["keep_existing", "keep_both", "mark_as_extras", "replace_existing"].includes(decision.action)) ||
     decision.mapping !== keepExistingMapping(identity, assignment) ||
     conflicts.some((conflict) => conflict.trackId !== assignment.trackId)) return false;
   const saved = JSON.parse(decision.conflicts) as Array<{

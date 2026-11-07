@@ -38,6 +38,8 @@ the decision is saved. The available actions are:
 - **Keep Both** publishes the incoming title using a distinct alternate filename and records episode provenance.
 - **Mark As Extras** publishes the incoming title in the series `Extras` folder and records its source and output in
   the audit journal. It does not record the extra as an episode.
+- **Replace Existing** converts the staged title and replaces one existing file with verified publication provenance.
+  The original remains in quarantine. Replacement requires Linux and an existing file in the selected output format.
 
 Saving a decision does not modify media files. The staged source remains on disk even after a resolved job completes;
 explicit Forget Disc or staged-disc deletion can remove retained staged media. The dismissal or extra mapping is
@@ -46,11 +48,10 @@ in the conflict audit journal; the existing file is checked again by checksum at
 missing sources invalidate the decision. If publication fails or is interrupted after creating an output, the staged
 source and created outputs are retained, and manual review may be required before retrying.
 
-Replace Existing remains unavailable; no existing media file is overwritten by these actions. Migration 31 adds an
-independent conflict-audit journal and replacement-transaction journal. Non-replacement actions use the audit
-journal; the replacement journal is not used for these decisions. Startup reconciles incomplete replacement
-transactions before cleanup and retains associated staged media for review. Replacement journal states are not
-proof that filesystem operations have occurred.
+Migration 31 adds an independent conflict-audit journal and replacement-transaction journal. Non-replacement
+actions use the audit journal; replacement uses both journals. Startup reconciles incomplete replacement transactions
+before cleanup and retains associated staged media for review. Replacement journal states are not proof that
+filesystem operations have occurred.
 Audit records are displayed on staged-disc cards, but an audit record alone does not resolve a conflict.
 See [the replacement design](./TV-EPISODE-REPLACEMENT-DESIGN.md) for the remaining safety work.
 

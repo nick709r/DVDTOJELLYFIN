@@ -323,6 +323,16 @@ export class SqliteTvConflictJournalRepository implements TvConflictJournalRepos
     return rows.map(({ jobId }) => jobId);
   }
 
+  listTransactionsForJob(jobId: string): TvReplacementTransaction[] {
+    const rows = this.db.prepare("SELECT id FROM tv_replacement_transactions WHERE job_id = ? ORDER BY created_at, id")
+      .all(jobId) as Array<{ id: string }>;
+    return rows.map(({ id }) => {
+      const transaction = this.getTransaction(id);
+      if (!transaction) throw new Error(`Replacement transaction ${id} disappeared`);
+      return transaction;
+    });
+  }
+
   transitionTransaction(
     id: string,
     expected: TvReplacementState,

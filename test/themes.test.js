@@ -95,7 +95,7 @@ test("episode conflict provenance displays both sources without overstating veri
   const verified = sandbox.renderTvEpisodeConflict(conflict, task, 2);
   for (const value of ["Verified", "file contents are not verified", "old-disc", "new-disc",
     "old-confirmed", "old-published", "new-confirmed", "Disc 1", "Disc 2", "Verified — user-confirmed mapping",
-    "&lt;Episode&gt;", "Show &amp; episode.mkv", "Keep Existing", "Keep Both", "Mark As Extras"]) {
+    "&lt;Episode&gt;", "Show &amp; episode.mkv", "Replace Existing", "Keep Existing", "Keep Both", "Mark As Extras"]) {
     assert.ok(verified.includes(value), `${value} appears in the conflict display`);
   }
   const legacy = sandbox.renderTvEpisodeConflict({ ...conflict, provenanceStatus: "legacy" }, task, 2);

@@ -1,6 +1,6 @@
 import { access, copyFile, lstat, mkdir, readdir, realpath, rename, rm, rmdir, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { MediaWorkflow, MediaWorkflowContext } from "../../application/media-workflow-registry.js";
 import type { InspectedMediaSource } from "../../application/media-source-coordinator.js";
@@ -36,6 +36,7 @@ import { discNameKey, normalizeDiscName, parseDiscStructureHints, searchVariants
 import { findTvEpisodeConflicts } from "../../application/tv-episode-conflicts.js";
 import { resolvedKeepExistingTracks } from "../../application/tv-keep-existing.js";
 import { tvEpisodeOutput } from "../../application/tv-episode-output.js";
+import { executeReplacementTransaction, prepareReplacementCandidate } from "../../application/tv-replacement-executor.js";
 
 const minimumWorkBytes = 8 * 1024 ** 3;
 const minimumOutputBytes = 1024 ** 3;
@@ -282,6 +283,15 @@ async function processMappedTvEpisodes(
       const prepared = selected.map(({ item, mapping }) => {
         const output = tvEpisodeOutput(settings, recovery, mapping);
         const action = actions.get(item.id);
+        if (action === "replace_existing") {
+          const trackConflicts = conflicts.filter((conflict) => conflict.trackId === item.id);
+          const targetPath = trackConflicts[0]?.existing.outputPath;
+          if (!targetPath || trackConflicts.some((conflict) => conflict.existing.outputPath !== targetPath ||
+            conflict.provenanceStatus !== "verified") || !targetPath.toLowerCase().endsWith(`.${settings.format}`)) {
+            throw new Error("Replacement requires one verified existing file in the selected output format");
+          }
+          return { item, mapping, ...output, targetPath, action };
+        }
         if (action === "keep_both" || action === "mark_as_extras") {
           const suffix = createHash("sha256").update(job.id).update("\0").update(item.id).digest("hex").slice(0, 12);
           const baseName = action === "keep_both" ? `${output.baseName} [alternate-${suffix}]` :
@@ -297,7 +307,8 @@ async function processMappedTvEpisodes(
           action
         };
       });
-      for (const { item, targetPath } of prepared) {
+      for (const { item, targetPath, action } of prepared) {
+        if (action === "replace_existing") continue;
         const collision = await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return false;
           throw error;
@@ -371,7 +382,7 @@ async function processMappedTvEpisodes(
             }
           });
         }
-        const collision = await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
+        const collision = action === "replace_existing" ? false : await access(targetPath).then(() => true, (error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return false;
           throw error;
         });
@@ -379,8 +390,50 @@ async function processMappedTvEpisodes(
 
         const input = inputs.get(item.id);
         if (!input) throw new Error(`Source provider ${info.providerId} returned no video artifact for track ${item.id}`);
+        const assignment = taskAssignments.find((entry) => entry.trackId === item.id);
+        let candidatePath = targetPath;
+        let transactionId: string | undefined;
+        if (action === "replace_existing") {
+          if (!stagedFiles || !assignment?.keepExisting || !assignment.confirmedAt) {
+            throw new Error("Replacement requires a staged source and confirmed conflict decision");
+          }
+          const trackConflicts = conflicts.filter((conflict) => conflict.trackId === item.id);
+          const conflict = trackConflicts[0];
+          const audit = jobs.listTvConflictAudit(job.id).reverse().find((record) =>
+            record.action === "replace_existing" && record.incoming.trackId === item.id &&
+            record.details.conflicts === assignment.keepExisting?.conflicts);
+          if (!conflict || !audit) throw new Error("Replacement conflict decision is unavailable");
+          const existingPublications = [...new Set(mapping.episodes.map((episode) => episode.seasonNumber))]
+            .flatMap((season) => jobs.listTvEpisodePublications(season))
+            .filter((publication) => publication.outputPath === targetPath);
+          const now = new Date().toISOString();
+          transactionId = randomUUID();
+          candidatePath = join(dirname(targetPath), `.autodisc-replacement-${transactionId}.${settings.format}`);
+          const quarantineDirectory = resolve(settings.workDir, ".autodisc", "quarantine", transactionId);
+          await mkdir(quarantineDirectory, { recursive: true, mode: 0o700 });
+          const incoming = {
+            fingerprint, discLabel: source.label, trackId: item.id,
+            trackTitle: item.title ?? "", confirmedAt: assignment.confirmedAt
+          };
+          jobs.replacementJournal().createReplacementTransaction({
+            id: transactionId, jobId: job.id, state: "created", createdAt: now, updatedAt: now,
+            originalPath: targetPath, replacementPath: targetPath,
+            quarantinePath: join(quarantineDirectory, `original.${settings.format}`),
+            originalChecksum: null, replacementChecksum: null, existing: conflict.existing,
+            incoming, failure: null
+          }, {
+            candidatePath, stagedSourcePath: input, existingPublications,
+            replacementPublications: mapping.episodes.map((episode) => ({
+              outputPath: targetPath, ...incoming, discNumber: recovery.discNumber,
+              seriesName, metadataProvider: recovery.metadataProvider, providerId: recovery.providerId,
+              seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber, publishedAt: now
+            })),
+            conflict: { conflicts: assignment.keepExisting.conflicts, mapping: assignment.keepExisting.mapping },
+            decisionBy: audit.decisionBy, provenanceStatus: conflict.provenanceStatus
+          });
+        }
         const conversionStart = Date.now();
-        const encoded = await converter(input, targetPath, baseName, settings, (encoder) => {
+        const encoded = await converter(input, candidatePath, baseName, settings, (encoder) => {
           logTvContinuationState(jobs, job.id, "publishing", continuationSource);
           jobs.step(job, {
             id: `publish-tv-${item.id}`,
@@ -394,7 +447,17 @@ async function processMappedTvEpisodes(
           jobs.update(job, { progress: Math.min(99, Math.round(overallProgress)) });
           events.emit("status");
         }, signal);
-        createdOutputs.push(targetPath);
+        if (transactionId && assignment?.keepExisting) {
+          await prepareReplacementCandidate(jobs.replacementJournal(), transactionId);
+          const saved = JSON.parse(assignment.keepExisting.conflicts) as Array<{ checksum: string }>;
+          const evidence = jobs.replacementJournal().getCandidateEvidence(transactionId);
+          if (!evidence || saved.some((item) => item.checksum !== evidence.original.checksum)) {
+            throw new Error("The existing episode changed during conversion; replacement requires review");
+          }
+          await executeReplacementTransaction(jobs.replacementJournal(), settings, transactionId);
+        } else {
+          createdOutputs.push(targetPath);
+        }
         if (action) retainedOutputs.add(targetPath);
         const output = await stat(targetPath);
         if (output.size < 1024) throw new Error(`Published TV episode failed size validation: ${targetPath}`);
@@ -455,9 +518,11 @@ async function processMappedTvEpisodes(
         );
         const ownOutputs = new Set(prepared.filter(({ action }) => action === "keep_both")
           .map(({ targetPath }) => targetPath));
-        const stillKept = await resolvedKeepExistingTracks(recovery, taskAssignments,
-          currentConflicts.filter((conflict) => !ownOutputs.has(conflict.existing.outputPath)));
-        if ([...keptTracks].some((trackId) => !stillKept.has(trackId))) {
+        const remainingAssignments = taskAssignments.filter((assignment) => actions.get(assignment.trackId) !== "replace_existing");
+        const stillKept = await resolvedKeepExistingTracks(recovery, remainingAssignments,
+          currentConflicts.filter((conflict) => !ownOutputs.has(conflict.existing.outputPath) &&
+            actions.get(conflict.trackId) !== "replace_existing"));
+        if ([...keptTracks].some((trackId) => actions.get(trackId) !== "replace_existing" && !stillKept.has(trackId))) {
           throw new Error("The existing episode changed during publishing; staged content was retained for review");
         }
         if (!jobs.updateDiscRecovery(fingerprint, {
@@ -466,7 +531,7 @@ async function processMappedTvEpisodes(
         })) throw new Error("Dismissed episode mappings could not be removed from disc recovery");
       }
       jobs.recordTvEpisodePublications(prepared.flatMap(({ item, mapping, targetPath, action }) =>
-        action === "mark_as_extras" ? [] : mapping.episodes.map((episode) => ({
+        action === "mark_as_extras" || action === "replace_existing" ? [] : mapping.episodes.map((episode) => ({
           outputPath: targetPath,
           fingerprint,
           discLabel: source.label,
@@ -870,7 +935,7 @@ async function processMappedTvEpisodes(
     const jobs = this.matchingJobs;
     if (!jobs) return;
     for (const task of jobs.listTvMatchingTasks()) {
-      if (jobs.hasReplacementTransaction(task.jobId)) {
+      if (jobs.hasBlockingReplacementTransaction(task.jobId)) {
         if (task.status === "processing" || task.status === "ready-to-publish") {
           jobs.updateTvMatchingTask(task.jobId, {
             status: "awaiting-mapping",
@@ -915,7 +980,7 @@ async function processMappedTvEpisodes(
   ): Promise<void> {
     const jobs = this.matchingJobs;
     if (!jobs || !this.tvWorkflow) throw new Error("TV matching service is unavailable");
-    if (jobs.hasReplacementTransaction(jobId)) throw new Error("Replacement-associated disc requires manual review; staged media has been retained");
+    if (jobs.hasBlockingReplacementTransaction(jobId)) throw new Error("Replacement-associated disc requires manual review; staged media has been retained");
     logTvContinuationState(jobs, jobId, "converting", continuationSource);
     const task = jobs.getTvMatchingTask(jobId);
     if (!task) throw new Error("TV matching task was not found");

@@ -1751,7 +1751,7 @@ function renderTvEpisodeConflict(conflict, task, discNumber, allConflicts = [con
     Provenance: ${assignment?.confirmed && assignment.confirmedAt ? "Verified — user-confirmed mapping" : "Unknown — no recorded mapping confirmation"}<br>
     Disc ID: <code>${escapeHtml(task.fingerprint)}</code>${assignment?.confirmedAt ? `<br>Mapping confirmed: ${escapeHtml(assignment.confirmedAt)}` : ""}</p>
     ${conflict.stale ? `<p class="diagnostic-error">The existing source is no longer available. Save the episode assignment again to review this title.</p>` :
-      `${[["keep_existing", "Keep Existing"], ["keep_both", "Keep Both"], ["mark_as_extras", "Mark As Extras"]].map(([action, label]) =>
+      `${[["replace_existing", "Replace Existing"], ["keep_existing", "Keep Existing"], ["keep_both", "Keep Both"], ["mark_as_extras", "Mark As Extras"]].map(([action, label]) =>
         `<button type="button" class="button secondary tv-conflict-action" data-action="${action}" data-episode-count="${assignment?.selectedEpisodes?.length || 0}"
         data-track-id="${escapeHtml(conflict.trackId)}" data-conflict="${escapeHtml(JSON.stringify(conflict))}"
         data-conflicts="${escapeHtml(JSON.stringify(allConflicts.filter((item) => item.trackId === conflict.trackId)))}">${label}</button>`).join("")}`}
@@ -1907,7 +1907,7 @@ function renderTvMatchingTask(entry) {
       ${conflicts.map((conflict) => renderTvEpisodeConflict(conflict, task, discNumber, conflicts)).join("")}
       <p>Each action applies to the entire incoming title and all of its conflicts. The staged source is retained.</p>
       <p>Keep Both publishes an alternate episode. Mark As Extras publishes the title to the series Extras folder.</p>
-      <p>Replace Existing requires transaction-safe replacement support and is currently unavailable.</p>
+      <p>Replace Existing requires Linux and one existing file with verified publication provenance. The original is retained in quarantine.</p>
     </section>` : ""}
     ${renderTvConflictHistory(conflictHistory)}
     <div class="tv-disc-actions">
@@ -2211,6 +2211,9 @@ $("#tv-track-preview-close").addEventListener("click", () => {
 document.addEventListener("click", async (event) => {
   const conflictAction = event.target.closest(".tv-conflict-action");
   if (conflictAction) {
+    if (conflictAction.dataset.action === "replace_existing" && !confirm(
+      "Replace the existing episode with this staged title? The original will be retained in quarantine."
+    )) return;
     if (Number(conflictAction.dataset.episodeCount) > 1 && !confirm(
       "This title contains multiple episodes. The selected action applies to the entire title, including episodes without a conflict. Continue?"
     )) return;

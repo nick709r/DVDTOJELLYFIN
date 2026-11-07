@@ -32,7 +32,7 @@ export interface TvMatchingAssignment {
   confirmed?: boolean;
   confirmedAt?: string;
   keepExisting?: {
-    action?: "keep_existing" | "keep_both" | "mark_as_extras";
+    action?: "keep_existing" | "keep_both" | "mark_as_extras" | "replace_existing";
     mapping: string;
     conflicts: string;
   };

@@ -1,7 +1,7 @@
 # TV episode replacement
 
-Replace Existing remains disabled in the user workflow. The replacement executor, quarantine, rollback and
-startup reconciliation are implemented, but are not yet connected to the conflict action and conversion workflow.
+Replace Existing connects the conflict action and conversion workflow to the replacement executor, quarantine,
+rollback and startup reconciliation.
 Startup reconciles incomplete transactions before cleanup and retains associated staged media; ambiguous transactions
 require manual review and retain their claims. A journal row or checksum field alone is not evidence that a file is safe.
 

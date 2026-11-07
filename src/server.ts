@@ -1572,7 +1572,7 @@ app.get<{ Params: { id: string } }>("/api/v1/tv/matching/:id", async (request, r
 app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/keep-existing", async (request, reply) => {
   const body = request.body as Record<string, unknown> | null;
   const action = body?.action ?? "keep_existing";
-  if (action !== "keep_existing" && action !== "keep_both" && action !== "mark_as_extras") {
+  if (action !== "keep_existing" && action !== "keep_both" && action !== "mark_as_extras" && action !== "replace_existing") {
     return reply.code(400).send({ error: "Unsupported episode conflict action" });
   }
   if (typeof body?.trackId !== "string" || !body.expectedConflict || typeof body.expectedConflict !== "object" ||
@@ -1595,6 +1595,21 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/kee
   const expectedKeys = expected.map((conflict) => JSON.stringify(conflict)).sort();
   if (!matches.length || JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
     return reply.code(409).send({ error: "The conflict changed; reload and review it" });
+  }
+  if (action === "replace_existing") {
+    if (process.platform !== "linux") {
+      return reply.code(409).send({ error: "Replace Existing requires a supported Linux filesystem" });
+    }
+    if (!assignment.confirmedAt) {
+      return reply.code(409).send({ error: "Replacement requires a timestamped episode confirmation" });
+    }
+    if (new Set(matches.map((conflict) => conflict.existing.outputPath)).size !== 1 ||
+      matches.some((conflict) => conflict.provenanceStatus !== "verified")) {
+      return reply.code(409).send({ error: "Replacement requires one existing file with verified publication provenance" });
+    }
+    if (!matches[0]!.existing.outputPath.toLowerCase().endsWith(`.${getSettings().format}`)) {
+      return reply.code(409).send({ error: "The existing episode must use the selected output format" });
+    }
   }
   const snapshot = await keepExistingConflicts(matches);
   const current = repositories.tvMatchingTasks.get(task.jobId);
@@ -1635,7 +1650,8 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/kee
           stagedPath: join(task.stagingPath, task.files[assignment.trackId]!),
           disposition: action === "keep_existing" ? "incoming title dismissed; staged source retained" :
             action === "keep_both" ? "incoming title to be published as an alternate" :
-              "incoming title to be published as an extra" }
+              action === "mark_as_extras" ? "incoming title to be published as an extra" :
+                "incoming title queued for replacement" }
       });
     }
     return true;

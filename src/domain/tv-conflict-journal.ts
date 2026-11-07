@@ -79,6 +79,7 @@ export interface TvConflictJournalRepository {
   completeReplacementTransaction(id: string, audit: TvConflictAuditRecord): void;
   getTransaction(id: string): TvReplacementTransaction | undefined;
   listIncompleteTransactions(): TvReplacementTransaction[];
+  listTransactionsForJob(jobId: string): TvReplacementTransaction[];
   listReplacementJobIds(): string[];
   transitionTransaction(
     id: string,

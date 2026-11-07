@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const resumeReadyTvTask = (): void => {
     if (resumingReadyTvTask || !providerRuntime || providerRuntime.jobs.activeJob()) return;
     const task = providerRuntime.jobs.listTvMatchingTasks().find((candidate) =>
-      candidate.status === "ready-to-publish" && !providerRuntime!.jobs.hasReplacementTransaction(candidate.jobId));
+      candidate.status === "ready-to-publish" && !providerRuntime!.jobs.hasBlockingReplacementTransaction(candidate.jobId));
     if (!task) return;
     resumingReadyTvTask = true;
     void continueTvTask(task.jobId, "automatic-ready-task").catch((error: unknown) => {

@@ -5,7 +5,7 @@ import type { ReviewItemInput, ReviewItem } from "../domain/reviews.js";
 import type { DiscRecovery, DiscRecoveryUpdate, DiscType, MediaType } from "../domain/disc-recovery.js";
 import type { TvMatchingTask, TvMatchingTaskInput } from "../domain/tv-matching.js";
 import type { TvEpisodePublication } from "../domain/tv-publication.js";
-import type { TvConflictAuditRecord } from "../domain/tv-conflict-journal.js";
+import type { TvConflictAuditRecord, TvConflictJournalRepository } from "../domain/tv-conflict-journal.js";
 
 export interface JobStep {
   id: string;
@@ -119,6 +119,15 @@ export class JobCoordinator {
 
   hasReplacementTransaction(jobId: string): boolean {
     return this.repositories.tvConflictJournal.listReplacementJobIds().includes(jobId);
+  }
+
+  hasBlockingReplacementTransaction(jobId: string): boolean {
+    return this.repositories.tvConflictJournal.listTransactionsForJob(jobId)
+      .some((transaction) => transaction.state !== "rolled_back");
+  }
+
+  replacementJournal(): TvConflictJournalRepository {
+    return this.repositories.tvConflictJournal;
   }
 
   recordTvEpisodePublications(publications: readonly TvEpisodePublication[]): void {
