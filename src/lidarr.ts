@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 export interface LidarrConfig {
   url: string;
   apiKey: string;
@@ -44,6 +46,55 @@ interface LidarrCommand {
 
 type Fetcher = typeof fetch;
 
+function ipv4ToInt(ip: string): number {
+  const parts = ip.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return -1;
+  return (((parts[0] << 24) >>> 0) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+function isPrivateOrSpecialIPv4(ip: string): boolean {
+  const v = ipv4ToInt(ip);
+  if (v < 0) return true;
+  const inRange = (start: string, end: string): boolean => {
+    const s = ipv4ToInt(start);
+    const e = ipv4ToInt(end);
+    return v >= s && v <= e;
+  };
+  return inRange("0.0.0.0", "0.255.255.255") ||         // "this" network
+    inRange("10.0.0.0", "10.255.255.255") ||            // private
+    inRange("100.64.0.0", "100.127.255.255") ||         // CGNAT
+    inRange("127.0.0.0", "127.255.255.255") ||          // loopback
+    inRange("169.254.0.0", "169.254.255.255") ||        // link-local
+    inRange("172.16.0.0", "172.31.255.255") ||          // private
+    inRange("192.0.0.0", "192.0.0.255") ||              // IETF protocol assignments
+    inRange("192.168.0.0", "192.168.255.255") ||        // private
+    inRange("224.0.0.0", "239.255.255.255") ||          // multicast
+    inRange("240.0.0.0", "255.255.255.255");            // reserved/broadcast
+}
+
+function isPrivateOrSpecialIPv6(ip: string): boolean {
+  const normalized = ip.toLowerCase();
+  return normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || // fe80::/10 link-local
+    normalized.startsWith("fc") || normalized.startsWith("fd") || // fc00::/7 unique-local
+    normalized.startsWith("ff"); // ff00::/8 multicast
+}
+
+function assertSafeLidarrHost(parsed: URL): void {
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    throw new Error("Lidarr URL must not target localhost");
+  }
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4 && isPrivateOrSpecialIPv4(hostname)) {
+    throw new Error("Lidarr URL must not target private, loopback, or special-use IP addresses");
+  }
+  if (ipVersion === 6 && isPrivateOrSpecialIPv6(hostname)) {
+    throw new Error("Lidarr URL must not target private, loopback, or special-use IP addresses");
+  }
+}
+
 function normalizedBaseUrl(url: string): URL {
   let parsed: URL;
   try {
@@ -55,6 +106,7 @@ function normalizedBaseUrl(url: string): URL {
       parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error("Lidarr URL must use HTTP or HTTPS and must not contain credentials, a query, or a fragment");
   }
+  assertSafeLidarrHost(parsed);
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   return parsed;
 }
