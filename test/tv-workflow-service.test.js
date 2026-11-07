@@ -718,6 +718,7 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
     updatedAt: new Date().toISOString()
   };
   const jobCalls = [];
+  const publications = [];
   const jobs = {
     getSettings: () => ({
       workDir, tvRootDir, moviesDir: path.join(root, "Movies"),
@@ -727,6 +728,11 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
     lastDiscFingerprint: () => null,
     listDiscRecoveries: () => [],
     listTvMatchingTasks: () => [],
+    getTvMatchingTask: () => undefined,
+    listTvEpisodePublications: () => [],
+    listCompletedTvDiscHistory: () => [],
+    getJob: () => undefined,
+    recordTvEpisodePublications: (items) => publications.push(...items),
     recordDiscDetection: () => recovery,
     begin: () => jobContext,
     record: (...args) => jobCalls.push(["record", ...args]),
@@ -774,6 +780,8 @@ test("manual TV recovery maps and publishes each selected disc track", async () 
     assert.deepEqual(jobCalls.filter(([kind]) => kind === "fail"), []);
     assert.deepEqual(selectedTracks, ["1", "2"]);
     assert.equal(publishedSteps.length, 2);
+    assert.equal(publications.length, 2);
+    assert.ok(publications.every((item) => item.confirmedAt === null));
     assert.ok(jobCalls.some(([kind]) => kind === "complete"));
     assert.equal(jobCalls.some(([kind]) => kind === "fail" || kind === "review"), false);
     await access(path.join(tvRootDir, "Example Show", "Season 01", "Example Show - S01E01 - Pilot.mkv"));
@@ -1163,6 +1171,4 @@ test("a completed season never advances to the next season from history", async 
   assert.notEqual(result.identification.identificationSource.disc, "Sequencing history");
   assert.ok(history.requested.every((season) => season === 1), "no other season is consulted");
 });
-
-
 

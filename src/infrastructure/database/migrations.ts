@@ -509,4 +509,118 @@ export function migrateDatabase(db: Database.Database, defaults: AppSettings): v
     db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (29, ?)")
       .run(new Date().toISOString());
   }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 30").get()) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE tv_episode_publications (
+          output_path TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          disc_label TEXT NOT NULL,
+          disc_number INTEGER,
+          track_id TEXT NOT NULL,
+          track_title TEXT NOT NULL,
+          series_name TEXT NOT NULL,
+          metadata_provider TEXT NOT NULL,
+          provider_id TEXT,
+          season_number INTEGER NOT NULL,
+          episode_number INTEGER NOT NULL,
+          confirmed_at TEXT,
+          published_at TEXT NOT NULL,
+          PRIMARY KEY (output_path, season_number, episode_number)
+        );
+        CREATE INDEX tv_episode_publications_season ON tv_episode_publications(season_number, episode_number);
+        CREATE INDEX tv_episode_publications_fingerprint ON tv_episode_publications(fingerprint);
+      `);
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (30, ?)")
+        .run(new Date().toISOString());
+    })();
+  }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 31").get()) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE tv_conflict_audit (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          at TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('keep_existing', 'keep_both', 'mark_as_extras', 'replace_existing')),
+          season_number INTEGER NOT NULL,
+          episode_number INTEGER NOT NULL,
+          incoming_json TEXT NOT NULL,
+          existing_json TEXT NOT NULL,
+          provenance_status TEXT NOT NULL CHECK (provenance_status IN ('verified', 'legacy', 'unknown')),
+          decision_by TEXT NOT NULL,
+          details_json TEXT NOT NULL
+        );
+        CREATE INDEX tv_conflict_audit_job ON tv_conflict_audit(job_id, at);
+        CREATE TABLE tv_replacement_transactions (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('created', 'quarantined', 'published', 'completed', 'failed', 'rolled_back')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          original_path TEXT NOT NULL,
+          quarantine_path TEXT NOT NULL,
+          replacement_path TEXT NOT NULL,
+          original_checksum TEXT,
+          replacement_checksum TEXT,
+          existing_json TEXT NOT NULL,
+          incoming_json TEXT NOT NULL,
+          failure TEXT
+        );
+        CREATE INDEX tv_replacement_transactions_state ON tv_replacement_transactions(state);
+      `);
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (31, ?)")
+        .run(new Date().toISOString());
+    })();
+  }
+  if (!db.prepare("SELECT 1 FROM schema_migrations WHERE version = 32").get()) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE tv_replacement_transactions RENAME TO tv_replacement_transactions_v31;
+        DROP INDEX tv_replacement_transactions_state;
+        CREATE TABLE tv_replacement_transactions (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('created', 'candidate_ready', 'quarantined', 'published', 'completed', 'failed', 'rolled_back')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          original_path TEXT NOT NULL,
+          quarantine_path TEXT NOT NULL,
+          replacement_path TEXT NOT NULL,
+          original_checksum TEXT,
+          replacement_checksum TEXT,
+          existing_json TEXT NOT NULL,
+          incoming_json TEXT NOT NULL,
+          failure TEXT
+        );
+        INSERT INTO tv_replacement_transactions SELECT * FROM tv_replacement_transactions_v31;
+        DROP TABLE tv_replacement_transactions_v31;
+        CREATE INDEX tv_replacement_transactions_state ON tv_replacement_transactions(state);
+        CREATE TABLE tv_replacement_snapshots (
+          transaction_id TEXT PRIMARY KEY REFERENCES tv_replacement_transactions(id),
+          snapshot_json TEXT NOT NULL
+        );
+        CREATE TRIGGER tv_replacement_snapshots_immutable
+        BEFORE UPDATE ON tv_replacement_snapshots
+        BEGIN SELECT RAISE(ABORT, 'replacement snapshots are immutable'); END;
+        CREATE TRIGGER tv_replacement_snapshots_no_delete
+        BEFORE DELETE ON tv_replacement_snapshots
+        BEGIN SELECT RAISE(ABORT, 'replacement snapshots are immutable'); END;
+        CREATE TABLE tv_replacement_claims (
+          claim_key TEXT PRIMARY KEY,
+          transaction_id TEXT NOT NULL REFERENCES tv_replacement_transactions(id)
+        );
+        CREATE INDEX tv_replacement_claims_transaction ON tv_replacement_claims(transaction_id);
+        CREATE TABLE tv_replacement_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transaction_id TEXT NOT NULL REFERENCES tv_replacement_transactions(id),
+          at TEXT NOT NULL,
+          state TEXT NOT NULL,
+          details_json TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (32, ?)")
+        .run(new Date().toISOString());
+    })();
+  }
 }

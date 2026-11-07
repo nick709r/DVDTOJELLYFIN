@@ -146,7 +146,7 @@ test("review completion rejects invalid, conflicting, unsupported and unknown it
   assert.equal(await code(queue.complete("bogus", { title: "X" })), "not-found");
 });
 
-function tvHarness({ active = false } = {}) {
+function tvHarness({ active = false, conflict = false } = {}) {
   const state = {
     active,
     continued: [],
@@ -175,6 +175,7 @@ function tvHarness({ active = false } = {}) {
       return state.task;
     },
     hasActiveJob: () => state.active,
+    hasEpisodeConflicts: async () => conflict,
     continueTask: (jobId, source) => { state.continued.push([jobId, source]); },
     isAllowedPoster: (url) => url.startsWith("https://image.tmdb.org/")
   };
@@ -202,6 +203,16 @@ test("TV review completes through the unified service with identification and ep
   assert.deepEqual(result.item.tv.progress, { matched: 2, total: 2 });
   assert.deepEqual(result.item.tv.tracks[1].episodeNumbers, [2, 3]);
   assert.equal(result.item.selectedTitle, "Show");
+  assert.ok(state.task.assignments[0].confirmedAt);
+});
+
+test("TV episode conflicts keep assignments staged instead of continuing", async () => {
+  const { queue, state } = tvHarness({ conflict: true });
+  const result = await queue.complete("tv-matching-task:t1", { identification, assignments: fullAssignments });
+  assert.equal(result.continuation, "blocked");
+  assert.deepEqual(state.continued, []);
+  assert.ok(state.task.assignments[0].confirmedAt);
+  assert.equal(await code(queue.complete("tv-matching-task:t1", { publish: "required" })), "conflict");
 });
 
 test("movie and TV reviews complete through the same service call and result shape", async () => {

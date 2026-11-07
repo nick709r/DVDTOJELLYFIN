@@ -26,15 +26,112 @@ function loadEngine(savedTheme) {
   });
 }
 
-test("v2 keeps every v1.37.0 screen hook, form field, page and navigation target", async () => {
+test("themes retain v1.37.0 hooks except for the merged identification navigation target", async () => {
   const html = await read("../web/index.html");
   for (const [kind, expected] of Object.entries(baseline)) {
     const present = attrs(html, kind);
-    const missing = expected.filter((value) => !present.has(value));
+    const missing = expected.filter((value) => !present.has(value) &&
+      !(kind === "data-page" && value === "tv-analysis"));
     assert.deepEqual(missing, [], `${kind} values removed since v1.37.0`);
   }
   const extraIds = [...attrs(html, "id")].filter((id) => !baseline.id.includes(id));
   assert.deepEqual(extraIds, ["theme-select"], "the theme picker is the only new element");
+});
+
+test("TV analysis is available inside the Review Center instead of a separate page", async () => {
+  const html = await read("../web/index.html");
+  const script = await read("../web/app.js");
+  assert.match(html, /data-page="tv-reviews"[^>]*>Review Center<\/button>/);
+  assert.doesNotMatch(html, /data-page="tv-analysis"/);
+  assert.match(html, /<section id="page-tv-reviews"[\s\S]*<details id="page-tv-analysis"/);
+  assert.match(script, /\$\("#page-tv-analysis"\)\.open = true/);
+  assert.doesNotMatch(script, /showPage\("tv-analysis"\)/);
+});
+
+test("staged TV and preserved review cards expose the confirmed Forget Disc action", async () => {
+  const html = await read("../web/index.html");
+  const script = await read("../web/app.js");
+  assert.match(script, /forget-disc" data-job-id="\$\{escapeHtml\(task\.jobId\)\}"/);
+  assert.match(script, /forget-disc" data-job-id="\$\{escapeHtml\(item\.originalJobId\)\}"/);
+  assert.match(script, /forgetDiscDialog\.showModal\(\)/);
+  assert.match(html, /Review records and staged media/);
+  assert.match(html, /Published library files are not removed/);
+});
+
+test("Review Center labels action types and displays both sources of an episode conflict", async () => {
+  const script = await read("../web/app.js");
+  for (const label of ["Needs Match", "Needs Identification", "Episode Conflict", "Metadata Conflict",
+    "Processing Warnings", "Needs User Decision"]) {
+    assert.ok(script.includes(label), `${label} appears in the review UI`);
+  }
+  assert.match(script, /existing\.discLabel/);
+  assert.match(script, /existing\.trackId/);
+  assert.match(script, /conflict\.trackId/);
+});
+
+test("episode conflict provenance displays both sources without overstating verification", async () => {
+  const script = await read("../web/app.js");
+  const start = script.indexOf("function renderTvEpisodeConflict(");
+  const end = script.indexOf("\nfunction renderTvMatchingTask(", start);
+  assert.ok(start >= 0 && end > start);
+  const sandbox = {
+    escapeHtml: (value) => String(value).replace(/[&<>"']/g, (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char])
+  };
+  vm.runInNewContext(script.slice(start, end), sandbox);
+  const task = {
+    fingerprint: "new-disc",
+    source: { label: "Disc 2" },
+    assignments: [{ trackId: "1", title: "<Episode>", confirmed: true, confirmedAt: "new-confirmed" }]
+  };
+  const conflict = {
+    seasonNumber: 1, episodeNumber: 7, trackId: "1", provenanceStatus: "verified",
+    existing: {
+      discLabel: "Disc 1", discNumber: 1, trackId: "7", trackTitle: "Blooper",
+      fingerprint: "old-disc", confirmedAt: "old-confirmed", publishedAt: "old-published",
+      outputPath: "Show & episode.mkv"
+    }
+  };
+  const verified = sandbox.renderTvEpisodeConflict(conflict, task, 2);
+  for (const value of ["Verified", "file contents are not verified", "old-disc", "new-disc",
+    "old-confirmed", "old-published", "new-confirmed", "Disc 1", "Disc 2", "Verified — user-confirmed mapping",
+    "&lt;Episode&gt;", "Show &amp; episode.mkv", "Keep Existing", "Keep Both", "Mark As Extras"]) {
+    assert.ok(verified.includes(value), `${value} appears in the conflict display`);
+  }
+  const legacy = sandbox.renderTvEpisodeConflict({ ...conflict, provenanceStatus: "legacy" }, task, 2);
+  assert.match(legacy, /Legacy.*unambiguous disc history/);
+  const unknown = sandbox.renderTvEpisodeConflict({
+    ...conflict, provenanceStatus: "unknown",
+    existing: { outputPath: "episode.mkv" }
+  }, { ...task, assignments: [] }, null);
+  assert.match(unknown, /Unknown.*source could not be established/);
+  assert.match(unknown, /Unknown disc/);
+  assert.match(unknown, /Unknown — no recorded mapping confirmation/);
+  assert.doesNotMatch(unknown, /old-confirmed|old-published|undefined/);
+});
+
+test("conflict history renders audit actions with escaped source and reviewer values", async () => {
+  const script = await read("../web/app.js");
+  const start = script.indexOf("function renderTvConflictHistory(");
+  const end = script.indexOf("\nfunction renderTvMatchingTask(", start);
+  assert.ok(start >= 0 && end > start);
+  const sandbox = {
+    escapeHtml: (value) => String(value).replace(/[&<>"']/g, (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char])
+  };
+  vm.runInNewContext(script.slice(start, end), sandbox);
+  assert.equal(sandbox.renderTvConflictHistory([]), "");
+  const markup = sandbox.renderTvConflictHistory([{
+    action: "keep_both", seasonNumber: 1, episodeNumber: 7, at: "2026-01-01",
+    decisionBy: "<admin>", provenanceStatus: "legacy",
+    existing: { discLabel: "Disc 1", trackId: "7" },
+    incoming: { discLabel: "<Disc 2>", trackId: "1" }
+  }]);
+  for (const value of ["Keep Both", "Season 1 Episode 7", "2026-01-01",
+    "&lt;admin&gt;", "&lt;Disc 2&gt;", "Disc 1", "legacy"]) {
+    assert.ok(markup.includes(value), `${value} appears in the audit history`);
+  }
+  assert.doesNotMatch(markup, /<admin>|<Disc 2>/);
 });
 
 test("the theme picker replaces the Light/Dark toggle and offers exactly the four themes", async () => {

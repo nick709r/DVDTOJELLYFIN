@@ -272,6 +272,11 @@ export class ReviewQueueCleanupService {
     const jobIds = new Set(jobs.map(({ id }) => id));
     const reviewJobIds = new Set((this.db.prepare("SELECT id FROM review_jobs").all() as Array<{ id: string }>).map(({ id }) => id));
     const taskIds = new Set((this.db.prepare("SELECT job_id AS id FROM tv_matching_tasks").all() as Array<{ id: string }>).map(({ id }) => id));
+    const replacementJobs = this.db.prepare("SELECT DISTINCT job_id AS id FROM tv_replacement_transactions").all() as Array<{ id: string }>;
+    for (const { id } of replacementJobs) {
+      jobIds.add(id);
+      taskIds.add(id);
+    }
     for (const job of jobs) if (activeJobStatuses.has(job.status)) taskIds.add(job.id);
     const roots: Array<{ path: string; kind: OwnedPath["kind"]; tracked: Set<string> }> = [
       { path: resolve(settings.workDir), kind: "job", tracked: jobIds },
@@ -408,6 +413,9 @@ export class ReviewQueueCleanupService {
   private async createPlan(row: ReviewRow, includeReviewItem = true): Promise<CleanupPlan> {
     const settings = this.getSettings();
     const jobId = row.related_job_id;
+    if (jobId && this.db.prepare("SELECT 1 FROM tv_replacement_transactions WHERE job_id = ? LIMIT 1").get(jobId)) {
+      throw new Error("Replacement transaction files must be retained for recovery");
+    }
     if (jobId && !uuidPattern.test(jobId)) throw new Error(`Job ID is not a valid owner identifier: ${jobId}`);
     if (row.status === "retrying") throw new Error("Review item is currently retrying");
     const job = jobId

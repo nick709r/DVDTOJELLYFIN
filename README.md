@@ -18,7 +18,7 @@
 
 ![AutoDisc dashboard in Modern Dark](./docs/screenshots/dashboard.png)
 
-AutoDisc watches your optical drive, classifies what you insert (movie, TV series or audio CD), looks up metadata, rips and converts the content, and publishes it into the library layout you choose for **Jellyfin, Sonarr, Radarr, Lidarr or any custom folder structure**. When it is not sure, it never guesses. It asks you in the **Review Queue**.
+AutoDisc watches your optical drive, classifies what you insert (movie, TV series or audio CD), looks up metadata, rips and converts the content, and publishes it into the library layout you choose for **Jellyfin, Sonarr, Radarr, Lidarr or any custom folder structure**. When it is not sure, it never guesses. It asks you in the **Review Center**.
 
 Run it as a web dashboard for hands-on control, or as a headless Linux service for unattended ingestion.
 
@@ -50,7 +50,7 @@ AutoDisc 2.0 is the milestone release that brings together everything built sinc
 - [How it works](#how-it-works)
 - [Media support](#media-support)
 - [Automation modes](#automation-modes)
-- [Review Queue](#review-queue)
+- [Review Center](#review-center)
 - [Metadata & Identification](#metadata--identification)
 - [TV matching](#tv-matching)
 - [Destination profiles](#destination-profiles)
@@ -123,7 +123,7 @@ sudo journalctl -u autodisc.service -f      # live logs
 - Media-type overrides (Movie, TV Series, Music, Data Disc) with an audit trail
 
 **Review**
-- One unified Review Queue for movies, TV discs, TV plans, music and failures
+- One Review Center for movies, TV discs, TV plans, music and failures
 - Search-and-select with ranked candidates, refine-search and manual-title fallback
 - TV Disc Review with video previews, searchable episode selectors and partial saves
 - Append-only audit trail with text and JSON export
@@ -167,9 +167,9 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 | --- | --- |
 | Dashboard (Modern Dark) | ![Dashboard](./docs/screenshots/dashboard.png) |
 | Dashboard (Modern Light) | ![Dashboard, light](./docs/screenshots/dashboard-light.png) |
-| Unified Review Queue | ![Review Queue](./docs/screenshots/review-centre.png) |
+| Review Center | ![Review Center](./docs/screenshots/review-centre.png) |
 | Metadata & Identification | ![Metadata providers](./docs/screenshots/metadata.png) |
-| Identification & Matching | ![Identification and matching](./docs/screenshots/tv-matching.png) |
+| TV analysis and episode suggestions | ![TV analysis and episode suggestions](./docs/screenshots/tv-matching.png) |
 | Activity & Insights | ![Activity and insights](./docs/screenshots/diagnostics.png) |
 | Settings | ![Settings](./docs/screenshots/settings.png) |
 
@@ -210,7 +210,7 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 2. **Analysis**: titles, runtimes, track structure and disc labels are gathered.
 3. **Classification**: movie, TV series or music, with a confidence score.
 4. **Metadata**: providers supply titles, years, series, episodes, albums and artwork.
-5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Queue. Unidentified TV discs keep ripping into protected staging.
+5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Center. Unidentified TV discs keep ripping into protected staging.
 6. **Processing**: ripping, encoding or extraction.
 7. **Publishing**: finished media lands in the destination profile's folder structure.
 
@@ -247,15 +247,15 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 
 | Mode | Behaviour | Good for |
 | --- | --- | --- |
-| **Regular Auto** (default) | Processes confident results and sends uncertain ones to the Review Queue. | Everyday use |
+| **Regular Auto** (default) | Processes confident results and sends uncertain ones to the Review Center. | Everyday use |
 | **Full Auto** | Keeps going. Failures are recorded and the disc is ejected so the drive can continue. | Unattended stacks |
 | **Review-Based** | Every disc waits for your approval before processing starts. | Careful curation |
 
 ---
 
-## Review Queue
+## Review Center
 
-The Review Queue is where automation hands control back to you, and where nothing is silently lost. **Movies, TV and TV plans share one workflow and one `MediaReviewItem` model.**
+The Review Center is where automation hands control back to you, and where nothing is silently lost. **Movies, TV and TV plans share one workflow and one `MediaReviewItem` model.** TV analysis and episode suggestions are available in the expandable section on the same page.
 
 1. A disc enters the queue.
 2. AutoDisc searches the metadata providers.

@@ -30,6 +30,9 @@ import { metadataUsageService, tvMetadataLookupService } from "./bootstrap/tv-me
 import { tvEpisodeMatchingPolicy } from "./application/tv-episode-matching-engine.js";
 import { tvWorkflowPolicy } from "./application/tv-workflow-service.js";
 import { normalizeDiscName } from "./application/tv-name-normalization.js";
+import { findTvEpisodeConflicts } from "./application/tv-episode-conflicts.js";
+import { keepExistingConflicts, keepExistingMapping, resolvedKeepExistingTracks, storedKeepExistingConflict } from "./application/tv-keep-existing.js";
+import { tvEpisodeOutput } from "./application/tv-episode-output.js";
 import type { MediaReviewSearchService } from "./application/media-review-search-service.js";
 import { MediaReviewQueueService } from "./application/media-review-queue-service.js";
 import { ReviewJobItemAdapter, TvMatchingTaskItemAdapter, TvPlanItemAdapter, parseTvIdentification, type TvIdentification } from "./application/media-review-item-adapters.js";
@@ -1341,7 +1344,7 @@ function persistTaskIdentification(task: TvMatchingTask, identification: TvIdent
   if (!learnedRecovery) throw new MediaReviewError("conflict", "Identification was saved but series evidence could not be stored");
   const assignments = identityChanged
     ? task.assignments.map((assignment) => {
-      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = assignment;
+      const { selectedEpisodes: _selectedEpisodes, confirmedAt: _confirmedAt, keepExisting: _keepExisting, ...unmatched } = assignment;
       return { ...unmatched, confirmed: false };
     })
     : task.assignments;
@@ -1354,17 +1357,52 @@ function persistTaskIdentification(task: TvMatchingTask, identification: TvIdent
   return { recovery: learnedRecovery, task: updatedTask };
 }
 
-function persistTaskAssignments(task: TvMatchingTask, assignments: TvMatchingAssignment[]): TvMatchingTask {
-  const updated = repositories.tvMatchingTasks.update(task.jobId, {
-    assignments,
-    status: tvMatchingReviewStatus(assignments),
-    failure: null
-  });
-  if (!updated) throw new MediaReviewError("not-found", "TV matching task could not be updated");
-  const mappings = assignments.flatMap((assignment) =>
+function taskMappings(assignments: readonly TvMatchingAssignment[]): EpisodeMapping[] {
+  return assignments.flatMap((assignment) =>
     assignment.confirmed && assignment.selectedEpisodes?.length
       ? [{ trackId: assignment.trackId, episodes: assignment.selectedEpisodes }]
       : []);
+}
+
+async function allConflictsForTask(task: TvMatchingTask, assignments = task.assignments) {
+  const recovery = repositories.discRecovery.get(task.fingerprint);
+  if (!recovery) throw new MediaReviewError("conflict", "Disc recovery record not found");
+  const settings = getSettings();
+  return findTvEpisodeConflicts(repositories.tvEpisodePublications, recovery, taskMappings(assignments), {
+    targetPath: (mapping) => tvEpisodeOutput(settings, recovery, mapping).targetPath,
+    legacyHistory: (season) => repositories.completedTvDiscHistory.listForSeason(season),
+    jobOutputPath: (id) => repositories.history.get(id)?.outputPath ?? null
+  });
+}
+
+async function conflictsForTask(task: TvMatchingTask, assignments = task.assignments) {
+  const conflicts = await allConflictsForTask(task, assignments);
+  const recovery = repositories.discRecovery.get(task.fingerprint);
+  if (!recovery) throw new MediaReviewError("conflict", "Disc recovery record not found");
+  const resolved = await resolvedKeepExistingTracks(recovery, assignments, conflicts, false);
+  const unresolved = conflicts.filter((conflict) => !resolved.has(conflict.trackId));
+  for (const assignment of assignments) {
+    if (!assignment.keepExisting || resolved.has(assignment.trackId) ||
+      conflicts.some((conflict) => conflict.trackId === assignment.trackId)) continue;
+    const previous = storedKeepExistingConflict(assignment);
+    if (previous) unresolved.push(Object.assign({}, previous, { stale: true }));
+  }
+  return unresolved;
+}
+
+async function persistTaskAssignments(task: TvMatchingTask, assignments: TvMatchingAssignment[]): Promise<TvMatchingTask> {
+  const conflicts = await conflictsForTask(task, assignments);
+  const current = repositories.tvMatchingTasks.get(task.jobId);
+  if (!current || current.status === "processing" || current.status === "completed") {
+    throw new MediaReviewError("conflict", "TV matching task is no longer available for editing");
+  }
+  const updated = repositories.tvMatchingTasks.update(task.jobId, {
+    assignments,
+    status: conflicts.length ? "awaiting-mapping" : tvMatchingReviewStatus(assignments),
+    failure: null
+  });
+  if (!updated) throw new MediaReviewError("not-found", "TV matching task could not be updated");
+  const mappings = taskMappings(assignments);
   if (!repositories.discRecovery.update(task.fingerprint, { mappings })) {
     throw new MediaReviewError("conflict", "Episode selections were saved, but disc recovery mappings could not be updated");
   }
@@ -1384,6 +1422,7 @@ mediaReviewQueue.register(new ReviewJobItemAdapter(repositories.reviewJobs, () =
 mediaReviewQueue.register(new TvMatchingTaskItemAdapter(repositories.tvMatchingTasks, repositories.discRecovery, {
   saveIdentification: persistTaskIdentification,
   saveAssignments: persistTaskAssignments,
+  hasEpisodeConflicts: async (task) => (await conflictsForTask(task)).length > 0,
   hasActiveJob: () => Boolean(activeJob()),
   continueTask: (jobId, source) => {
     if (!tvMatchingActions) throw new MediaReviewError("unavailable", "TV matching service is unavailable");
@@ -1503,13 +1542,16 @@ function completedTvDiscHistoryForTask(task: TvMatchingTask) {
 }
 
 app.get("/api/v1/tv/matching", async () => ({
-  tasks: repositories.tvMatchingTasks.list().map((task) => ({
+  tasks: await Promise.all(repositories.tvMatchingTasks.list().map(async (task) => ({
     task,
     progress: tvMatchingProgress(task.assignments),
     recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
+    conflicts: task.assignments.some((assignment) => assignment.confirmed)
+      ? await conflictsForTask(task) : [],
+    conflictHistory: repositories.tvConflictJournal.listAuditForJob(task.jobId),
     completedDiscHistory: completedTvDiscHistoryForTask(task),
     mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
-  }))
+  })))
 }));
 
 app.get<{ Params: { id: string } }>("/api/v1/tv/matching/:id", async (request, reply) => {
@@ -1519,9 +1561,91 @@ app.get<{ Params: { id: string } }>("/api/v1/tv/matching/:id", async (request, r
     task,
     progress: tvMatchingProgress(task.assignments),
     recovery: repositories.discRecovery.get(task.fingerprint) ?? null,
+    conflicts: task.assignments.some((assignment) => assignment.confirmed)
+      ? await conflictsForTask(task) : [],
+    conflictHistory: repositories.tvConflictJournal.listAuditForJob(task.jobId),
     completedDiscHistory: completedTvDiscHistoryForTask(task),
     mediaTypeAudit: repositories.discRecovery.mediaTypeOverrideAudit(task.fingerprint)
   };
+});
+
+app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/keep-existing", async (request, reply) => {
+  const body = request.body as Record<string, unknown> | null;
+  const action = body?.action ?? "keep_existing";
+  if (action !== "keep_existing" && action !== "keep_both" && action !== "mark_as_extras") {
+    return reply.code(400).send({ error: "Unsupported episode conflict action" });
+  }
+  if (typeof body?.trackId !== "string" || !body.expectedConflict || typeof body.expectedConflict !== "object" ||
+    typeof body.updatedAt !== "string") {
+    return reply.code(400).send({ error: "Provide the displayed conflict, track and task revision" });
+  }
+  const task = repositories.tvMatchingTasks.get(request.params.id);
+  if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
+  if (task.status === "processing" || task.status === "completed" || task.updatedAt !== body.updatedAt) {
+    return reply.code(409).send({ error: "The task changed; reload the conflict before deciding" });
+  }
+  const recovery = repositories.discRecovery.get(task.fingerprint);
+  const assignment = task.assignments.find((item) => item.trackId === body.trackId);
+  if (!recovery || !assignment?.confirmed || !assignment.selectedEpisodes?.length || !task.files[assignment.trackId]) {
+    return reply.code(409).send({ error: "Conflict resolution requires a staged title with confirmed episode assignments" });
+  }
+  const matches = (await allConflictsForTask(task)).filter((conflict) => conflict.trackId === assignment.trackId);
+  const expected = Array.isArray(body.expectedConflicts) ? body.expectedConflicts : [body.expectedConflict];
+  const actualKeys = matches.map((conflict) => JSON.stringify(conflict)).sort();
+  const expectedKeys = expected.map((conflict) => JSON.stringify(conflict)).sort();
+  if (!matches.length || JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
+    return reply.code(409).send({ error: "The conflict changed; reload and review it" });
+  }
+  const snapshot = await keepExistingConflicts(matches);
+  const current = repositories.tvMatchingTasks.get(task.jobId);
+  const currentRecovery = repositories.discRecovery.get(task.fingerprint);
+  const currentAssignment = current?.assignments.find((item) => item.trackId === assignment.trackId);
+  if (!current || current.status === "processing" || current.status === "completed" ||
+    current.updatedAt !== task.updatedAt || !currentRecovery || !currentAssignment ||
+    keepExistingMapping(currentRecovery, currentAssignment) !== keepExistingMapping(recovery, assignment) ||
+    JSON.stringify(await allConflictsForTask(current)) !== JSON.stringify(await allConflictsForTask(task))) {
+    return reply.code(409).send({ error: "The task or conflict changed; reload before deciding" });
+  }
+  const username = repositories.setup.get().adminUsername;
+  if (!username) return reply.code(503).send({ error: "Administrator identity is unavailable" });
+  const assignments: TvMatchingAssignment[] = current.assignments.map((item) => item.trackId === assignment.trackId
+    ? { ...item, keepExisting: { action, mapping: keepExistingMapping(recovery, assignment), conflicts: snapshot } }
+    : item);
+  const remaining = await conflictsForTask(current, assignments);
+  const nextStatus = remaining.length ? "awaiting-mapping" : tvMatchingReviewStatus(assignments);
+  const now = new Date().toISOString();
+  const saved = db.transaction(() => {
+    const identity = repositories.discRecovery.get(task.fingerprint);
+    if (!identity || keepExistingMapping(identity, assignment) !== keepExistingMapping(recovery, assignment)) return false;
+    const changed = db.prepare(`UPDATE tv_matching_tasks SET assignments_json = ?, status = ?,
+      failure = NULL, updated_at = ? WHERE job_id = ? AND updated_at = ?
+      AND status NOT IN ('processing', 'completed') AND assignments_json = ?`)
+      .run(JSON.stringify(assignments), nextStatus, now, task.jobId, task.updatedAt, JSON.stringify(task.assignments));
+    if (changed.changes !== 1) return false;
+    for (const conflict of matches) {
+      repositories.tvConflictJournal.appendAudit({
+        id: randomUUID(), jobId: task.jobId, at: now, action,
+        seasonNumber: conflict.seasonNumber, episodeNumber: conflict.episodeNumber,
+        incoming: {
+          fingerprint: task.fingerprint, discLabel: task.source.label, trackId: assignment.trackId,
+          trackTitle: assignment.title, confirmedAt: assignment.confirmedAt ?? null
+        },
+        existing: conflict.existing, provenanceStatus: conflict.provenanceStatus, decisionBy: username,
+        details: { mapping: keepExistingMapping(recovery, assignment), conflicts: snapshot,
+          stagedPath: join(task.stagingPath, task.files[assignment.trackId]!),
+          disposition: action === "keep_existing" ? "incoming title dismissed; staged source retained" :
+            action === "keep_both" ? "incoming title to be published as an alternate" :
+              "incoming title to be published as an extra" }
+      });
+    }
+    return true;
+  })();
+  if (!saved) return reply.code(409).send({ error: "The task changed; reload before deciding" });
+  events.emit("status");
+  const updated = repositories.tvMatchingTasks.get(task.jobId);
+  if (!updated) throw new Error("The updated TV task could not be loaded");
+  return { task: updated, remainingConflicts: (await conflictsForTask(updated)).length,
+    ready: tvMatchingProgress(updated.assignments).fullyMatched };
 });
 
 async function resolveStagedTvTrack(task: TvMatchingTask, trackId: string): Promise<{ path: string; size: number }> {
@@ -1710,10 +1834,11 @@ app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/u
   const retainedTrackIds = new Set(retained.map((assignment) => assignment.trackId));
   const removedFiles = Object.entries(task.files).filter(([trackId]) => !retainedTrackIds.has(trackId));
   const files = Object.fromEntries(Object.entries(task.files).filter(([trackId]) => retainedTrackIds.has(trackId)));
+  const conflicts = await conflictsForTask(task, retained);
   const updated = repositories.tvMatchingTasks.update(task.jobId, {
     assignments: retained,
     files,
-    status: "ready-to-publish",
+    status: conflicts.length ? "awaiting-mapping" : "ready-to-publish",
     failure: null
   });
   if (!updated) return reply.code(409).send({ error: "TV matching task could not be updated" });
@@ -1739,8 +1864,8 @@ app.delete<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/u
         : "The task was updated, but unmatched staging cleanup failed"
     });
   }
-  let continuation: "queued" | "started" = "queued";
-  if (!activeJob() && tvMatchingActions) {
+  let continuation: "queued" | "started" | "blocked" = conflicts.length ? "blocked" : "queued";
+  if (!conflicts.length && !activeJob() && tvMatchingActions) {
     continuation = "started";
     void tvMatchingActions.continue(task.jobId, "unmatched-removal").catch((error: unknown) => {
       request.log.error({ err: error, jobId: task.jobId }, "Automatic TV publishing continuation failed after track removal");

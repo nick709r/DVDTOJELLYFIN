@@ -10,6 +10,8 @@ import type { ClassificationAuditRepository } from "../domain/classification.js"
 import type { ReviewJobRepository } from "../domain/review-jobs.js";
 import type { DiscRecovery, DiscRecoveryRepository } from "../domain/disc-recovery.js";
 import type { TvMatchingTaskRepository } from "../domain/tv-matching.js";
+import type { TvEpisodePublicationRepository } from "../domain/tv-publication.js";
+import type { TvConflictJournalRepository } from "../domain/tv-conflict-journal.js";
 
 export interface SetupState {
   setupComplete: boolean;
@@ -90,6 +92,8 @@ export interface AutoDiscRepositories {
   classificationAudit: ClassificationAuditRepository;
   discRecovery: DiscRecoveryRepository;
   tvMatchingTasks: TvMatchingTaskRepository;
+  tvEpisodePublications: TvEpisodePublicationRepository;
+  tvConflictJournal: TvConflictJournalRepository;
   forgetDisc: ForgetDiscService;
   close(): void;
 }

@@ -704,6 +704,8 @@ export class StorageLifecycleService {
     const jobs = this.db.prepare("SELECT id, status, output_path, finished_at, title FROM jobs")
       .all() as JobRow[];
     const jobsById = new Map(jobs.map((job) => [job.id, job]));
+    const replacementJobs = new Set((this.db.prepare("SELECT DISTINCT job_id AS id FROM tv_replacement_transactions")
+      .all() as Array<{ id: string }>).map(({ id }) => id));
     const reviewJobs = this.db.prepare(`
       SELECT id, original_job_id, status, storage_path, updated_at FROM review_jobs
     `).all() as ReviewJobRow[];
@@ -712,6 +714,7 @@ export class StorageLifecycleService {
       .all() as TvTaskRow[];
 
     for (const review of reviewJobs) {
+      if (replacementJobs.has(review.original_job_id)) continue;
       if (["processing", "retrying"].includes(review.status)) continue;
       const expected = resolve(settings.workDir, "reviews", review.id);
       if (resolve(review.storage_path) !== expected || !within(resolve(settings.workDir, "reviews"), expected)) {
@@ -759,6 +762,7 @@ export class StorageLifecycleService {
     }
 
     for (const job of jobs) {
+      if (replacementJobs.has(job.id)) continue;
       const workPath = resolve(settings.workDir, job.id);
       const files = await this.inventoryTree(workPath);
       if (files.length === 0) continue;
@@ -800,6 +804,7 @@ export class StorageLifecycleService {
     }
 
     for (const file of await this.findOwnedOutputTemps(jobs)) {
+      if (replacementJobs.has(file.jobId)) continue;
       result.push(this.createResource(`output-temp:${file.jobId}:${file.file.path}`,
         "temporary-conversion-files", basename(file.file.path), file.directory,
         file.jobId, [file.file], true));

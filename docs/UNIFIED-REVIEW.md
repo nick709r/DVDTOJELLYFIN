@@ -1,7 +1,58 @@
 # Unified Media Review
 
 Movie, TV and TV-plan reviews share one search workflow, one queue model and one completion endpoint. Media-specific
-behaviour lives in adapters; the Review Queue UI is media-agnostic.
+behaviour lives in adapters. The Review Center also contains the existing issue and preserved-media views and an
+expandable section for TV analysis and episode suggestions.
+
+Cards use action-oriented labels: Needs Match, Needs Identification, Episode Conflict, Metadata Conflict,
+Processing Warnings, and Needs User Decision. The existing issue filters still filter issue records; they do not
+filter every section of the Review Center.
+
+Staged TV discs and preserved review workspaces provide **Forget Disc** alongside their existing deletion actions.
+After confirmation, this removes disc-owned review and recovery records and staged media; it does not remove published
+library files. Removing a review item alone is distinct from forgetting the disc.
+
+## TV episode conflicts
+
+For episodes published after database migration 30, AutoDisc records the disc fingerprint, label and number, source
+title, episode numbers, output path, confirmation time (when assigned through TV matching), and publication time.
+Assignments to an existing recorded episode are held in the Review Center and display both sources. A publishing-time
+check also protects against a collision after the assignment was saved. Missing recorded files do not block publishing.
+Existing output paths are still protected even for episodes published before provenance was recorded.
+Conflicts are labelled **Verified** when publication provenance is present (this does not verify the file's contents),
+**Legacy** only when a single historical
+disc mapping and the recorded job output establish the source, or **Unknown** when that evidence is unavailable or
+ambiguous. Exact output-path collisions and standard `S01E07`-style filenames in the configured season directory
+without provenance are also shown for review; files elsewhere or filenames that do not encode episode numbers and do
+not match the output path cannot be inferred safely. The conflict card displays the available disc IDs, source titles,
+mapping confirmation times, and the previous publication time. It explicitly distinguishes recorded provenance from
+verification of the current file's contents.
+The incoming title is labelled Verified only for its recorded user-confirmed assignment; otherwise its provenance is
+Unknown. This label does not mean that the incoming file has already been published.
+
+Conflict decisions apply to the **entire incoming title**, including any episodes without conflicts. The user is
+prompted when a title contains multiple episodes. All displayed existing sources for that title must still match when
+the decision is saved. The available actions are:
+
+- **Keep Existing** dismisses the incoming title without changing either file.
+- **Keep Both** publishes the incoming title using a distinct alternate filename and records episode provenance.
+- **Mark As Extras** publishes the incoming title in the series `Extras` folder and records its source and output in
+  the audit journal. It does not record the extra as an episode.
+
+Saving a decision does not modify media files. The staged source remains on disk even after a resolved job completes;
+explicit Forget Disc or staged-disc deletion can remove retained staged media. The dismissal or extra mapping is
+removed from disc recovery so it is not learned as a published episode. Source snapshots and decisions are recorded
+in the conflict audit journal; the existing file is checked again by checksum at the publishing boundary. Changed or
+missing sources invalidate the decision. If publication fails or is interrupted after creating an output, the staged
+source and created outputs are retained, and manual review may be required before retrying.
+
+Replace Existing remains unavailable; no existing media file is overwritten by these actions. Migration 31 adds an
+independent conflict-audit journal and replacement-transaction journal. Non-replacement actions use the audit
+journal; the replacement journal is not used for these decisions. Startup reconciles incomplete replacement
+transactions before cleanup and retains associated staged media for review. Replacement journal states are not
+proof that filesystem operations have occurred.
+Audit records are displayed on staged-disc cards, but an audit record alone does not resolve a conflict.
+See [the replacement design](./TV-EPISODE-REPLACEMENT-DESIGN.md) for the remaining safety work.
 
 ## Workflow
 

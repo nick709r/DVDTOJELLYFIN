@@ -627,14 +627,14 @@ async function loadDashboardStorage(requestId) {
   $("#dashboard-storage-warning").classList.toggle("hidden", !warningVisible);
   if (!warningVisible) return;
   $("#dashboard-storage-warning-message").textContent =
-    `Review Queue data is using ${formatBytes(summary.reviewQueueBytes)} (threshold ${summary.reviewQueueWarningThresholdGb} GB).`;
+    `Review Center data is using ${formatBytes(summary.reviewQueueBytes)} (threshold ${summary.reviewQueueWarningThresholdGb} GB).`;
   $("#dashboard-storage-warning-items").innerHTML = summary.largestReviewConsumers.map((item) =>
     `<div><b>${escapeHtml(item.name)}</b><span>${escapeHtml(formatBytes(item.bytes))}</span></div>`
   ).join("") || "<span>No individual review workspaces were found.</span>";
 }
 
 const storageCleanupActions = {
-  "review-queue-data": "Clean Review Queue",
+  "review-queue-data": "Clean Review Center",
   "temporary-conversion-files": "Clean Conversion Cache",
   "artwork-cache": "Clean Artwork Cache",
   "metadata-cache": "Clean Metadata Cache",
@@ -1132,7 +1132,7 @@ async function loadMediaIdentification() {
     ].map(([label, value]) => tvStat(label, value)).join("");
     $("#media-identification-stats").innerHTML = markup;
     $("#media-statistics").innerHTML = markup + tvStat("TV series identified", stats.tvSeriesIdentified);
-    status.textContent = "Counts come from saved disc identifications; review-required matches are items still waiting in the Review Queue.";
+    status.textContent = "Counts come from saved disc identifications; review-required matches are items still waiting in the Review Center.";
   } catch (error) {
     $("#media-identification-stats").innerHTML = "";
     $("#media-statistics").innerHTML = "";
@@ -1525,7 +1525,7 @@ function renderTvPlanCard(plan, includeActions = false, recovery = null, include
     </div>`;
   }).join("");
   return `<article class="tv-plan-card">
-    <div class="tv-plan-heading"><div><b>${escapeHtml(series)}</b><span class="list-sub">${escapeHtml(season)} · ${escapeHtml(disc)} · ${new Date(plan.createdAt).toLocaleString()}</span></div>
+    <div class="tv-plan-heading"><div><span class="review-category">Needs User Decision</span><br><b>${escapeHtml(series)}</b><span class="list-sub">${escapeHtml(season)} · ${escapeHtml(disc)} · ${new Date(plan.createdAt).toLocaleString()}</span></div>
     <span class="confidence-pill ${escapeHtml(plan.confidenceBand)}">${confidence}% · ${escapeHtml(confidenceLabel(plan.confidenceBand))}</span></div>
     <p>${plan.reviewReasons.map(escapeHtml).join(" · ") || "No additional review reasons."}</p>
     ${includeRecovery ? renderTvIdentifyActions(plan, recovery) : ""}
@@ -1732,8 +1732,52 @@ function renderTvDiscPositionEvidence(task, recovery) {
   </details>`;
 }
 
+function renderTvEpisodeConflict(conflict, task, discNumber, allConflicts = [conflict]) {
+  const existing = conflict.existing;
+  const assignment = task.assignments.find((item) => item.trackId === conflict.trackId);
+  const provenance = {
+    verified: "Verified — recorded publication provenance; file contents are not verified",
+    legacy: "Legacy — source inferred from unambiguous disc history",
+    unknown: "Unknown — source could not be established"
+  }[conflict.provenanceStatus] || "Unknown — source could not be established";
+  return `<div><p>Season ${escapeHtml(conflict.seasonNumber)} Episode ${escapeHtml(conflict.episodeNumber)}<br>
+    Existing: ${escapeHtml(existing.discLabel || "Unknown disc")}${existing.discNumber ? ` · Disc ${escapeHtml(existing.discNumber)}` : ""} · Title ${escapeHtml(existing.trackId || "unknown")} (${escapeHtml(existing.trackTitle || "Unknown title")})<br>
+    Provenance: ${escapeHtml(provenance)}<br>
+    ${existing.fingerprint ? `Disc ID: <code>${escapeHtml(existing.fingerprint)}</code><br>` : ""}
+    ${existing.confirmedAt ? `Mapping confirmed: ${escapeHtml(existing.confirmedAt)}<br>` : ""}
+    ${existing.publishedAt ? `Published: ${escapeHtml(existing.publishedAt)}<br>` : ""}
+    File: <code>${escapeHtml(existing.outputPath)}</code><br>
+    New: ${escapeHtml(task.source.label || "Unknown disc")}${discNumber ? ` · Disc ${escapeHtml(discNumber)}` : ""} · Title ${escapeHtml(conflict.trackId)} (${escapeHtml(assignment?.title || "Unknown title")})<br>
+    Provenance: ${assignment?.confirmed && assignment.confirmedAt ? "Verified — user-confirmed mapping" : "Unknown — no recorded mapping confirmation"}<br>
+    Disc ID: <code>${escapeHtml(task.fingerprint)}</code>${assignment?.confirmedAt ? `<br>Mapping confirmed: ${escapeHtml(assignment.confirmedAt)}` : ""}</p>
+    ${conflict.stale ? `<p class="diagnostic-error">The existing source is no longer available. Save the episode assignment again to review this title.</p>` :
+      `${[["keep_existing", "Keep Existing"], ["keep_both", "Keep Both"], ["mark_as_extras", "Mark As Extras"]].map(([action, label]) =>
+        `<button type="button" class="button secondary tv-conflict-action" data-action="${action}" data-episode-count="${assignment?.selectedEpisodes?.length || 0}"
+        data-track-id="${escapeHtml(conflict.trackId)}" data-conflict="${escapeHtml(JSON.stringify(conflict))}"
+        data-conflicts="${escapeHtml(JSON.stringify(allConflicts.filter((item) => item.trackId === conflict.trackId)))}">${label}</button>`).join("")}`}
+    </div>`;
+}
+
+function renderTvConflictHistory(history) {
+  if (!history.length) return "";
+  const actionLabels = {
+    keep_existing: "Keep Existing",
+    keep_both: "Keep Both",
+    mark_as_extras: "Mark As Extras",
+    replace_existing: "Replace Existing"
+  };
+  return `<details class="movie-review-evidence"><summary>Episode conflict history (${history.length})</summary>
+    <ul>${history.map((record) => `<li>${escapeHtml(actionLabels[record.action] || record.action)} ·
+      Season ${escapeHtml(record.seasonNumber)} Episode ${escapeHtml(record.episodeNumber)} ·
+      ${escapeHtml(record.at)} · ${escapeHtml(record.decisionBy)}<br>
+      Existing: ${escapeHtml(record.existing.discLabel || "Unknown disc")} · Title ${escapeHtml(record.existing.trackId || "unknown")} ·
+      Provenance: ${escapeHtml(record.provenanceStatus)}<br>
+      Incoming: ${escapeHtml(record.incoming.discLabel || "Unknown disc")} · Title ${escapeHtml(record.incoming.trackId || "unknown")}
+    </li>`).join("")}</ul></details>`;
+}
+
 function renderTvMatchingTask(entry) {
-  const { task, recovery, completedDiscHistory = [], mediaTypeAudit = [] } = entry;
+  const { task, recovery, conflicts = [], conflictHistory = [], completedDiscHistory = [], mediaTypeAudit = [] } = entry;
   const series = recovery?.seriesName || "";
   const season = recovery?.seasonNumber;
   const discNumber = recovery?.discNumber;
@@ -1749,7 +1793,9 @@ function renderTvMatchingTask(entry) {
     unmatchedCount: task.assignments.length,
     fullyMatched: false
   };
-  const status = tvMatchingStatus(progress, task);
+  const status = conflicts.length
+    ? { label: "Episode conflict", className: "low" }
+    : tvMatchingStatus(progress, task);
   const confidence = recovery?.detectedConfidence ?? task.diagnostics?.confidence;
   const confidenceLabel = confidence === undefined || confidence === null
     ? "Unavailable"
@@ -1828,13 +1874,13 @@ function renderTvMatchingTask(entry) {
     .map((record) =>
       `Season ${record.seasonNumber} Disc ${record.discNumber} already processed on ${formatCompletedTvDiscDate(record.completedAt)}.`
     );
-  return `<article class="tv-disc-review tv-matching-task" data-job-id="${escapeHtml(task.jobId)}">
+  return `<article class="tv-disc-review tv-matching-task" data-job-id="${escapeHtml(task.jobId)}" data-updated-at="${escapeHtml(task.updatedAt)}">
     <div class="tv-disc-summary">
       ${poster
         ? `<img class="tv-disc-poster" src="${escapeHtml(poster)}" alt="${escapeHtml(series ? `${series} poster` : "TV series poster")}" loading="lazy" referrerpolicy="no-referrer">`
         : '<div class="tv-disc-poster tv-disc-poster-placeholder" aria-hidden="true">TV</div>'}
       <div class="tv-disc-info">
-        <p class="eyebrow">STAGED TV DISC</p>
+        <p class="eyebrow">${conflicts.length ? "Episode Conflict" : canMap ? "Needs Match" : "Needs Identification"}</p>
         <h3>${escapeHtml(series || task.source.label || "Unidentified TV disc")}</h3>
         <p class="tv-disc-season">${escapeHtml(seasonText)}${discNumber === null || discNumber === undefined ? "" : ` · ${escapeHtml(discText)}`}</p>
         ${labelSuggestionText ? `<p class="tv-disc-label-evidence">${escapeHtml(labelSuggestionText)}</p>` : ""}
@@ -1856,12 +1902,21 @@ function renderTvMatchingTask(entry) {
       </div>
     </div>
     ${task.failure ? `<p class="diagnostic-error">${escapeHtml(task.failure)}</p>` : ""}
+    ${conflicts.length ? `<section class="movie-review-evidence">
+      <h4>Episode Conflict Detected</h4>
+      ${conflicts.map((conflict) => renderTvEpisodeConflict(conflict, task, discNumber, conflicts)).join("")}
+      <p>Each action applies to the entire incoming title and all of its conflicts. The staged source is retained.</p>
+      <p>Keep Both publishes an alternate episode. Mark As Extras publishes the title to the series Extras folder.</p>
+      <p>Replace Existing requires transaction-safe replacement support and is currently unavailable.</p>
+    </section>` : ""}
+    ${renderTvConflictHistory(conflictHistory)}
     <div class="tv-disc-actions">
       <button type="button" class="button primary tv-task-open">${canMap ? "Open Matching" : "Identify Series"}</button>
       <button type="button" class="button secondary tv-identify" data-task-id="${escapeHtml(task.jobId)}" data-fingerprint="${escapeHtml(task.fingerprint)}" data-suggested="${escapeHtml(task.source.label || "")}">${series ? "Change Identification" : "Search for Series"}</button>
       ${progress.matchedCount > 0 && progress.unmatchedCount > 0
         ? `<button type="button" class="button danger tv-delete-unmatched">Delete unmatched tracks</button>` : ""}
       <button type="button" class="text-button tv-task-delete">Remove disc from review</button>
+      <button type="button" class="button danger forget-disc" data-job-id="${escapeHtml(task.jobId)}">Forget Disc</button>
     </div>
     <section class="tv-disc-matching hidden" data-matching-panel>
       ${canMap ? `<div class="tv-matching-guide">
@@ -1980,7 +2035,9 @@ $("#tv-unmatched-delete-confirm").addEventListener("click", async () => {
     tvUnmatchedDeleteJobId = null;
     notify(result.continuation === "started"
       ? "Unmatched tracks were deleted. The fully matched disc is now publishing."
-      : "Unmatched tracks were deleted. Publishing will continue when the active job finishes.");
+      : result.continuation === "blocked"
+        ? "Unmatched tracks were deleted. Publishing is paused because an episode conflicts with an existing file."
+        : "Unmatched tracks were deleted. Publishing will continue when the active job finishes.");
     await loadTvReviews();
     await refreshStorageViews();
   } catch (error) {
@@ -2051,7 +2108,7 @@ async function saveTvTaskAssignments(button) {
     } else if (result.continuation === "queued") {
       notify(`Saved ${progress.matched} of ${progress.total} matches. Publishing will resume after the active job.`);
     } else if (result.continuation === "blocked") {
-      notify(REVIEW_LABELS.blocked, true);
+      notify("Publishing is blocked. Check the episode conflicts or media classification shown on the disc.", true);
     } else {
       notify(`Saved ${progress.matched} of ${progress.total} matches. Unmatched tracks remain safely staged.`);
     }
@@ -2152,6 +2209,40 @@ $("#tv-track-preview-close").addEventListener("click", () => {
 });
 
 document.addEventListener("click", async (event) => {
+  const conflictAction = event.target.closest(".tv-conflict-action");
+  if (conflictAction) {
+    if (Number(conflictAction.dataset.episodeCount) > 1 && !confirm(
+      "This title contains multiple episodes. The selected action applies to the entire title, including episodes without a conflict. Continue?"
+    )) return;
+    const card = conflictAction.closest(".tv-matching-task");
+    const taskId = card.dataset.jobId;
+    conflictAction.disabled = true;
+    try {
+      const result = await api(`/api/v1/tv/matching/${encodeURIComponent(taskId)}/keep-existing`, {
+        method: "POST",
+        body: JSON.stringify({
+          action: conflictAction.dataset.action,
+          trackId: conflictAction.dataset.trackId,
+          expectedConflict: JSON.parse(conflictAction.dataset.conflict),
+          expectedConflicts: JSON.parse(conflictAction.dataset.conflicts),
+          updatedAt: card.dataset.updatedAt
+        })
+      });
+      notify("Conflict decision saved. The incoming title remains staged.");
+      if (result.task.status === "processing") {
+        notify("Conflict resolved. Publishing has started.");
+      } else if (result.ready && result.remainingConflicts === 0) {
+        notify("Conflict resolved. Publishing is queued.");
+      }
+      await loadTvReviews();
+    } catch (error) {
+      notify(error.message, true);
+      await loadTvReviews();
+    } finally {
+      conflictAction.disabled = false;
+    }
+    return;
+  }
   const openButton = event.target.closest(".tv-task-open");
   if (openButton) {
     const card = openButton.closest(".tv-matching-task");
@@ -2263,6 +2354,14 @@ const reviewCategoryLabels = {
   system_warning: "System warning"
 };
 
+function reviewCenterCategory(item) {
+  if (item.category === "metadata_issue") return "Metadata Conflict";
+  if (["processing_failure", "folder_creation_failure", "disc_read_error", "validation_warning", "system_warning"].includes(item.category)) {
+    return "Processing Warnings";
+  }
+  return "Needs User Decision";
+}
+
 function renderReviewItem(item) {
   const actions = item.status === "active" || item.status === "retrying"
     ? item.suggestedActions.map((action) => {
@@ -2301,8 +2400,8 @@ function renderReviewItem(item) {
     ...(item.errorDetails || {})
   };
   return `<article class="review-item ${escapeHtml(item.severity)}">
-    <div class="review-heading"><div><span class="review-category">${escapeHtml(item.errorDetails?.approvalRequired ? "Disc approval" : reviewCategoryLabels[item.category] || item.category)}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
-      <h3>${escapeHtml(item.title)}</h3><span class="list-sub">${escapeHtml(item.relatedDisc || "Disc not identified")}${item.relatedDrive ? ` · ${escapeHtml(item.relatedDrive)}` : ""} · ${new Date(item.createdAt).toLocaleString()}</span></div>
+    <div class="review-heading"><div><span class="review-category">${escapeHtml(reviewCenterCategory(item))}</span><span class="confidence-pill ${item.severity === "critical" || item.severity === "high" ? "low" : item.severity === "medium" ? "medium" : "high"}">${escapeHtml(item.severity)}</span>
+      <h3>${escapeHtml(item.title)}</h3><span class="list-sub">${escapeHtml(item.errorDetails?.approvalRequired ? "Disc approval" : reviewCategoryLabels[item.category] || item.category)} · ${escapeHtml(item.relatedDisc || "Disc not identified")}${item.relatedDrive ? ` · ${escapeHtml(item.relatedDrive)}` : ""} · ${new Date(item.createdAt).toLocaleString()}</span></div>
       <span class="review-status">${escapeHtml(item.status)}</span></div>
     <p>${escapeHtml(item.description)}</p>
     ${Object.keys(details).length ? `<details><summary>Error details and suggested resolution</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>` : ""}
@@ -2358,7 +2457,7 @@ function renderReviewJob(item, storage = {}, unified = undefined) {
     ? item.metadata.title
     : item.metadata?.suggestedTitle || title;
   return `<article class="review-item">
-    <div class="review-heading"><div><h3>${escapeHtml(title)}</h3>
+    <div class="review-heading"><div><span class="review-category">${awaitingConfirmation ? "Needs Match" : "Processing Warnings"}</span><h3>${escapeHtml(title)}</h3>
       <span class="list-sub">${escapeHtml(item.discType)}${item.discLabel ? ` · ${escapeHtml(item.discLabel)}` : ""} · ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div>
       <span class="review-status">${escapeHtml(item.status)}</span></div>
     <p>${escapeHtml(item.failureReason || "Processing requires review")} · Stage: ${escapeHtml(item.failureStage || "unknown")}</p>
@@ -2383,7 +2482,9 @@ function renderReviewJob(item, storage = {}, unified = undefined) {
         <label>${REVIEW_LABELS.manualLabel}<input data-review-title type="text" maxlength="200" value="${escapeHtml(suggestedTitle)}"></label>
       </div>
     </section>` : ""}
-    <div class="tv-actions">${actions}</div>
+    <div class="tv-actions">${actions}${item.originalJobId
+      ? `<button type="button" class="button danger forget-disc" data-job-id="${escapeHtml(item.originalJobId)}">Forget Disc</button>`
+      : ""}</div>
     ${item.status === "pending" && !awaitingConfirmation ? `<div class="review-job-editor hidden" data-review-editor="${escapeHtml(item.id)}">
       <label>Title<input data-review-title type="text" maxlength="200" value="${escapeHtml(suggestedTitle)}"></label>
       <button class="button secondary review-job-action" data-action="save" data-id="${escapeHtml(item.id)}">Save Metadata</button>
@@ -2459,7 +2560,11 @@ async function loadReviewCentre() {
 }
 
 async function refreshReviewQueue() {
-  await Promise.all([loadReviewCentre(), loadTvReviews()]);
+  await Promise.all([
+    loadReviewCentre(),
+    loadTvReviews(),
+    ...($("#page-tv-analysis").open ? [loadTvAnalysis(), loadTvMatching()] : [])
+  ]);
 }
 
 const reviewDeletionRecordLabels = {
@@ -3082,9 +3187,7 @@ function updateStreams() {
     if (previous && !active) {
       if (state.page === "dashboard") refreshDashboard().catch((error) => notify(error.message, true));
       if (state.page === "history") refreshHistory().catch((error) => notify(error.message, true));
-      if (state.page === "tv-analysis") loadTvAnalysis().catch((error) => notify(error.message, true));
-      if (state.page === "tv-analysis") loadTvMatching().catch((error) => notify(error.message, true));
-      if (state.page === "tv-reviews") loadTvReviews().catch((error) => notify(error.message, true));
+      if (state.page === "tv-reviews") refreshReviewQueue().catch((error) => notify(error.message, true));
       if (state.page === "tv-validation") loadTvValidation().catch((error) => notify(error.message, true));
       if (state.page === "tv-validation") loadStatistics().catch((error) => notify(error.message, true));
     }
@@ -3118,8 +3221,7 @@ function showPage(page, activeNavButton = null) {
     dashboard: "Dashboard",
     diagnostics: "Disc Diagnostics",
     history: "History",
-    "tv-analysis": "Identification & Matching",
-    "tv-reviews": "Review Queue",
+    "tv-reviews": "Review Center",
     "tv-validation": "Activity & Insights",
     "storage-manager": "Storage Manager",
     settings: "Settings"
@@ -3132,7 +3234,7 @@ function showPage(page, activeNavButton = null) {
     refreshStoragePathDiagnostics().catch((error) => notify(error.message, true));
   }
   if (page === "history") refreshHistory().catch((error) => notify(error.message, true));
-  if (page === "tv-analysis") {
+  if (page === "tv-reviews" && $("#page-tv-analysis").open) {
     loadTvAnalysis().catch((error) => notify(error.message, true));
     loadTvMatching().catch((error) => notify(error.message, true));
   }
@@ -3154,6 +3256,7 @@ document.querySelectorAll("[data-page]").forEach((button) => button.addEventList
   if (button.tagName === "A") event.preventDefault();
   if (button.dataset.reviewCategory) $("#review-category").value = button.dataset.reviewCategory;
   showPage(button.dataset.page, button.classList.contains("nav-link") ? button : null);
+  if (button.hasAttribute("data-open-tv-analysis")) $("#page-tv-analysis").open = true;
   if (button.dataset.scroll) {
     requestAnimationFrame(() => document.querySelector(button.dataset.scroll)?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
@@ -3190,6 +3293,11 @@ $("#diagnostics-job").addEventListener("change", () => {
 });
 $("#tv-analysis-confidence").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
 $("#tv-analysis-state").addEventListener("change", () => loadTvAnalysis().catch((error) => notify(error.message, true)));
+$("#page-tv-analysis").addEventListener("toggle", (event) => {
+  if (!event.currentTarget.open) return;
+  loadTvAnalysis().catch((error) => notify(error.message, true));
+  loadTvMatching().catch((error) => notify(error.message, true));
+});
 $("#tv-review-filter").addEventListener("change", () => loadTvReviews().catch((error) => notify(error.message, true)));
 $("#refresh-reviews").addEventListener("click", () => refreshReviewQueue().catch((error) => notify(error.message, true)));
 $("#library-settings-health").addEventListener("click", async (event) => {
@@ -3352,7 +3460,8 @@ document.addEventListener("click", async (event) => {
   const itemId = button.dataset.itemId;
   try {
     if (button.dataset.action === "view-plan") {
-      if (state.page !== "tv-analysis") showPage("tv-analysis");
+      if (state.page !== "tv-reviews") showPage("tv-reviews");
+      $("#page-tv-analysis").open = true;
       await showTvPlan(planId);
       return;
     }

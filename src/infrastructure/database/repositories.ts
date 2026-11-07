@@ -17,6 +17,8 @@ import { SqliteDiscRecoveryRepository } from "./disc-recovery-repository.js";
 import { SqliteTvMatchingTaskRepository } from "./tv-matching-task-repository.js";
 import { SqliteCompletedTvDiscHistoryRepository } from "./tv-completed-disc-history-repository.js";
 import { SqliteForgetDiscService } from "./forget-disc-service.js";
+import { SqliteTvEpisodePublicationRepository } from "./tv-episode-publication-repository.js";
+import { SqliteTvConflictJournalRepository } from "./tv-conflict-journal-repository.js";
 
 export function createSqliteRepositories(db: Database.Database, defaults: AppSettings): AutoDiscRepositories {
   const events = new SqliteEventRepository(db);
@@ -39,6 +41,8 @@ export function createSqliteRepositories(db: Database.Database, defaults: AppSet
     classificationAudit,
     discRecovery: new SqliteDiscRecoveryRepository(db),
     tvMatchingTasks: new SqliteTvMatchingTaskRepository(db),
+    tvEpisodePublications: new SqliteTvEpisodePublicationRepository(db),
+    tvConflictJournal: new SqliteTvConflictJournalRepository(db),
     forgetDisc: new SqliteForgetDiscService(db, settings),
     close: () => db.close()
   };

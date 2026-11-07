@@ -4,6 +4,8 @@ import type { AutoDiscRepositories } from "./contracts/repositories.js";
 import { mediaDuration } from "./encoding.js";
 import { log } from "./logger.js";
 import { outputPath } from "./output-destinations.js";
+import { pathsOverlap } from "./storage-paths.js";
+import { reconcileReplacementTransactions } from "./application/tv-replacement-executor.js";
 
 const uuidDirectory = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -17,12 +19,28 @@ function cleanableJob(status: string | undefined): boolean {
 
 export async function recoverTemporaryFiles(repositories: AutoDiscRepositories): Promise<void> {
   const settings = repositories.settings.get();
+  const replacementResults = await reconcileReplacementTransactions(repositories.tvConflictJournal, settings);
+  for (const result of replacementResults) {
+    log(result.outcome === "review" ? "warn" : "info", "replacement-recovery",
+      result.outcome === "review" ? "Replacement requires manual review; files and claims were retained" :
+        "Replacement transaction reconciled", { transactionId: result.id, outcome: result.outcome, reason: result.reason });
+  }
+  const replacementJobs = new Set(repositories.tvConflictJournal.listReplacementJobIds());
   let removedWorkdirs = 0;
   let removedOutputs = 0;
   let recoveredJobs = 0;
   let failedJobs = 0;
   for (const job of repositories.recovery.interruptedJobs()) {
+    if (replacementJobs.has(job.id)) {
+      const reason = "TV replacement recovery finished; the interrupted disc requires review and staged files were retained";
+      if (repositories.recovery.failInterrupted(job.id, reason)) failedJobs += 1;
+      continue;
+    }
     try {
+      const task = repositories.tvMatchingTasks.get(job.id);
+      if (task?.assignments.some((assignment) => assignment.keepExisting)) {
+        throw new Error("Interrupted TV conflict decision requires review; staged media has been retained");
+      }
       if (!job.outputPath) throw new Error("No published output path was recorded");
       const info = await lstat(job.outputPath);
       if (info.isSymbolicLink()) throw new Error("Recorded output path is a symbolic link");
@@ -63,7 +81,12 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
   });
   for (const entry of workEntries) {
     if (entry.isDirectory() && uuidDirectory.test(entry.name) && cleanableJob(jobStates.get(entry.name))) {
-      await rm(join(settings.workDir, entry.name), { recursive: true, force: true });
+      if (replacementJobs.has(entry.name)) continue;
+      const path = join(settings.workDir, entry.name);
+      const task = repositories.tvMatchingTasks.get(entry.name);
+      if (task?.assignments.some((assignment) => assignment.keepExisting) &&
+        pathsOverlap(path, task.stagingPath)) continue;
+      await rm(path, { recursive: true, force: true });
       removedWorkdirs += 1;
     }
   }
@@ -85,7 +108,7 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
     });
     for (const entry of outputEntries) {
       const partialFile = entry.isFile() ? partialOutput.exec(entry.name) : null;
-      if (partialFile?.[1] && cleanableJob(jobStates.get(partialFile[1]))) {
+      if (partialFile?.[1] && !replacementJobs.has(partialFile[1]) && cleanableJob(jobStates.get(partialFile[1]))) {
         await rm(join(movieRoot, entry.name), { force: true });
         removedOutputs += 1;
       } else if (entry.isDirectory()) {
@@ -94,7 +117,7 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
         let removedPartial = false;
         for (const child of children) {
           const partialChild = child.isFile() ? partialOutput.exec(child.name) : null;
-          if (partialChild?.[1] && cleanableJob(jobStates.get(partialChild[1]))) {
+          if (partialChild?.[1] && !replacementJobs.has(partialChild[1]) && cleanableJob(jobStates.get(partialChild[1]))) {
             await rm(join(movieDirectory, child.name), { force: true });
             removedOutputs += 1;
             removedPartial = true;
@@ -118,7 +141,7 @@ export async function recoverTemporaryFiles(repositories: AutoDiscRepositories):
     });
     for (const entry of musicEntries) {
       const partialAlbum = entry.isDirectory() ? partialAlbumDirectory.exec(entry.name) : null;
-      if (partialAlbum?.[1] && cleanableJob(jobStates.get(partialAlbum[1]))) {
+      if (partialAlbum?.[1] && !replacementJobs.has(partialAlbum[1]) && cleanableJob(jobStates.get(partialAlbum[1]))) {
         await rm(join(musicRoot, entry.name), { recursive: true, force: true });
         removedOutputs += 1;
       }
