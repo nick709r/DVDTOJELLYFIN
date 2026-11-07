@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-2.5.0-4c9aff">
+  <img alt="version" src="https://img.shields.io/badge/version-2.5.1-4c9aff">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-3c873a">
   <img alt="platform" src="https://img.shields.io/badge/runs%20on-Linux%20%C2%B7%20systemd-lightgrey">
   <img alt="media" src="https://img.shields.io/badge/media-Movies%20%C2%B7%20TV%20%C2%B7%20Music-8a63d2">
@@ -92,6 +92,7 @@ ssh -L 8787:127.0.0.1:8787 user@server
 ```
 
 **4. Create the administrator account** on first run. Disc processing stays disabled until you do.
+Login attempts are limited to 10 per IP address per 15 minutes; the limit also counts successful attempts.
 
 **5. Choose where media goes.** In **Settings → Storage & Output**, create a destination profile and pick an automation mode.
 
@@ -240,6 +241,7 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 - Optional MusicBrainz lookup supplies artist, album, year and track titles.
 - With no match, the job pauses and asks for a release ID or manual metadata, then resumes.
 - Output as `Music/Artist/Album` with collision-safe handling and optional Lidarr hand-off.
+- Lidarr requests do not follow redirects. To test a different URL, enter its API key; to save a different URL, enter its key or clear the saved key. Local and private-network Lidarr servers are supported.
 
 ---
 
@@ -423,6 +425,10 @@ TypeScript on Fastify and SQLite for the backend; a dependency-free vanilla Java
 ## Release history
 
 Highlights. The complete per-version log is in [docs/RELEASE-HISTORY.md](./docs/RELEASE-HISTORY.md).
+
+### Version 2.5.1
+
+- Security: rate-limited login and unauthenticated API requests, hardened TV previews and Lidarr credential handling, and removed a slow title-sanitization expression.
 
 ### Version 2.5.0
 

@@ -2,6 +2,10 @@
 
 The full per-version change log. For an overview, see the [README](../README.md).
 
+### Version 2.5.1
+
+- Security: rate-limited login and unauthenticated API requests, hardened TV previews and Lidarr credential handling, and removed a slow title-sanitization expression.
+
 ### Version 2.0.1
 
 - Security: fixed all `npm audit` findings. Updated `@fastify/static` to 10.1.8 and pinned patched `glob` (14.0.3), `minimatch` (11.0.3) and `fast-uri` (3.1.9). No functional, API, database or settings changes.
@@ -126,4 +130,3 @@ The full per-version change log. For an overview, see the [README](../README.md)
 - Preserve TV matching state and mappings through application recovery and database upgrades.
 
 ---
-

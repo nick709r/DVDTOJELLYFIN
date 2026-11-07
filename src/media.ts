@@ -111,13 +111,16 @@ export async function ripTitle(device: string, titleId: number, workDir: string,
 }
 
 export function safeTitle(input: string): string {
-  const safe = basename(input.trim().replace(/\\/g, "/"))
+  const cleaned = basename(input.trim().replace(/\\/g, "/"))
     .replace(/\.(mkv|mp4|avi|mpeg|mpg)$/i, "")
     .normalize("NFKD")
     .replace(/[^\p{L}\p{N} ._()\-]+/gu, "")
-    .replace(/\s+/g, " ")
-    .replace(/^[ ._-]+|[ ._-]+$/g, "")
-    .slice(0, 150);
+    .replace(/\s+/g, " ");
+  let start = 0;
+  let end = cleaned.length;
+  while (start < end && " ._-".includes(cleaned[start]!)) start++;
+  while (end > start && " ._-".includes(cleaned[end - 1]!)) end--;
+  const safe = cleaned.slice(start, Math.min(end, start + 150));
   return safe || `Unknown Title ${new Date().toISOString().slice(0, 10)}`;
 }
 

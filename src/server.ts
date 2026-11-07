@@ -132,6 +132,7 @@ const tvValidation = new TvValidationService(
 const tvReview = new TvReviewService(repositories.tvEpisodeFeedback, repositories.tvProcessingPlans);
 const sessions = new Map<string, number>();
 const setupAttempts = new Map<string, { count: number; resetAt: number }>();
+let unauthorizedRateLimit: ReturnType<typeof app.rateLimit>;
 const staticRoot = join(dirname(fileURLToPath(import.meta.url)), "../web");
 
 function passwordConfigured(): boolean {
@@ -171,6 +172,7 @@ app.addHook("onRequest", async (request, reply) => {
 app.addHook("preHandler", async (request, reply) => {
   if (!request.url.startsWith("/api/") || request.url === "/api/health" || request.url === "/api/v1/login") return;
   if (passwordConfigured() && !isAuthenticated(request)) {
+    await unauthorizedRateLimit.call(app, request, reply);
     return reply.code(401).send({ error: "Authentication required" });
   }
   if (repositories.setup.get().passwordChangeRequired && !passwordChangeAllowedPaths.has(request.url.split("?")[0] ?? "")) {
@@ -283,17 +285,22 @@ function setSessionCookie(reply: FastifyReply, token: string, maxAge: number): v
   );
 }
 
-app.post<{ Body: { username?: string; password?: string } }>("/api/v1/login", async (request, reply) => {
-  if (!passwordConfigured()) return reply.code(409).send({ error: "Initial administrator setup is required", setupRequired: true });
-  const password = request.body?.password;
-  if (typeof request.body?.username !== "string" || typeof password !== "string" ||
-    !repositories.setup.authenticate(request.body.username, password)) {
-    return reply.code(401).send({ error: "Invalid username or password" });
-  }
-  const token = randomBytes(32).toString("hex");
-  sessions.set(token, Date.now() + 12 * 60 * 60 * 1000);
-  setSessionCookie(reply, token, 12 * 60 * 60);
-  return reply.send({ ok: true, passwordChangeRequired: repositories.setup.get().passwordChangeRequired });
+app.after(() => {
+  unauthorizedRateLimit = app.rateLimit({ max: 60, timeWindow: "1 minute" });
+  app.post<{ Body: { username?: string; password?: string } }>("/api/v1/login", {
+    config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+  }, async (request, reply) => {
+    if (!passwordConfigured()) return reply.code(409).send({ error: "Initial administrator setup is required", setupRequired: true });
+    const password = request.body?.password;
+    if (typeof request.body?.username !== "string" || typeof password !== "string" ||
+      !repositories.setup.authenticate(request.body.username, password)) {
+      return reply.code(401).send({ error: "Invalid username or password" });
+    }
+    const token = randomBytes(32).toString("hex");
+    sessions.set(token, Date.now() + 12 * 60 * 60 * 1000);
+    setSessionCookie(reply, token, 12 * 60 * 60);
+    return reply.send({ ok: true, passwordChangeRequired: repositories.setup.get().passwordChangeRequired });
+  });
 });
 
 app.post<{ Body: { password?: unknown; confirmPassword?: unknown } }>("/api/v1/account/password", async (request, reply) => {
@@ -1665,7 +1672,7 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/tv/matching/:id/kee
 });
 
 async function resolveStagedTvTrack(task: TvMatchingTask, trackId: string): Promise<{ path: string; size: number }> {
-  const fileName = task.files[trackId];
+  const fileName = Object.hasOwn(task.files, trackId) ? task.files[trackId] : undefined;
   if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) {
     throw new Error("Staged track file reference is invalid");
   }
@@ -1754,6 +1761,11 @@ async function tvTrackPreviewPath(task: TvMatchingTask, trackId: string, sourceP
 app.get<{ Params: { id: string; trackId: string } }>("/api/v1/tv/matching/:id/preview/:trackId", async (request, reply) => {
   const task = repositories.tvMatchingTasks.get(request.params.id);
   if (!task) return reply.code(404).send({ error: "TV matching task was not found" });
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(request.params.trackId) ||
+      !Object.hasOwn(task.files, request.params.trackId) ||
+      !task.assignments.some((assignment) => assignment.trackId === request.params.trackId)) {
+    return reply.code(404).send({ error: "Staged track was not found" });
+  }
   try {
     const staged = await resolveStagedTvTrack(task, request.params.trackId);
     const previewPath = extname(staged.path).toLowerCase() === ".mp4"
@@ -2774,10 +2786,12 @@ app.post("/api/v1/updates/apply", async (_request, reply) => {
 app.post<{ Body: { url?: unknown; apiKey?: unknown } }>("/api/v1/lidarr/test", async (request, reply) => {
   const settings = getSettings();
   try {
-    const url = typeof request.body?.url === "string" ? validateLidarrUrl(request.body.url) : settings.lidarrUrl;
-    const apiKey = typeof request.body?.apiKey === "string" && request.body.apiKey
-      ? request.body.apiKey
-      : settings.lidarrApiKey;
+    const url = validateLidarrUrl(typeof request.body?.url === "string" ? request.body.url : settings.lidarrUrl);
+    const suppliedKey = typeof request.body?.apiKey === "string" && request.body.apiKey;
+    if (!suppliedKey && settings.lidarrApiKey && url !== validateLidarrUrl(settings.lidarrUrl)) {
+      return reply.code(400).send({ error: "Enter an API key to test a different Lidarr URL" });
+    }
+    const apiKey = suppliedKey || settings.lidarrApiKey;
     const result = await testLidarrConnection({ url, apiKey });
     return { ok: true, ...result };
   } catch (error) {
@@ -3078,6 +3092,17 @@ app.put<{ Body: unknown }>("/api/v1/settings", async (request, reply) => {
       return reply.code(400).send({ error: "Invalid Lidarr API key" });
     }
     patch.lidarrApiKey = body.lidarrApiKey;
+  }
+  if (patch.lidarrUrl && currentSettings.lidarrApiKey && patch.lidarrApiKey === undefined) {
+    let savedUrl: string;
+    try {
+      savedUrl = validateLidarrUrl(currentSettings.lidarrUrl);
+    } catch {
+      return reply.code(400).send({ error: "Enter or clear the Lidarr API key when changing an invalid saved URL" });
+    }
+    if (patch.lidarrUrl !== savedUrl) {
+      return reply.code(400).send({ error: "Enter or clear the Lidarr API key when changing the Lidarr URL" });
+    }
   }
   if ("adminPassword" in body) {
     if (typeof body.adminPassword !== "string" || !validAdministratorPassword(body.adminPassword)) {

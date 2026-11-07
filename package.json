@@ -1,6 +1,6 @@
 {
   "name": "autodisc",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "private": true,
   "description": "A lightweight DVD and music CD ingestion appliance for Jellyfin",
   "type": "module",

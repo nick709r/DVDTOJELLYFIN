@@ -8,6 +8,13 @@ test("safeTitle removes unsafe path characters without damaging a dotted movie t
   assert.match(safeTitle("  "), /^Unknown Title \d{4}-\d{2}-\d{2}$/);
 });
 
+test("safeTitle trims punctuation in linear time while preserving the original limit", () => {
+  assert.equal(safeTitle("._-Example._-"), "Example");
+  assert.equal(safeTitle("._-" + "x".repeat(200) + "-_."), "x".repeat(150));
+  assert.equal(safeTitle("x" + "_".repeat(500000) + "y"), "x" + "_".repeat(149));
+  assert.match(safeTitle("_".repeat(500000)), /^Unknown Title \d{4}-\d{2}-\d{2}$/);
+});
+
 test("normalizeVolumeTitle converts filesystem volume separators and casing to a readable title", () => {
   assert.equal(normalizeVolumeTitle("THE_BREAK_UP"), "The Break Up");
 });
