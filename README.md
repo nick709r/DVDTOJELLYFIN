@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-2.0.1-4c9aff">
+  <img alt="version" src="https://img.shields.io/badge/version-2.5.0-4c9aff">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-3c873a">
   <img alt="platform" src="https://img.shields.io/badge/runs%20on-Linux%20%C2%B7%20systemd-lightgrey">
   <img alt="media" src="https://img.shields.io/badge/media-Movies%20%C2%B7%20TV%20%C2%B7%20Music-8a63d2">
@@ -423,6 +423,11 @@ TypeScript on Fastify and SQLite for the backend; a dependency-free vanilla Java
 ## Release history
 
 Highlights. The complete per-version log is in [docs/RELEASE-HISTORY.md](./docs/RELEASE-HISTORY.md).
+
+### Version 2.5.0
+
+- Added TV episode conflict decisions and replacement using retained originals, transaction journaling and startup recovery.
+- Unified review workflows and added episode publication provenance.
 
 ### Version 2.0.1
 
