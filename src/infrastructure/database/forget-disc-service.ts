@@ -27,13 +27,23 @@ export class SqliteForgetDiscService implements ForgetDiscService {
         UNION ALL SELECT 1 FROM tv_episode_feedback WHERE fingerprint = ?
         UNION ALL SELECT 1 FROM tv_processing_plans WHERE fingerprint = ?
         UNION ALL SELECT 1 FROM tv_validation_evidence WHERE fingerprint = ?
+        UNION ALL SELECT 1 FROM tv_episode_publications WHERE fingerprint = ?
         UNION ALL SELECT 1 FROM drive_state WHERE last_fingerprint = ?
         LIMIT 1
-      `).get(fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint));
+      `).get(fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint, fingerprint));
       if (!represented) throw new Error("Disc not found");
       if (jobs.some((row) => ACTIVE.includes(row.status))) throw new Error("An active disc job cannot be forgotten");
 
       const ids = jobs.map((row) => row.id);
+      if (ids.some((id) => this.db.prepare("SELECT 1 FROM tv_replacement_transactions WHERE job_id = ? LIMIT 1").get(id)) ||
+        (fingerprint && this.db.prepare(`
+          SELECT 1 FROM tv_replacement_transactions
+          WHERE state IN ('created', 'candidate_ready', 'quarantined', 'published', 'failed')
+            AND (json_extract(existing_json, '$.fingerprint') = ? OR json_extract(incoming_json, '$.fingerprint') = ?)
+          LIMIT 1
+        `).get(fingerprint, fingerprint))) {
+        throw new Error("Disc is associated with a replacement transaction; its files must be retained for recovery");
+      }
       const counts: Record<string, number> = {};
       const cleanupCandidates: Array<{ path: string; kind: "review" | "tv" | "work"; id: string }> = [];
       for (const id of ids) {
@@ -73,6 +83,7 @@ export class SqliteForgetDiscService implements ForgetDiscService {
         run("tvEpisodeFeedback", "DELETE FROM tv_episode_feedback WHERE fingerprint = ?", fingerprint);
         run("tvProcessingPlans", "DELETE FROM tv_processing_plans WHERE fingerprint = ?", fingerprint);
         run("tvValidationEvidence", "DELETE FROM tv_validation_evidence WHERE fingerprint = ?", fingerprint);
+        run("tvEpisodePublications", "DELETE FROM tv_episode_publications WHERE fingerprint = ?", fingerprint);
       }
       for (const id of ids) run("jobs", "DELETE FROM jobs WHERE id = ?", id);
       if (fingerprint) {

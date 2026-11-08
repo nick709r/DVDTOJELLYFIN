@@ -25,6 +25,7 @@ let providerRuntime: Awaited<ReturnType<typeof createProviderRuntime>> | undefin
 
 async function main(): Promise<void> {
   configureLogLevel(getSettings().logLevel);
+  await recoverTemporaryFiles(repositories);
   await validateStartupCapabilities();
   const jobs = new JobCoordinator(repositories, {
     publish() {
@@ -70,7 +71,7 @@ async function main(): Promise<void> {
   const resumeReadyTvTask = (): void => {
     if (resumingReadyTvTask || !providerRuntime || providerRuntime.jobs.activeJob()) return;
     const task = providerRuntime.jobs.listTvMatchingTasks().find((candidate) =>
-      candidate.status === "ready-to-publish");
+      candidate.status === "ready-to-publish" && !providerRuntime!.jobs.hasBlockingReplacementTransaction(candidate.jobId));
     if (!task) return;
     resumingReadyTvTask = true;
     void continueTvTask(task.jobId, "automatic-ready-task").catch((error: unknown) => {
@@ -98,7 +99,6 @@ async function main(): Promise<void> {
     );
     if (!processed) throw new Error("No matching disc is currently available in the optical drive");
   });
-  await recoverTemporaryFiles(repositories);
   try {
     await scanReviewQueueOrphans();
   } catch (error) {

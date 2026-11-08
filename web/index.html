@@ -20,12 +20,11 @@
         </details>
         <details class="nav-group">
           <summary>Tasks</summary>
-          <button class="nav-link" data-page="tv-reviews" data-scroll="#review-list">Review Queue</button>
+          <button class="nav-link" data-page="tv-reviews" data-scroll="#review-list">Review Center</button>
           <button class="nav-link" data-page="tv-validation">Activity &amp; Insights</button>
         </details>
         <details class="nav-group">
           <summary>Identification</summary>
-          <button class="nav-link" data-page="tv-analysis">Identification &amp; Matching</button>
           <button class="nav-link" data-page="settings" data-scroll="#tv-metadata-settings">Metadata &amp; Identification</button>
         </details>
         <details class="nav-group">
@@ -54,7 +53,7 @@
         <article id="dashboard-attention" class="card dashboard-attention hidden" role="alert">
           <div><p class="eyebrow">ACTION REQUIRED</p><h2>Some items need your attention</h2><p id="dashboard-attention-message" class="muted"></p></div>
           <div class="dashboard-quick-actions">
-            <button class="button primary" data-page="tv-reviews" data-scroll="#review-list" data-attention-action="open-review">Open Review Queue</button>
+            <button class="button primary" data-page="tv-reviews" data-scroll="#review-list" data-attention-action="open-review">Open Review Center</button>
             <button class="button primary" data-page="tv-reviews" data-scroll="#tv-review-list" data-attention-action="review-match">Review Match</button>
             <button class="button secondary" data-page="tv-reviews" data-scroll="#review-list" data-review-category="metadata_issue" data-attention-action="fix-metadata">Fix Metadata</button>
             <button class="button secondary" data-page="tv-reviews" data-scroll="#review-jobs-list" data-attention-action="continue-processing">Continue Processing</button>
@@ -63,13 +62,13 @@
         </article>
         <div class="stat-grid dashboard-summary">
           <article class="card stat"><span class="muted">Active Tasks</span><strong id="dashboard-active-count">0</strong><button class="text-button" data-page="dashboard" data-scroll="#job-title">View active task</button></article>
-          <article class="card stat"><span class="muted">Waiting For Review</span><strong id="dashboard-review-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#review-list">Open review queue</button></article>
+          <article class="card stat"><span class="muted">Waiting For Review</span><strong id="dashboard-review-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#review-list">Open Review Center</button></article>
           <article class="card stat"><span class="muted">Unmatched TV Content</span><strong id="dashboard-unmatched-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#tv-review-list">Review TV discs</button></article>
           <article class="card stat"><span class="muted">Failed Identifications</span><strong id="dashboard-failed-count">0</strong><button class="text-button" data-page="tv-reviews" data-scroll="#review-list">Fix failed items</button></article>
           <article class="card stat"><span class="muted">Recent Activity</span><strong id="dashboard-activity-count">0</strong><button class="text-button" data-page="history">View activity</button></article>
         </div>
         <article id="dashboard-storage-warning" class="card storage-warning hidden" role="alert">
-          <div><p class="eyebrow">STORAGE ATTENTION</p><h2>Review Queue storage is above its warning threshold</h2>
+          <div><p class="eyebrow">STORAGE ATTENTION</p><h2>Review Center storage is above its warning threshold</h2>
             <p id="dashboard-storage-warning-message" class="muted"></p></div>
           <div id="dashboard-storage-warning-items" class="storage-warning-items"></div>
           <div class="dashboard-quick-actions">
@@ -122,7 +121,7 @@
           <div id="provider-usage-dashboard" class="tv-metadata-provider-activity">Loading provider usage…</div>
         </article>
         <article class="card tv-intelligence-card">
-          <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-analysis">View reports →</button></div>
+          <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>TV Intelligence</h2></div><button class="text-button" data-page="tv-reviews" data-scroll="#page-tv-analysis" data-open-tv-analysis>View reports →</button></div>
           <div id="tv-dashboard-stats" class="tv-stat-grid"></div>
           <div class="card-heading"><h3>TV disc trend · 30 days</h3></div><div id="tv-trend" class="tv-trend"></div>
         </article>
@@ -185,7 +184,7 @@
             <label>Season number<input name="seasonNumber" type="number" min="0" max="100"></label>
             <label>Notes<textarea name="notes" maxlength="2000"></textarea></label>
             <button class="button secondary" type="submit">Save Media Recovery</button>
-            <p class="hint">Automatic classification remains visible for reference. Manual choices take precedence on the next disc detection and are audit logged. TV tracks can then be mapped in Review Centre.</p>
+            <p class="hint">Automatic classification remains visible for reference. Manual choices take precedence on the next disc detection and are audit logged. TV tracks can then be mapped in the Review Center.</p>
           </form>
           <div id="classification-metrics"></div>
         </article>
@@ -199,25 +198,9 @@
         <article class="card table-card"><p class="eyebrow">PROCESSING PIPELINE</p><h2>Stage timeline</h2><div id="diagnostics-pipeline"></div></article>
         <article class="card table-card"><p class="eyebrow">LIVE LOG</p><h2>Job events</h2><div id="diagnostics-log"></div></article>
       </section>
-      <section id="page-tv-analysis" class="page hidden">
-        <article class="card table-card">
-          <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>Recent TV analysis</h2></div>
-            <div class="form-row compact">
-              <label>Confidence<select id="tv-analysis-confidence"><option value="">All confidence</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
-              <label>Review status<select id="tv-analysis-state"><option value="">All statuses</option><option value="awaiting-review">Review required</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="ready">Ready</option></select></label>
-            </div>
-          </div>
-          <div id="tv-analysis-list"></div>
-        </article>
-        <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EXPLAINABLE MATCHING</p><h2>Episode suggestions</h2></div></div>
-          <p class="hint">Confidence scores rank available evidence; they are not calibrated probabilities. Unknown is preferred to an unsupported assignment.</p>
-          <div id="tv-matching-list"></div>
-        </article>
-        <article id="tv-analysis-detail" class="card tv-detail hidden"></article>
-      </section>
       <section id="page-tv-reviews" class="page hidden">
         <article class="card table-card">
-          <div class="card-heading"><div><p class="eyebrow">WORK QUEUE</p><h2>Unified Review Queue</h2></div>
+          <div class="card-heading"><div><p class="eyebrow">ACTION REQUIRED</p><h2>Review Center</h2></div>
             <div><button id="identify-disc-open" class="button primary" type="button">Identify Disc</button> <button id="refresh-reviews" class="button secondary" type="button">Refresh</button></div>
           </div>
           <section class="review-queue-section">
@@ -241,11 +224,28 @@
           <div class="card-heading"><div><p class="eyebrow">PRESERVED MEDIA</p><h2>Continue Extracted Media</h2></div></div>
           <div id="review-jobs-list"></div>
         </article>
+        <details id="page-tv-analysis" class="card">
+          <summary>TV analysis and episode suggestions</summary>
+          <article class="card table-card">
+            <div class="card-heading"><div><p class="eyebrow">TV INTELLIGENCE</p><h2>Recent TV analysis</h2></div>
+              <div class="form-row compact">
+                <label>Confidence<select id="tv-analysis-confidence"><option value="">All confidence</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+                <label>Review status<select id="tv-analysis-state"><option value="">All statuses</option><option value="awaiting-review">Review required</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="ready">Ready</option></select></label>
+              </div>
+            </div>
+            <div id="tv-analysis-list"></div>
+          </article>
+          <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EXPLAINABLE MATCHING</p><h2>Episode suggestions</h2></div></div>
+            <p class="hint">Confidence scores rank available evidence; they are not calibrated probabilities. Unknown is preferred to an unsupported assignment.</p>
+            <div id="tv-matching-list"></div>
+          </article>
+          <article id="tv-analysis-detail" class="card tv-detail hidden"></article>
+        </details>
       </section>
       <section id="page-tv-validation" class="page hidden">
         <article class="card"><p class="eyebrow">PROCESSING</p><h2>Processing statistics</h2><div id="processing-statistics" class="tv-stat-grid"></div></article>
         <article class="card"><p class="eyebrow">IDENTIFICATION</p><h2>Media Statistics</h2><div id="media-statistics" class="tv-stat-grid"></div>
-          <p class="hint">Movies, TV and music are counted from the same identification records. Automatic suggestions for TV never publish files; confirm series metadata and episode-to-track mappings in the Review Queue to process TV episodes.</p>
+          <p class="hint">Movies, TV and music are counted from the same identification records. Automatic suggestions for TV never publish files; confirm series metadata and episode-to-track mappings in the Review Center to process TV episodes.</p>
           <h3>TV episode analysis</h3><div id="tv-statistics" class="tv-stat-grid"></div>
         </article>
         <article class="card table-card"><div class="card-heading"><div><p class="eyebrow">EVIDENCE & DATASETS</p><h2>TV validation</h2></div>
@@ -318,19 +318,19 @@
               <div id="output-preview"></div>
             </section>
             <p class="hint">Sonarr/Radarr destinations use compatible folder layouts; AutoDisc does not call those applications' APIs. For Lidarr, configure its integration below. Browse folders as they appear inside the AutoDisc host/container.</p>
-            <p class="hint">TV DVDs publish only after you save explicit series metadata and track-to-episode mappings in Review Centre.</p>
+            <p class="hint">TV DVDs publish only after you save explicit series metadata and track-to-episode mappings in the Review Center.</p>
             <label>Temporary working folder<input name="workDir" required placeholder="/var/cache/autodisc"></label>
             <label>TV Staging Directory<input name="tvStagingDir" placeholder="Leave blank to derive from Work Directory"></label>
             <h3>Storage maintenance</h3>
             <div class="form-row">
-              <label>Review Queue warning threshold
+              <label>Review Center warning threshold
                 <select name="storageWarningThresholdGb">
                   <option value="50">50 GB</option><option value="100">100 GB</option>
                   <option value="250">250 GB</option><option value="500">500 GB</option>
                   <option value="null">Disabled</option>
                 </select>
               </label>
-              <label class="check-row"><input name="autoWarnLargeReviewQueues" type="checkbox"> Warn when the Review Queue exceeds the threshold</label>
+              <label class="check-row"><input name="autoWarnLargeReviewQueues" type="checkbox"> Warn when the Review Center exceeds the threshold</label>
             </div>
             <div class="form-row">
               <label>Automatically clean temporary logs after (days)<input name="autoCleanTempLogsAfterDays" type="number" min="1" max="3650" placeholder="Disabled"></label>
@@ -356,7 +356,7 @@
           <article id="general-settings-card" class="card settings-card"><p class="eyebrow">ENCODING</p><h2>Encoder & behavior</h2>
             <label>Encoder preference<select name="encoder"><option value="auto">Automatic — prefer NVIDIA</option><option value="nvidia">NVIDIA NVENC (fallback enabled)</option><option value="software">Software (libx264)</option></select></label>
             <label>Automation mode<select name="automationMode"><option value="full_auto">Full Auto — eject and continue; errors go to Review</option><option value="regular_auto">Regular Auto — process automatically; stop on errors</option><option value="review_based">Review-Based — require approval before processing</option></select></label>
-            <p class="hint">Full Auto ejects after successful jobs and after recording failures in Review. Regular Auto leaves failed discs in the drive. Review-Based queues detected discs; use Approve & Process in Review Centre.</p>
+            <p class="hint">Full Auto ejects after successful jobs and after recording failures in Review. Regular Auto leaves failed discs in the drive. Review-Based queues detected discs; use Approve & Process in Review Center.</p>
             <label class="check"><input name="autoEject" type="checkbox"> Eject disc after successful conversion</label>
             <div id="encoder-capability" class="inline-info">Checking FFmpeg encoders…</div>
           </article>
@@ -587,7 +587,8 @@
       <div class="delete-confirmation">
         <h2>Forget Disc?</h2>
         <p>This will permanently remove:</p>
-        <ul><li>Disc history</li><li>Review records</li><li>Episode matches</li><li>Metadata</li><li>Diagnostics</li><li>Processing logs</li><li>Disc fingerprints</li></ul>
+        <ul><li>Disc history</li><li>Review records and staged media</li><li>Episode matches</li><li>Metadata</li><li>Diagnostics</li><li>Processing logs</li><li>Disc fingerprints</li></ul>
+        <p>Published library files are not removed.</p>
         <p>The disc will be treated as completely new if inserted again.</p>
         <p><strong>This action cannot be undone.</strong></p>
         <div class="metadata-actions">

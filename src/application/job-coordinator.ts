@@ -4,6 +4,8 @@ import type { Job, JobStatus } from "../model.js";
 import type { ReviewItemInput, ReviewItem } from "../domain/reviews.js";
 import type { DiscRecovery, DiscRecoveryUpdate, DiscType, MediaType } from "../domain/disc-recovery.js";
 import type { TvMatchingTask, TvMatchingTaskInput } from "../domain/tv-matching.js";
+import type { TvEpisodePublication } from "../domain/tv-publication.js";
+import type { TvConflictAuditRecord, TvConflictJournalRepository } from "../domain/tv-conflict-journal.js";
 
 export interface JobStep {
   id: string;
@@ -113,6 +115,39 @@ export class JobCoordinator {
 
   listTvMatchingTasks(): TvMatchingTask[] {
     return this.repositories.tvMatchingTasks.list();
+  }
+
+  hasReplacementTransaction(jobId: string): boolean {
+    return this.repositories.tvConflictJournal.listReplacementJobIds().includes(jobId);
+  }
+
+  hasBlockingReplacementTransaction(jobId: string): boolean {
+    return this.repositories.tvConflictJournal.listTransactionsForJob(jobId)
+      .some((transaction) => transaction.state !== "rolled_back");
+  }
+
+  replacementJournal(): TvConflictJournalRepository {
+    return this.repositories.tvConflictJournal;
+  }
+
+  recordTvEpisodePublications(publications: readonly TvEpisodePublication[]): void {
+    this.repositories.tvEpisodePublications.record(publications);
+  }
+
+  recordTvConflictAudit(record: TvConflictAuditRecord): void {
+    this.repositories.tvConflictJournal.appendAudit(record);
+  }
+
+  listTvConflictAudit(jobId: string): TvConflictAuditRecord[] {
+    return this.repositories.tvConflictJournal.listAuditForJob(jobId);
+  }
+
+  listTvEpisodePublications(seasonNumber: number): TvEpisodePublication[] {
+    return this.repositories.tvEpisodePublications.listForSeason(seasonNumber);
+  }
+
+  listCompletedTvDiscHistory(seasonNumber: number) {
+    return this.repositories.completedTvDiscHistory.listForSeason(seasonNumber);
   }
 
   updateTvMatchingTask(jobId: string, patch: Partial<Pick<TvMatchingTask,

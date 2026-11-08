@@ -93,6 +93,7 @@ async function requestJson<T>(
     response = await fetcher(endpoint(baseUrl, path), {
       ...init,
       headers,
+      redirect: "error",
       signal: requestSignal
     });
   } catch (error) {
@@ -264,6 +265,7 @@ export async function importAlbumToLidarr(
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ name: "ManualImport", files: importFiles, importMode: "Move", replaceExistingFiles: false }),
+      redirect: "error",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000)
     });
   } catch (error) {

@@ -50,7 +50,7 @@ test("database migrations preserve legacy job history and add current columns", 
     media_type: "dvd"
   });
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM settings").get().count, Object.keys(defaultSettings).length);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 27);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 32);
   assert.deepEqual(
     db.pragma("table_info(media_type_override_audit)").map((column) => column.name),
     ["id", "fingerprint", "job_id", "original_type", "new_type", "username", "reason", "created_at"]
@@ -294,7 +294,7 @@ test("destination migration preserves saved legacy library paths and routes exis
   });
   assert.equal(profile.routes.music, "lidarr");
   assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'automationMode'").get().value), "regular_auto");
-  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 27);
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 32);
   db.close();
 });
 
@@ -306,7 +306,7 @@ test("Migration 26 is repeatable and media overrides survive restart and rescan"
   try {
     migrateDatabase(db, defaultSettings);
     migrateDatabase(db, defaultSettings);
-    assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 27);
+    assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 32);
     repositories.discRecovery.recordDetection("persistent-override", "dvd", "movie", 0.81);
     repositories.discRecovery.update("persistent-override", {
       finalMediaType: "tv_series",

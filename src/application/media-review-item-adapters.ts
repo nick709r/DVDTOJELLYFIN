@@ -336,12 +336,14 @@ export function applyTvAssignments(
     const selected = requested.get(item.trackId);
     if (!selected) return item;
     if (selected.episodeNumbers.length === 0) {
-      const { selectedEpisodes: _selectedEpisodes, ...unmatched } = item;
+      const { selectedEpisodes: _selectedEpisodes, confirmedAt: _confirmedAt, keepExisting: _keepExisting, ...unmatched } = item;
       return { ...unmatched, confirmed: false };
     }
+    const { keepExisting: _keepExisting, ...updated } = item;
     return {
-      ...item,
+      ...updated,
       confirmed: true,
+      confirmedAt: new Date().toISOString(),
       selectedEpisodes: selected.episodeNumbers.map((episodeNumber, index) => ({
         seriesId,
         seasonNumber: recovery.seasonNumber ?? 0,
@@ -356,7 +358,8 @@ export function applyTvAssignments(
 /** Persistence and runtime hooks the TV adapter needs; implemented by the composition root. */
 export interface TvTaskEnvironment {
   saveIdentification(task: TvMatchingTask, identification: TvIdentification): { recovery: DiscRecovery; task: TvMatchingTask };
-  saveAssignments(task: TvMatchingTask, assignments: TvMatchingAssignment[]): TvMatchingTask;
+  saveAssignments(task: TvMatchingTask, assignments: TvMatchingAssignment[]): Promise<TvMatchingTask> | TvMatchingTask;
+  hasEpisodeConflicts?(task: TvMatchingTask): Promise<boolean>;
   hasActiveJob(): boolean;
   /** Starts publishing in the background; throws MediaReviewError("unavailable") when the service is missing. */
   continueTask(jobId: string, source: TvMatchingContinuationSource): void;
@@ -405,16 +408,16 @@ export class TvMatchingTaskItemAdapter implements MediaReviewItemAdapter {
       if (!recovery?.seriesName || recovery.seasonNumber === null) {
         throw new MediaReviewError("conflict", "Identify the series and season before assigning episodes");
       }
-      task = env.saveAssignments(task, applyTvAssignments(task.assignments, selections, recovery));
+      task = await env.saveAssignments(task, applyTvAssignments(task.assignments, selections, recovery));
     }
-    const continuation = this.publish(task, input.publish ?? "when-ready", env);
+    const continuation = await this.publish(task, input.publish ?? "when-ready", env);
     task = this.tasks.get(sourceId) ?? task;
     const item = this.toItem(task);
     const progress = tvMatchingProgress(task.assignments);
     return { item, continuation, details: { ...details, task, progress } };
   }
 
-  private publish(task: TvMatchingTask, mode: "never" | "when-ready" | "required", env: TvTaskEnvironment): MediaReviewContinuation {
+  private async publish(task: TvMatchingTask, mode: "never" | "when-ready" | "required", env: TvTaskEnvironment): Promise<MediaReviewContinuation> {
     if (mode === "never") return "not-ready";
     const required = mode === "required";
     if (required) {
@@ -424,6 +427,10 @@ export class TvMatchingTaskItemAdapter implements MediaReviewItemAdapter {
       }
     } else if (!tvMatchingProgress(task.assignments).fullyMatched) {
       return "not-ready";
+    }
+    if (env.hasEpisodeConflicts && await env.hasEpisodeConflicts(task)) {
+      if (!required) return "blocked";
+      throw new MediaReviewError("conflict", "Resolve the episode conflict before publishing");
     }
     const recovery = this.recoveries.get(task.fingerprint);
     if (recovery?.mediaTypeOverridden && recovery.finalMediaType !== "tv_series") {

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-2.0.1-4c9aff">
+  <img alt="version" src="https://img.shields.io/badge/version-2.5.2-4c9aff">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-3c873a">
   <img alt="platform" src="https://img.shields.io/badge/runs%20on-Linux%20%C2%B7%20systemd-lightgrey">
   <img alt="media" src="https://img.shields.io/badge/media-Movies%20%C2%B7%20TV%20%C2%B7%20Music-8a63d2">
@@ -18,7 +18,7 @@
 
 ![AutoDisc dashboard in Modern Dark](./docs/screenshots/dashboard.png)
 
-AutoDisc watches your optical drive, classifies what you insert (movie, TV series or audio CD), looks up metadata, rips and converts the content, and publishes it into the library layout you choose for **Jellyfin, Sonarr, Radarr, Lidarr or any custom folder structure**. When it is not sure, it never guesses. It asks you in the **Review Queue**.
+AutoDisc watches your optical drive, classifies what you insert (movie, TV series or audio CD), looks up metadata, rips and converts the content, and publishes it into the library layout you choose for **Jellyfin, Sonarr, Radarr, Lidarr or any custom folder structure**. When it is not sure, it never guesses. It asks you in the **Review Center**.
 
 Run it as a web dashboard for hands-on control, or as a headless Linux service for unattended ingestion.
 
@@ -50,7 +50,7 @@ AutoDisc 2.0 is the milestone release that brings together everything built sinc
 - [How it works](#how-it-works)
 - [Media support](#media-support)
 - [Automation modes](#automation-modes)
-- [Review Queue](#review-queue)
+- [Review Center](#review-center)
 - [Metadata & Identification](#metadata--identification)
 - [TV matching](#tv-matching)
 - [Destination profiles](#destination-profiles)
@@ -92,6 +92,7 @@ ssh -L 8787:127.0.0.1:8787 user@server
 ```
 
 **4. Create the administrator account** on first run. Disc processing stays disabled until you do.
+Login attempts are limited to 10 per IP address per 15 minutes; the limit also counts successful attempts.
 
 **5. Choose where media goes.** In **Settings → Storage & Output**, create a destination profile and pick an automation mode.
 
@@ -123,7 +124,7 @@ sudo journalctl -u autodisc.service -f      # live logs
 - Media-type overrides (Movie, TV Series, Music, Data Disc) with an audit trail
 
 **Review**
-- One unified Review Queue for movies, TV discs, TV plans, music and failures
+- One Review Center for movies, TV discs, TV plans, music and failures
 - Search-and-select with ranked candidates, refine-search and manual-title fallback
 - TV Disc Review with video previews, searchable episode selectors and partial saves
 - Append-only audit trail with text and JSON export
@@ -167,9 +168,9 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 | --- | --- |
 | Dashboard (Modern Dark) | ![Dashboard](./docs/screenshots/dashboard.png) |
 | Dashboard (Modern Light) | ![Dashboard, light](./docs/screenshots/dashboard-light.png) |
-| Unified Review Queue | ![Review Queue](./docs/screenshots/review-centre.png) |
+| Review Center | ![Review Center](./docs/screenshots/review-centre.png) |
 | Metadata & Identification | ![Metadata providers](./docs/screenshots/metadata.png) |
-| Identification & Matching | ![Identification and matching](./docs/screenshots/tv-matching.png) |
+| TV analysis and episode suggestions | ![TV analysis and episode suggestions](./docs/screenshots/tv-matching.png) |
 | Activity & Insights | ![Activity and insights](./docs/screenshots/diagnostics.png) |
 | Settings | ![Settings](./docs/screenshots/settings.png) |
 
@@ -210,7 +211,7 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 2. **Analysis**: titles, runtimes, track structure and disc labels are gathered.
 3. **Classification**: movie, TV series or music, with a confidence score.
 4. **Metadata**: providers supply titles, years, series, episodes, albums and artwork.
-5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Queue. Unidentified TV discs keep ripping into protected staging.
+5. **Review, if needed**: uncertain, conflicting or failed results go to the Review Center. Unidentified TV discs keep ripping into protected staging.
 6. **Processing**: ripping, encoding or extraction.
 7. **Publishing**: finished media lands in the destination profile's folder structure.
 
@@ -240,6 +241,7 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 - Optional MusicBrainz lookup supplies artist, album, year and track titles.
 - With no match, the job pauses and asks for a release ID or manual metadata, then resumes.
 - Output as `Music/Artist/Album` with collision-safe handling and optional Lidarr hand-off.
+- Lidarr requests do not follow redirects. To test a different URL, enter its API key; to save a different URL, enter its key or clear the saved key. Local and private-network Lidarr servers are supported.
 
 ---
 
@@ -247,15 +249,15 @@ Themes change **presentation only**: colours, borders, fonts, spacing, glyphs an
 
 | Mode | Behaviour | Good for |
 | --- | --- | --- |
-| **Regular Auto** (default) | Processes confident results and sends uncertain ones to the Review Queue. | Everyday use |
+| **Regular Auto** (default) | Processes confident results and sends uncertain ones to the Review Center. | Everyday use |
 | **Full Auto** | Keeps going. Failures are recorded and the disc is ejected so the drive can continue. | Unattended stacks |
 | **Review-Based** | Every disc waits for your approval before processing starts. | Careful curation |
 
 ---
 
-## Review Queue
+## Review Center
 
-The Review Queue is where automation hands control back to you, and where nothing is silently lost. **Movies, TV and TV plans share one workflow and one `MediaReviewItem` model.**
+The Review Center is where automation hands control back to you, and where nothing is silently lost. **Movies, TV and TV plans share one workflow and one `MediaReviewItem` model.** TV analysis and episode suggestions are available in the expandable section on the same page.
 
 1. A disc enters the queue.
 2. AutoDisc searches the metadata providers.
@@ -423,6 +425,19 @@ TypeScript on Fastify and SQLite for the backend; a dependency-free vanilla Java
 ## Release history
 
 Highlights. The complete per-version log is in [docs/RELEASE-HISTORY.md](./docs/RELEASE-HISTORY.md).
+
+### Version 2.5.2
+
+- Fixed TV episode conflict detection by excluding transaction outputs from scans and not showing conflicts for processing or completed tasks.
+
+### Version 2.5.1
+
+- Security: rate-limited login and unauthenticated API requests, hardened TV previews and Lidarr credential handling, and removed a slow title-sanitization expression.
+
+### Version 2.5.0
+
+- Added TV episode conflict decisions and replacement using retained originals, transaction journaling and startup recovery.
+- Unified review workflows and added episode publication provenance.
 
 ### Version 2.0.1
 

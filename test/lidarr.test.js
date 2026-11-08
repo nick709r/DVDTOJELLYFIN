@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 import { importAlbumToLidarr, testLidarrConnection, validateLidarrUrl } from "../dist/lidarr.js";
 
@@ -16,12 +17,37 @@ function matchedItem(id, path) {
 
 test("Lidarr URLs are validated and normalized without credentials", () => {
   assert.equal(validateLidarrUrl("http://localhost:8686/"), "http://localhost:8686");
+  assert.equal(validateLidarrUrl("http://192.168.1.50:8686/"), "http://192.168.1.50:8686");
+  assert.equal(validateLidarrUrl("http://[::1]:8686/"), "http://[::1]:8686");
   assert.equal(validateLidarrUrl("https://music.example/lidarr/"), "https://music.example/lidarr");
   assert.throws(() => validateLidarrUrl("ftp://localhost:8686"), /HTTP or HTTPS/);
   const credentialUrl = new URL("http://localhost:8686");
   credentialUrl.username = "user";
   credentialUrl.password = "pass";
   assert.throws(() => validateLidarrUrl(credentialUrl.toString()), /credentials/);
+});
+
+test("Lidarr requests do not follow redirects or disclose the API key", async () => {
+  let redirected = 0;
+  const destination = createServer((_req, res) => { redirected++; res.end("{}"); });
+  await new Promise((resolve) => destination.listen(0, "127.0.0.1", resolve));
+  const source = createServer((_req, res) => {
+    res.writeHead(302, { location: `http://127.0.0.1:${destination.address().port}/` });
+    res.end();
+  });
+  await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+  try {
+    await assert.rejects(testLidarrConnection({
+      url: `http://127.0.0.1:${source.address().port}`,
+      apiKey: "secret-key"
+    }), /Could not reach Lidarr/);
+    assert.equal(redirected, 0);
+  } finally {
+    await Promise.all([
+      new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve())),
+      new Promise((resolve, reject) => destination.close((error) => error ? reject(error) : resolve()))
+    ]);
+  }
 });
 
 test("Lidarr connection test sends the API key without exposing it in the result", async () => {
@@ -51,6 +77,7 @@ test("Lidarr imports tracks only after matching their named files and moves them
     undefined,
     async (url, init) => {
       const target = new URL(String(url));
+      assert.equal(init.redirect, "error");
       requests.push({ target, init });
       if (target.pathname.endsWith("/manualimport") && init?.method === "POST") {
         return Response.json(candidates);
